@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F5 Trees and heaps</title>
+<meta name="description" content="Binary search trees, balancing, B-trees (why Rust's BTreeMap is one), binary heaps and priority queues — measured, and applied to workflow timers and database indexes.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="F5">
+<article class="content">
+<h1>Trees and heaps</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Use tree vocabulary precisely (root, child, leaf, height) and explain why a tree's <em>height</em> sets its cost</li>
+      <li>Explain binary search trees, why they can degrade to a list, and how balancing prevents it</li>
+      <li>Explain B-trees, and why Rust's <code>BTreeMap</code> and your database's indexes use them instead of binary trees</li>
+      <li>Explain binary heaps and priority queues: the array layout, sift-up and sift-down</li>
+      <li>Choose between <code>HashMap</code>, <code>BTreeMap</code>, a sorted <code>Vec</code> and <code>BinaryHeap</code> from measured trade-offs</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Two of your product's hardest problems are tree problems. The workflow engine must always know <em>which timer fires next</em> among millions. That's a priority queue, which in this chapter's lab picks the next 1,000 timers out of a million <strong>18,000× faster</strong> than scanning a list. And every durable query the engine runs ("workflows due before 10:05", "events for W1 in order") is served by a <strong>B-tree</strong> index in PostgreSQL, the same structure as Rust's <code>BTreeMap</code>.</p>
+  <p>As a consultant you'll also be asked "should this be a <code>Dictionary</code> or a <code>SortedDictionary</code>?" every few weeks. After this chapter you can answer with numbers.</p>
+</div>
+
+<h2 id="intuition">Intuition first: an org chart and a hospital triage desk</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li>A <strong>tree</strong> is an org chart: one person at the top, each person managing a few others. To reach anyone you walk down from the top, and the number of management <em>levels</em> decides how long that takes. A flat, wide chart is fast to navigate; a chain where everyone has exactly one report is slow.</li>
+    <li>A <strong>heap</strong> is a hospital triage desk. It doesn't keep patients in full order. It only guarantees that the most urgent one is always first in line. That's much less work than full sorting, and it's all a "who's next?" question needs.</li>
+  </ul>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="vocabulary">Tree vocabulary</h3>
+<p>A <dfn data-term="tree" data-def="A hierarchy of nodes: one root, each node having zero or more children and exactly one parent (except the root), with no cycles.">tree</dfn> is a set of nodes connected parent-to-child, with no loops. The top node is the <strong>root</strong>, nodes with no children are <strong>leaves</strong>, and a node's descendants form its <em>subtree</em>. A <dfn data-term="binary tree" data-def="A tree in which every node has at most two children, called left and right.">binary tree</dfn> allows at most two children per node: left and right. The <dfn data-term="height" data-def="The number of nodes on the longest path from a tree's root down to a leaf. Most tree operations cost O(height).">height</dfn> is the number of nodes on the longest root-to-leaf path. Almost every tree operation walks one path, so <strong>tree operations cost O(height)</strong>. The whole art of trees is keeping the height small.</p>
+
+<h3 id="bst">Binary search trees</h3>
+<p>A <dfn data-term="binary search tree" data-def="A binary tree where, for every node, keys in the left subtree are smaller and keys in the right subtree are larger. Search is O(height).">binary search tree</dfn> (BST) adds one rule: for every node, all keys in its left subtree are smaller and all keys in its right subtree are larger. Searching is the phone-book halving from chapter F2, done by walking: compare with the node, go left or right, repeat. If the tree is balanced, its height is about \(\log_2 n\), so search, insert and delete are O(log n), and an in-order walk yields the keys sorted.</p>
+<p>But the shape depends on insertion order. Insert keys already in sorted order and every new key goes to the right of the last: the tree degenerates into a linked list of height n.</p>
+<figure class="visual">
+  <span class="visual-tag">Diagram · same keys, two shapes</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="A balanced binary search tree of seven keys compared with a degenerate chain">
+    <defs><marker id="bt-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker></defs>
+    <text x="180" y="22" class="svg-title" text-anchor="middle">inserted 4,2,6,1,3,5,7 → height 3</text>
+    <g class="svg-line">
+      <line x1="180" y1="70" x2="100" y2="140"/><line x1="180" y1="70" x2="260" y2="140"/>
+      <line x1="100" y1="140" x2="60" y2="210"/><line x1="100" y1="140" x2="140" y2="210"/>
+      <line x1="260" y1="140" x2="220" y2="210"/><line x1="260" y1="140" x2="300" y2="210"/>
+    </g>
+    <g>
+      <circle cx="180" cy="70" r="22" class="svg-teal"/><text x="180" y="70" class="svg-mono" text-anchor="middle">4</text>
+      <circle cx="100" cy="140" r="22" class="svg-teal"/><text x="100" y="140" class="svg-mono" text-anchor="middle">2</text>
+      <circle cx="260" cy="140" r="22" class="svg-teal"/><text x="260" y="140" class="svg-mono" text-anchor="middle">6</text>
+      <circle cx="60" cy="210" r="22" class="svg-teal"/><text x="60" y="210" class="svg-mono" text-anchor="middle">1</text>
+      <circle cx="140" cy="210" r="22" class="svg-teal"/><text x="140" y="210" class="svg-mono" text-anchor="middle">3</text>
+      <circle cx="220" cy="210" r="22" class="svg-teal"/><text x="220" y="210" class="svg-mono" text-anchor="middle">5</text>
+      <circle cx="300" cy="210" r="22" class="svg-teal"/><text x="300" y="210" class="svg-mono" text-anchor="middle">7</text>
+    </g>
+    <text x="180" y="270" class="svg-text-sm" text-anchor="middle">any key in at most 3 steps</text>
+    <text x="545" y="22" class="svg-title" text-anchor="middle">inserted 1,2,3,4,5,6,7 → height 7</text>
+    <g class="svg-line">
+      <line x1="420" y1="50" x2="455" y2="85"/><line x1="460" y1="85" x2="495" y2="120"/><line x1="500" y1="120" x2="535" y2="155"/>
+      <line x1="540" y1="155" x2="575" y2="190"/><line x1="580" y1="190" x2="615" y2="225"/><line x1="620" y1="225" x2="655" y2="260"/>
+    </g>
+    <g>
+      <circle cx="420" cy="50" r="17" class="svg-red"/><text x="420" y="50" class="svg-mono" text-anchor="middle">1</text>
+      <circle cx="460" cy="85" r="17" class="svg-red"/><text x="460" y="85" class="svg-mono" text-anchor="middle">2</text>
+      <circle cx="500" cy="120" r="17" class="svg-red"/><text x="500" y="120" class="svg-mono" text-anchor="middle">3</text>
+      <circle cx="540" cy="155" r="17" class="svg-red"/><text x="540" y="155" class="svg-mono" text-anchor="middle">4</text>
+      <circle cx="580" cy="190" r="17" class="svg-red"/><text x="580" y="190" class="svg-mono" text-anchor="middle">5</text>
+      <circle cx="620" cy="225" r="17" class="svg-red"/><text x="620" y="225" class="svg-mono" text-anchor="middle">6</text>
+      <circle cx="660" cy="260" r="17" class="svg-red"/><text x="660" y="260" class="svg-mono" text-anchor="middle">7</text>
+    </g>
+    <text x="470" y="270" class="svg-text-sm" text-anchor="middle">a linked list in disguise</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Both are valid BSTs of the same keys. In the lab, 20,000 keys inserted in random order gave height <strong>39</strong>; the same keys in sorted order gave height <strong>20,000</strong>, and looking up every key took <strong>765 ms instead of 2.5 ms</strong>. Sorted input is common in practice (IDs, timestamps), so an unbalanced BST is a trap.</figcaption>
+</figure>
+
+<h3 id="balancing">Balancing</h3>
+<p>A <dfn data-term="balanced tree" data-def="A tree that maintains height O(log n) after every insertion and deletion, typically by rotations (AVL, red-black) or by splitting/merging nodes (B-trees).">self-balancing tree</dfn> restructures itself on every insert and delete so that its height stays O(log n) whatever the insertion order. The classic binary designs are <strong>AVL trees</strong> (1962) and <strong>red-black trees</strong>. Both use small local rearrangements called <em>rotations</em>. .NET's <code>SortedSet&lt;T&gt;</code> is documented as "a self-balancing tree", and <code>SortedDictionary&lt;TKey,TValue&gt;</code> as "a binary search tree with O(log n) retrieval".</p>
+<p>Rust's standard library takes a different route: it has no binary search tree at all. Its sorted map is a B-tree.</p>
+
+<h3 id="btree">B-trees: wide, shallow, cache-friendly</h3>
+<p>A <dfn data-term="B-tree" data-def="A self-balancing search tree whose nodes each hold many sorted keys in a contiguous array and have many children; shallow and cache-friendly. Used by Rust's BTreeMap and by database indexes.">B-tree</dfn> (Bayer and McCreight, 1972) is a search tree whose nodes each hold <em>many</em> sorted keys in a small array, and so have many children. Its rules keep every leaf at the same depth, so it's always balanced. When a node overflows, it splits in two and passes its middle key up to its parent, so the tree grows at the <em>root</em>, never at one side. Step through it with a small node size (at most 3 keys):</p>
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · a B-tree growing (max 3 keys per node)</span>
+  <svg viewBox="0 0 720 220" role="img" aria-label="B-tree insertion with node splits"><g data-show="=1"><rect x="291" y="60" width="46" height="40" rx="5" class="svg-teal"/><text x="314" y="80" class="svg-mono" text-anchor="middle">10</text><rect x="337" y="60" width="46" height="40" rx="5" class="svg-teal"/><text x="360" y="80" class="svg-mono" text-anchor="middle">20</text><rect x="383" y="60" width="46" height="40" rx="5" class="svg-teal"/><text x="406" y="80" class="svg-mono" text-anchor="middle">30</text><text x="360" y="18" class="svg-title" text-anchor="middle">root holds 3 keys: full</text></g><g data-show="=2"><rect x="268" y="60" width="46" height="40" rx="5" class="svg-red"/><text x="291" y="80" class="svg-mono" text-anchor="middle">10</text><rect x="314" y="60" width="46" height="40" rx="5" class="svg-red"/><text x="337" y="80" class="svg-mono" text-anchor="middle">20</text><rect x="360" y="60" width="46" height="40" rx="5" class="svg-red"/><text x="383" y="80" class="svg-mono" text-anchor="middle">25</text><rect x="406" y="60" width="46" height="40" rx="5" class="svg-red"/><text x="429" y="80" class="svg-mono" text-anchor="middle">30</text><text x="360" y="18" class="svg-title" text-anchor="middle">insert 25: overflow (4 keys)</text></g><g data-show="=3"><rect x="337" y="40" width="46" height="40" rx="5" class="svg-accent"/><text x="360" y="60" class="svg-mono" text-anchor="middle">20</text><rect x="177" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="200" y="170" class="svg-mono" text-anchor="middle">10</text><rect x="474" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="497" y="170" class="svg-mono" text-anchor="middle">25</text><rect x="520" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="543" y="170" class="svg-mono" text-anchor="middle">30</text><line x1="350" y1="80" x2="200" y2="150" class="svg-line"/><line x1="370" y1="80" x2="520" y2="150" class="svg-line"/><text x="360" y="18" class="svg-title" text-anchor="middle">split: middle key 20 moves up into a new root</text></g><g data-show="=4"><rect x="337" y="40" width="46" height="40" rx="5" class="svg-box-strong"/><text x="360" y="60" class="svg-mono" text-anchor="middle">20</text><rect x="131" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="154" y="170" class="svg-mono" text-anchor="middle">5</text><rect x="177" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="200" y="170" class="svg-mono" text-anchor="middle">10</text><rect x="223" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="246" y="170" class="svg-mono" text-anchor="middle">15</text><rect x="451" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="474" y="170" class="svg-mono" text-anchor="middle">25</text><rect x="497" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="520" y="170" class="svg-mono" text-anchor="middle">27</text><rect x="543" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="566" y="170" class="svg-mono" text-anchor="middle">30</text><line x1="350" y1="80" x2="200" y2="150" class="svg-line"/><line x1="370" y1="80" x2="520" y2="150" class="svg-line"/><text x="360" y="18" class="svg-title" text-anchor="middle">insert 5, 15, 27: they go into the leaves</text></g><g data-show="=5"><rect x="337" y="40" width="46" height="40" rx="5" class="svg-box-strong"/><text x="360" y="60" class="svg-mono" text-anchor="middle">20</text><rect x="131" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="154" y="170" class="svg-mono" text-anchor="middle">5</text><rect x="177" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="200" y="170" class="svg-mono" text-anchor="middle">10</text><rect x="223" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="246" y="170" class="svg-mono" text-anchor="middle">15</text><rect x="428" y="150" width="46" height="40" rx="5" class="svg-red"/><text x="451" y="170" class="svg-mono" text-anchor="middle">25</text><rect x="474" y="150" width="46" height="40" rx="5" class="svg-red"/><text x="497" y="170" class="svg-mono" text-anchor="middle">27</text><rect x="520" y="150" width="46" height="40" rx="5" class="svg-red"/><text x="543" y="170" class="svg-mono" text-anchor="middle">28</text><rect x="566" y="150" width="46" height="40" rx="5" class="svg-red"/><text x="589" y="170" class="svg-mono" text-anchor="middle">30</text><line x1="350" y1="80" x2="200" y2="150" class="svg-line"/><line x1="370" y1="80" x2="520" y2="150" class="svg-line"/><text x="360" y="18" class="svg-title" text-anchor="middle">insert 28: the right leaf overflows</text></g><g data-show="=6"><rect x="314" y="40" width="46" height="40" rx="5" class="svg-accent"/><text x="337" y="60" class="svg-mono" text-anchor="middle">20</text><rect x="360" y="40" width="46" height="40" rx="5" class="svg-accent"/><text x="383" y="60" class="svg-mono" text-anchor="middle">27</text><rect x="71" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="94" y="170" class="svg-mono" text-anchor="middle">5</text><rect x="117" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="140" y="170" class="svg-mono" text-anchor="middle">10</text><rect x="163" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="186" y="170" class="svg-mono" text-anchor="middle">15</text><rect x="357" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="380" y="170" class="svg-mono" text-anchor="middle">25</text><rect x="534" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="557" y="170" class="svg-mono" text-anchor="middle">28</text><rect x="580" y="150" width="46" height="40" rx="5" class="svg-teal"/><text x="603" y="170" class="svg-mono" text-anchor="middle">30</text><line x1="345" y1="80" x2="140" y2="150" class="svg-line"/><line x1="360" y1="80" x2="380" y2="150" class="svg-line"/><line x1="375" y1="80" x2="580" y2="150" class="svg-line"/><text x="360" y="18" class="svg-title" text-anchor="middle">split: 27 moves up; every leaf still at the same depth</text></g></svg>
+  <ol class="stepper-captions">
+    <li>A B-tree whose nodes hold at most 3 keys (real ones hold more: Rust's up to 11, databases hundreds). The root holds 10, 20, 30, sorted in one contiguous array, and it's full.</li>
+    <li>Inserting 25 would make 4 keys: too many.</li>
+    <li>The node <strong>splits</strong>: its middle key (20) moves up into a new root, and the rest become two children, [10] and [25, 30]. The tree grew taller <em>at the top</em>.</li>
+    <li>More inserts (5, 15, 27) walk down from the root (less than 20 → left, otherwise right) and land in leaves. No restructuring is needed while there's room.</li>
+    <li>Inserting 28 overflows the right leaf: [25, 27, 28, 30].</li>
+    <li>It splits too. 27 moves up into the root, which now holds [20, 27] and has three children. Every leaf is still exactly one level below the root, so balance is automatic.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> B-trees never get lopsided, because they only ever grow by splitting nodes and pushing a key <em>up</em>. With many keys per node they are very shallow: a million keys fit in a handful of levels.</figcaption>
+</figure>
+<p>Rust's documentation explains the choice directly: a perfectly balanced BST does the theoretical minimum number of comparisons, but "every element is stored in its own individually heap-allocated node. This means that every single insertion triggers a heap-allocation, and every comparison is a potential cache-miss due to the indirection." A B-tree instead "makes each node contain B-1 to 2B-1 elements in a contiguous array", which cuts allocations by a factor of B and improves cache efficiency. That's chapter F1's lesson, applied to trees. In the current standard-library source, <code>B = 6</code>, so each node holds 5 to 11 keys, searched with a simple linear scan.</p>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>The closest equivalent of <code>BTreeMap</code> is <code>SortedDictionary&lt;K,V&gt;</code>: same O(log n) behaviour and sorted iteration, but a binary tree inside, one node per entry. And the B-tree is the structure you already rely on every day: SQL Server and PostgreSQL indexes are B-trees. PostgreSQL's docs: "By default, the CREATE INDEX command creates B-tree indexes", and they support <code>&lt; &lt;= = &gt;= &gt;</code> range queries and sorted retrieval. A database just uses bigger nodes (a whole disk page each) for the same reason Rust uses 11-key nodes: fetching one more neighbour is nearly free once you've fetched the block.</p>
+</div>
+
+<h3 id="heaps">Binary heaps and priority queues</h3>
+<p>A <dfn data-term="priority queue" data-def="An abstract data type: insert items with priorities, and always remove the highest- (or lowest-) priority item next.">priority queue</dfn> is an ADT with two main operations: insert an item with a priority, and remove the item with the <em>highest</em> (or lowest) priority. The standard data structure for it is the <dfn data-term="binary heap" data-def="A complete binary tree stored in an array where every parent is ≥ its children (max-heap) or ≤ (min-heap). push and pop are O(log n), peek O(1).">binary heap</dfn>: a binary tree that is</p>
+<ul>
+  <li><strong>complete</strong>, filled level by level, left to right, so it fits perfectly in an array with no pointers at all: node <em>i</em>'s children sit at <code>2i+1</code> and <code>2i+2</code>, and its parent at <code>(i−1)/2</code>.</li>
+  <li><strong>heap-ordered</strong>: every parent is ≥ its children (a <em>max-heap</em>), so the largest item is always at index 0. Siblings are in no particular order. That's the "triage desk" economy: it's much less ordering than a sorted list.</li>
+</ul>
+<p>Push appends at the end and <em>sifts up</em> (swap with the parent while bigger). Pop takes the root, moves the last item to the top and <em>sifts down</em> (swap with the larger child while smaller). Each walks one path, so it's O(log n):</p>
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · max-heap push and pop</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Binary max-heap shown as a tree and as an array during push and pop"><g data-show="=1"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-teal"/><text x="360" y="50" class="svg-mono" text-anchor="middle">8</text><circle cx="200" cy="115" r="22" class="svg-teal"/><text x="200" y="115" class="svg-mono" text-anchor="middle">3</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="182" y="251" class="svg-mono" text-anchor="middle">8</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="254" y="251" class="svg-mono" text-anchor="middle">3</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><text x="360" y="16" class="svg-title" text-anchor="middle">a max-heap: every parent ≥ its children</text></g><g data-show="=2"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-teal"/><text x="360" y="50" class="svg-mono" text-anchor="middle">8</text><circle cx="200" cy="115" r="22" class="svg-teal"/><text x="200" y="115" class="svg-mono" text-anchor="middle">3</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-accent"/><text x="280" y="180" class="svg-mono" text-anchor="middle">9</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="182" y="251" class="svg-mono" text-anchor="middle">8</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="254" y="251" class="svg-mono" text-anchor="middle">3</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="470" y="251" class="svg-mono" text-anchor="middle">9</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><text x="360" y="16" class="svg-title" text-anchor="middle">push 9: append at index 4</text></g><g data-show="=3"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-teal"/><text x="360" y="50" class="svg-mono" text-anchor="middle">8</text><circle cx="200" cy="115" r="22" class="svg-accent"/><text x="200" y="115" class="svg-mono" text-anchor="middle">9</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-accent"/><text x="280" y="180" class="svg-mono" text-anchor="middle">3</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="182" y="251" class="svg-mono" text-anchor="middle">8</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="254" y="251" class="svg-mono" text-anchor="middle">9</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="470" y="251" class="svg-mono" text-anchor="middle">3</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><text x="360" y="16" class="svg-title" text-anchor="middle">sift up: 9 > parent 3, swap</text></g><g data-show="=4"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><line x1="520" y1="115" x2="440" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-accent"/><text x="360" y="50" class="svg-mono" text-anchor="middle">9</text><circle cx="200" cy="115" r="22" class="svg-accent"/><text x="200" y="115" class="svg-mono" text-anchor="middle">8</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-teal"/><text x="280" y="180" class="svg-mono" text-anchor="middle">3</text><circle cx="440" cy="180" r="22" class="svg-accent"/><text x="440" y="180" class="svg-mono" text-anchor="middle">2</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="182" y="251" class="svg-mono" text-anchor="middle">9</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="254" y="251" class="svg-mono" text-anchor="middle">8</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="470" y="251" class="svg-mono" text-anchor="middle">3</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><rect x="510" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="542" y="251" class="svg-mono" text-anchor="middle">2</text><text x="542" y="284" class="svg-text-sm" text-anchor="middle">[5]</text><text x="360" y="16" class="svg-title" text-anchor="middle">sift up: 9 > parent 8, swap; then push 2 (no swap needed)</text></g><g data-show="=5"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-accent"/><text x="360" y="50" class="svg-mono" text-anchor="middle">2</text><circle cx="200" cy="115" r="22" class="svg-teal"/><text x="200" y="115" class="svg-mono" text-anchor="middle">8</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-teal"/><text x="280" y="180" class="svg-mono" text-anchor="middle">3</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="182" y="251" class="svg-mono" text-anchor="middle">2</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="254" y="251" class="svg-mono" text-anchor="middle">8</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="470" y="251" class="svg-mono" text-anchor="middle">3</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><text x="640" y="50" class="svg-text" text-anchor="middle">popped: 9</text><text x="360" y="16" class="svg-title" text-anchor="middle">pop: take 9 from the top; move the last item (2) up</text></g><g data-show="=6"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-accent"/><text x="360" y="50" class="svg-mono" text-anchor="middle">8</text><circle cx="200" cy="115" r="22" class="svg-accent"/><text x="200" y="115" class="svg-mono" text-anchor="middle">2</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-teal"/><text x="280" y="180" class="svg-mono" text-anchor="middle">3</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="182" y="251" class="svg-mono" text-anchor="middle">8</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="254" y="251" class="svg-mono" text-anchor="middle">2</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="470" y="251" class="svg-mono" text-anchor="middle">3</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><text x="360" y="16" class="svg-title" text-anchor="middle">sift down: 2 < larger child 8, swap</text></g><g data-show="=7"><line x1="360" y1="50" x2="200" y2="115" class="svg-line"/><line x1="360" y1="50" x2="520" y2="115" class="svg-line"/><line x1="200" y1="115" x2="120" y2="180" class="svg-line"/><line x1="200" y1="115" x2="280" y2="180" class="svg-line"/><circle cx="360" cy="50" r="22" class="svg-teal"/><text x="360" y="50" class="svg-mono" text-anchor="middle">8</text><circle cx="200" cy="115" r="22" class="svg-accent"/><text x="200" y="115" class="svg-mono" text-anchor="middle">3</text><circle cx="520" cy="115" r="22" class="svg-teal"/><text x="520" y="115" class="svg-mono" text-anchor="middle">5</text><circle cx="120" cy="180" r="22" class="svg-teal"/><text x="120" y="180" class="svg-mono" text-anchor="middle">1</text><circle cx="280" cy="180" r="22" class="svg-accent"/><text x="280" y="180" class="svg-mono" text-anchor="middle">2</text><rect x="150" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="182" y="251" class="svg-mono" text-anchor="middle">8</text><text x="182" y="284" class="svg-text-sm" text-anchor="middle">[0]</text><rect x="222" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="254" y="251" class="svg-mono" text-anchor="middle">3</text><text x="254" y="284" class="svg-text-sm" text-anchor="middle">[1]</text><rect x="294" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="326" y="251" class="svg-mono" text-anchor="middle">5</text><text x="326" y="284" class="svg-text-sm" text-anchor="middle">[2]</text><rect x="366" y="232" width="64" height="38" rx="5" class="svg-box-strong"/><text x="398" y="251" class="svg-mono" text-anchor="middle">1</text><text x="398" y="284" class="svg-text-sm" text-anchor="middle">[3]</text><rect x="438" y="232" width="64" height="38" rx="5" class="svg-accent"/><text x="470" y="251" class="svg-mono" text-anchor="middle">2</text><text x="470" y="284" class="svg-text-sm" text-anchor="middle">[4]</text><text x="360" y="16" class="svg-title" text-anchor="middle">sift down: 2 < larger child 3, swap; done</text></g><text x="80" y="251" class="svg-text-sm" text-anchor="middle">array:</text></svg>
+  <ol class="stepper-captions">
+    <li>A max-heap holding 8, 3, 5, 1, shown as a tree (top) and as the array it really is (bottom). Node <code>i</code>'s children are at <code>2i+1</code> and <code>2i+2</code>: index 0's children are 1 and 2, and index 1's are 3 and 4. The largest value sits at index 0.</li>
+    <li><code>push(9)</code> appends at the end, index 4, which is a child of index 1 (value 3). The heap rule is now broken: 9 &gt; 3.</li>
+    <li><strong>Sift up:</strong> swap 9 with its parent. It's now at index 1, under 8.</li>
+    <li>9 &gt; 8, so swap again; 9 reaches the root. Then <code>push(2)</code> lands at index 5 under 5, already in order. Each push touched at most one path: O(log n).</li>
+    <li><code>pop()</code> returns the root (9). To keep the tree complete, the <em>last</em> item (2) moves to the root.</li>
+    <li><strong>Sift down:</strong> compare 2 with its children (8 and 5) and swap with the larger, 8.</li>
+    <li>2's new children are 1 and 3; swap with 3. Now every parent ≥ its children again. Pop also touched one path: O(log n).</li>
+  </ol>
+  <figcaption><strong>Figure 3.</strong> A heap is "partially sorted": only the parent ≥ child rule holds, which is far cheaper to maintain than full order, and enough to always know the maximum. No pointers: the tree shape is implied by array positions.</figcaption>
+</figure>
+<p>Rust's <code>BinaryHeap</code> is "a priority queue implemented with a binary heap. This will be a max-heap." Its docs give <code>peek</code> O(1), <code>pop</code> O(log n), and <code>push</code> O(1) <em>expected</em> on randomly ordered input (degrading to O(log n) amortised for ascending input). Wrap items in <code>std::cmp::Reverse</code> to make it a min-heap, which is what timers need.</p>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>.NET's <code>PriorityQueue&lt;TElement,TPriority&gt;</code> is documented as "an array-backed, quaternary min-heap" (four children per node instead of two), so it's a <em>min</em>-heap by default, where Rust's is a max-heap. Both share one caveat, from Microsoft's docs: the type "does not guarantee first-in-first-out semantics for elements of equal priority". If ties must come out in arrival order (two timers due at the same millisecond), add a sequence number to the priority, for example <code>(due_time, seq)</code>.</p>
+</div>
+
+<h3 id="tries">Tries (in brief)</h3>
+<p>A <dfn data-term="trie" data-def="A tree keyed by sequence prefixes (e.g. characters): each edge adds one symbol, so all keys sharing a prefix share a path. Used for autocomplete and routing.">trie</dfn> (prefix tree) stores strings by their characters: each edge adds one character, so all keys sharing a prefix share a path. Tries power autocomplete and URL routing, and lookup cost depends on the key's length rather than on how many keys are stored. You often don't need a dedicated trie in Rust: a sorted <code>BTreeSet&lt;String&gt;</code> plus a range query answers "all keys starting with <em>ord</em>" in O(log n + k), as Exercise 2 shows.</p>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="measured">Measured: choosing a map and a priority queue</h3>
+<figure class="visual">
+  <span class="visual-tag">Chart · 1,000,000 random lookups among 1,000,000 keys</span>
+  <div class="chart-box"><canvas id="lookup-chart" aria-label="Bar chart of lookup times for HashMap, BTreeMap and sorted Vec"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Median of 3 runs, release build, lab Mac. <code>HashMap</code> about 24 ms; a sorted <code>Vec</code> with <code>binary_search</code> about 27 ms; <code>BTreeMap</code> about 116 ms. For lookups alone, the B-tree is the slowest of the three, and you choose it for what the others can't do: ordered iteration, range queries, cheap first/last, deterministic order. A sorted <code>Vec</code> matches the hash map for read-mostly data, but inserting into it is O(n).</figcaption>
+</figure>
+<figure class="visual">
+  <span class="visual-tag">Chart · fire the earliest 1,000 of 1,000,000 timers</span>
+  <div class="chart-box"><canvas id="timer-chart" aria-label="Bar chart comparing scanning a Vec for the minimum with popping a min-heap"></canvas></div>
+  <figcaption><strong>Figure 5.</strong> Scanning a <code>Vec</code> for the minimum each time: about <strong>1,816 ms</strong> (1,000 scans of a million items). Popping a <code>BinaryHeap</code> min-heap: about <strong>0.10 ms</strong>. Both return exactly the same timers in the same order (the program asserts it). Log scale.</figcaption>
+</figure>
+
+<div class="table-wrap"><table>
+  <thead><tr><th>Need</th><th>Rust</th><th>Cost</th><th>.NET</th></tr></thead>
+  <tbody>
+    <tr><td>Fast lookup by key, order irrelevant</td><td><code>HashMap</code></td><td>O(1) expected</td><td><code>Dictionary</code></td></tr>
+    <tr><td>Sorted iteration, ranges, first/last, deterministic order</td><td><code>BTreeMap</code> / <code>BTreeSet</code></td><td>O(log n)</td><td><code>SortedDictionary</code> / <code>SortedSet</code></td></tr>
+    <tr><td>Built once, then read many times</td><td>sorted <code>Vec</code> + <code>binary_search</code></td><td>O(log n) lookup, O(n) insert</td><td>sorted array + <code>Array.BinarySearch</code> (or <code>SortedList</code>)</td></tr>
+    <tr><td>"What's next?" by priority (timers, scheduling, top-k)</td><td><code>BinaryHeap</code> (+ <code>Reverse</code> for min)</td><td>O(log n) pop, O(1) peek</td><td><code>PriorityQueue</code> (min by default)</td></tr>
+    <tr><td>Prefix search over strings</td><td><code>BTreeSet&lt;String&gt;</code> + <code>range</code>, or a trie crate</td><td>O(log n + k)</td><td>sorted list + binary search</td></tr>
+  </tbody>
+</table></div>
+
+<details class="deep-dive"><summary>Deep dive: why B·log n comparisons can beat log₂ n</summary><div class="body">
+  <p>Rust's docs are candid that the B-tree does <em>more</em> comparisons: "searching for a random element is expected to take B * log(n) comparisons, which is generally worse than a BST. In practice, however, performance is excellent." How can more work be faster?</p>
+  <p>Count memory fetches instead of comparisons. In a binary tree of a million nodes, a lookup visits about 20 nodes, each a separate heap allocation somewhere in memory: up to 20 cache misses at about 100 ns each from RAM (chapter F1's ladder). A B-tree with up to 11 keys per node has fan-out up to 12, so a million keys need only about \(\log_{12} 10^6 \approx 6\) levels. Within a node, the keys are contiguous, so scanning them is a few cache lines that the CPU prefetches. Six likely misses plus some cheap in-cache comparisons beat twenty misses.</p>
+  <p>Databases push the same idea further: a disk or SSD read fetches a whole page (kilobytes), so database B-tree nodes hold hundreds of keys, and a table of a billion rows is typically only 3–5 levels deep. The general principle, which you'll reuse when designing the workflow engine's storage, is: <strong>minimise the number of slow fetches, not the number of fast operations</strong>.</p>
+  <p class="small muted">The 6-level and 3–5-level figures are back-of-envelope estimates from fan-out, to show the shape of the argument. Real depths depend on fill factor and key size.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>Create a project with these programs in <code>src/bin/</code>, and run each with <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — watch a BST degenerate</h3>
+<p>A minimal BST stored in an arena (chapter F3): nodes live in a <code>Vec</code>, and children are <code>Option&lt;usize&gt;</code> indices, where <code>None</code> means "no child". <code>Option</code> is Rust's "maybe a value" type (chapter 2.5); <code>match</code> handles both cases.</p>
+<pre data-playground data-title="src/bin/bst.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+/// A plain (unbalanced) binary search tree stored in an arena (chapter F3):
+/// children are indices into `nodes`, `None` meaning "no child".
+struct Node {
+    key: u64,
+    left: Option&lt;usize&gt;,
+    right: Option&lt;usize&gt;,
+}
+
+struct Bst {
+    nodes: Vec&lt;Node&gt;,
+}
+
+impl Bst {
+    fn new() -&gt; Bst {
+        Bst { nodes: Vec::new() }
+    }
+
+    /// Walk down from the root: smaller keys go left, larger go right.
+    fn insert(&amp;mut self, key: u64) {
+        let new_index = self.nodes.len();
+        self.nodes.push(Node { key, left: None, right: None });
+        if new_index == 0 {
+            return; // first node is the root
+        }
+        let mut at = 0;
+        loop {
+            let go_left = key &lt; self.nodes[at].key;
+            let child = if go_left { self.nodes[at].left } else { self.nodes[at].right };
+            match child {
+                Some(next) =&gt; at = next,
+                None =&gt; {
+                    if go_left { self.nodes[at].left = Some(new_index); } else { self.nodes[at].right = Some(new_index); }
+                    return;
+                }
+            }
+        }
+    }
+
+    fn contains(&amp;self, key: u64) -&gt; bool {
+        let mut cur = if self.nodes.is_empty() { None } else { Some(0) };
+        while let Some(i) = cur {
+            let n = &amp;self.nodes[i];
+            if key == n.key { return true; }
+            cur = if key &lt; n.key { n.left } else { n.right };
+        }
+        false
+    }
+
+    /// Height = number of nodes on the longest root-to-leaf path.
+    fn height(&amp;self, at: Option&lt;usize&gt;) -&gt; usize {
+        match at {
+            None =&gt; 0,
+            Some(i) =&gt; 1 + self.height(self.nodes[i].left).max(self.height(self.nodes[i].right)),
+        }
+    }
+}
+
+fn next_rand(s: &amp;mut u64) -&gt; u64 { *s ^= *s &lt;&lt; 13; *s ^= *s &gt;&gt; 7; *s ^= *s &lt;&lt; 17; *s }
+
+fn main() {
+    let n: u64 = 20_000;
+    let sorted: Vec&lt;u64&gt; = (0..n).collect();
+    let mut shuffled = sorted.clone();
+    let mut seed = 7;
+    for i in (1..shuffled.len()).rev() {
+        let j = (next_rand(&amp;mut seed) % (i as u64 + 1)) as usize;
+        shuffled.swap(i, j);
+    }
+    for (label, keys) in [("random order", &amp;shuffled), ("sorted order", &amp;sorted)] {
+        let mut t = Bst::new();
+        for &amp;k in keys.iter() { t.insert(k); }
+        let start = Instant::now();
+        let mut found = 0;
+        for k in 0..n { if t.contains(black_box(k)) { found += 1; } }
+        let ms = start.elapsed().as_secs_f64() * 1e3;
+        println!("{label}: height {:&gt;6}  (log2 n = {:.1})  look up all {n}: {:&gt;8.2} ms  found {found}",
+                 t.height(Some(0)), (n as f64).log2(), ms);
+    }
+}</code></pre>
+<pre class="output">random order: height     39  (log2 n = 14.3)  look up all 20000:     2.49 ms  found 20000
+sorted order: height  20000  (log2 n = 14.3)  look up all 20000:   765.44 ms  found 20000</pre>
+<p>A random-order BST's height (39) is within a small factor of \(\log_2 n\) (14.3), which is typical. Sorted order produces the worst case. Note also that <code>height</code> is recursive: on the 20,000-deep tree it recurses 20,000 levels. That fits in the 8 MB main-thread stack here, but it's exactly the deep-recursion risk from chapter F1. A balanced tree avoids it by design.</p>
+
+<h3 id="lab-2">Step 2 — map lookups head to head</h3>
+<pre data-title="src/bin/lookups.rs"><code class="language-rust">use std::collections::{BTreeMap, HashMap};
+use std::hint::black_box;
+use std::time::Instant;
+
+fn next_rand(s: &amp;mut u64) -&gt; u64 { *s ^= *s &lt;&lt; 13; *s ^= *s &gt;&gt; 7; *s ^= *s &lt;&lt; 17; *s }
+
+fn main() {
+    const N: usize = 1_000_000;
+    let mut seed = 99;
+    let keys: Vec&lt;u64&gt; = (0..N).map(|_| next_rand(&amp;mut seed)).collect();
+    let mut probes = keys.clone();
+    for i in (1..N).rev() { let j = (next_rand(&amp;mut seed) % (i as u64 + 1)) as usize; probes.swap(i, j); }
+
+    let hash: HashMap&lt;u64, u64&gt; = keys.iter().map(|&amp;k| (k, k)).collect();
+    let btree: BTreeMap&lt;u64, u64&gt; = keys.iter().map(|&amp;k| (k, k)).collect();
+    let mut sorted: Vec&lt;u64&gt; = keys.clone();
+    sorted.sort_unstable();
+
+    let t = Instant::now();
+    let mut hits = 0;
+    for p in &amp;probes { if hash.contains_key(black_box(p)) { hits += 1; } }
+    let t_hash = t.elapsed();
+    let t = Instant::now();
+    for p in &amp;probes { if btree.contains_key(black_box(p)) { hits += 1; } }
+    let t_btree = t.elapsed();
+    let t = Instant::now();
+    for p in &amp;probes { if sorted.binary_search(black_box(p)).is_ok() { hits += 1; } }
+    let t_vec = t.elapsed();
+    assert_eq!(hits, 3 * N);
+    println!("1,000,000 random lookups among 1,000,000 u64 keys:");
+    println!("  HashMap:                  {:&gt;6.1} ms", t_hash.as_secs_f64() * 1e3);
+    println!("  BTreeMap:                 {:&gt;6.1} ms", t_btree.as_secs_f64() * 1e3);
+    println!("  sorted Vec + binary_search: {:&gt;4.1} ms", t_vec.as_secs_f64() * 1e3);
+}</code></pre>
+<pre class="output">1,000,000 random lookups among 1,000,000 u64 keys:
+  HashMap:                    23.9 ms
+  BTreeMap:                  114.7 ms
+  sorted Vec + binary_search: 26.5 ms</pre>
+
+<h3 id="lab-3">Step 3 — what only an ordered map can do</h3>
+<pre data-playground data-title="src/bin/range.rs"><code class="language-rust">use std::collections::BTreeMap;
+
+fn main() {
+    // Audit events keyed by timestamp (seconds). A BTreeMap keeps them ordered.
+    let mut events: BTreeMap&lt;u64, &amp;str&gt; = BTreeMap::new();
+    events.insert(1_700_000_120, "rule R7 fired");
+    events.insert(1_700_000_005, "workflow W1 started");
+    events.insert(1_700_000_300, "workflow W1 completed");
+    events.insert(1_700_000_060, "timer T3 due");
+    events.insert(1_700_000_240, "rule R2 fired");
+
+    // "What happened between t=60 and t=240 (exclusive)?" -- O(log n) to find the start.
+    for (t, what) in events.range(1_700_000_060..1_700_000_240) {
+        println!("{t}: {what}");
+    }
+    // First and last are O(log n) too:
+    println!("earliest: {:?}", events.first_key_value());
+    println!("latest:   {:?}", events.last_key_value());
+}</code></pre>
+<pre class="output">1700000060: timer T3 due
+1700000120: rule R7 fired
+earliest: Some((1700000005, "workflow W1 started"))
+latest:   Some((1700000300, "workflow W1 completed"))</pre>
+<p><code>a..b</code> is a <em>half-open</em> range: it includes <code>a</code> and excludes <code>b</code>, so the event at 240 is not printed. Unlike a <code>HashMap</code>, the output is identical on every run.</p>
+
+<h3 id="lab-4">Step 4 — the timer wheel problem</h3>
+<pre data-title="src/bin/timers.rs"><code class="language-rust">use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+use std::hint::black_box;
+use std::time::Instant;
+
+fn next_rand(s: &amp;mut u64) -&gt; u64 { *s ^= *s &lt;&lt; 13; *s ^= *s &gt;&gt; 7; *s ^= *s &lt;&lt; 17; *s }
+
+fn main() {
+    const N: usize = 1_000_000; // pending timers: (due time, timer id)
+    const FIRE: usize = 1_000;  // how many of the earliest timers we fire
+    let mut seed = 5;
+    let timers: Vec&lt;(u64, u64)&gt; = (0..N as u64).map(|id| (next_rand(&amp;mut seed) % 86_400_000, id)).collect();
+
+    // Approach 1: a plain Vec; to find the next due timer, scan for the minimum.
+    let mut list = timers.clone();
+    let t = Instant::now();
+    let mut fired_list = Vec::with_capacity(FIRE);
+    for _ in 0..FIRE {
+        let (pos, _) = list.iter().enumerate().min_by_key(|(_, t)| **t).unwrap();
+        fired_list.push(list.swap_remove(pos)); // O(1) remove once found
+    }
+    let t_list = t.elapsed();
+
+    // Approach 2: a min-heap. Reverse turns Rust's max-heap into a min-heap.
+    let mut heap: BinaryHeap&lt;Reverse&lt;(u64, u64)&gt;&gt; = timers.iter().map(|&amp;t| Reverse(t)).collect();
+    let t = Instant::now();
+    let mut fired_heap = Vec::with_capacity(FIRE);
+    for _ in 0..FIRE {
+        let Reverse(next) = heap.pop().unwrap(); // O(log n)
+        fired_heap.push(next);
+    }
+    let t_heap = t.elapsed();
+
+    assert_eq!(fired_list, fired_heap); // same timers, same order
+    black_box((&amp;list, &amp;heap));
+    println!("fire the earliest {FIRE} of {N} timers:");
+    println!("  Vec, scan for minimum each time: {:&gt;8.1} ms", t_list.as_secs_f64() * 1e3);
+    println!("  BinaryHeap (min-heap) pop:       {:&gt;8.3} ms", t_heap.as_secs_f64() * 1e3);
+}</code></pre>
+<pre class="output">fire the earliest 1000 of 1000000 timers:
+  Vec, scan for minimum each time:   1816.9 ms
+  BinaryHeap (min-heap) pop:          0.098 ms</pre>
+<p>Timers are <code>(due_time, id)</code> tuples. Tuples compare field by field, so equal due times are broken by id, which gives a stable, deterministic order (the tie caveat above). Building the heap from the million timers (<code>collect</code>) happens before the timer starts, and isn't measured.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as unit tests (3 passed) and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — top-k without sorting everything <span class="difficulty">★★☆</span></div>
+  <p>Return the k largest values of a large slice, largest first, in O(n log k) time and O(k) memory. Sorting the whole slice would be O(n log n) and O(n). For <code>[5, 1, 9, 3, 7, 9, 2]</code> and k = 3: <code>[9, 9, 7]</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+/// The k largest values, largest first, in O(n log k) time and O(k) memory.
+pub fn top_k(values: &amp;[u64], k: usize) -&gt; Vec&lt;u64&gt; {
+    let mut heap: BinaryHeap&lt;Reverse&lt;u64&gt;&gt; = BinaryHeap::with_capacity(k + 1); // a min-heap
+    for &amp;v in values {
+        heap.push(Reverse(v));
+        if heap.len() &gt; k {
+            heap.pop(); // drop the smallest of the current k+1
+        }
+    }
+    let mut out: Vec&lt;u64&gt; = heap.into_iter().map(|Reverse(v)| v).collect();
+    out.sort_unstable_by(|a, b| b.cmp(a)); // largest first
+    out
+}
+
+fn main() {
+    println!("{:?}", top_k(&amp;[5, 1, 9, 3, 7, 9, 2], 3)); // [9, 9, 7]
+}</code></pre>
+  <p>The trick is counter-intuitive: to keep the <em>largest</em> k, use a <em>min</em>-heap, so the smallest of your current candidates is always on top, ready to be evicted. Useful for "top 10 slowest rules" dashboards over millions of evaluations.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — autocomplete with a range query <span class="difficulty">★★☆ product skill</span></div>
+  <p>A rule-authoring UI suggests fact names as the user types. Given a <code>BTreeSet&lt;String&gt;</code>, return every word starting with a prefix, in sorted order, without scanning the whole set.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::BTreeSet;
+
+/// All words starting with `prefix`, in sorted order.
+pub fn autocomplete&lt;'a&gt;(words: &amp;'a BTreeSet&lt;String&gt;, prefix: &amp;str) -&gt; Vec&lt;&amp;'a str&gt; {
+    words
+        .range(prefix.to_string()..) // jump straight to the first word &gt;= prefix: O(log n)
+        .take_while(|w| w.starts_with(prefix)) // stop at the first word that doesn't match
+        .map(|w| w.as_str())
+        .collect()
+}
+
+fn main() {
+    let words: BTreeSet&lt;String&gt; = ["order", "orderline", "organisation", "outcome", "rule"]
+        .iter().map(|s| s.to_string()).collect();
+    println!("{:?}", autocomplete(&amp;words, "ord")); // ["order", "orderline"]
+}</code></pre>
+  <p>In sorted order, every word with a given prefix is contiguous and starts at the first word ≥ the prefix. So: one O(log n) jump, then read exactly the k matches. The <code>'a</code> is a <em>lifetime</em> (chapter 2.11). It says the returned <code>&amp;str</code>s borrow from <code>words</code>.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — build a heap by hand <span class="difficulty">★★★</span></div>
+  <p>Implement a max-heap on a <code>Vec&lt;i64&gt;</code> with <code>push</code> (sift up) and <code>pop</code> (sift down), using the index formulas from the animation. Pushing 5, 3, 8, 1, 9, 2 and then popping until empty must give 9, 8, 5, 3, 2, 1.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// A max-heap built by hand on a Vec.
+/// Children of index i live at 2i+1 and 2i+2; the parent of i lives at (i-1)/2.
+pub struct MaxHeap {
+    data: Vec&lt;i64&gt;,
+}
+
+impl MaxHeap {
+    pub fn new() -&gt; MaxHeap {
+        MaxHeap { data: Vec::new() }
+    }
+
+    pub fn push(&amp;mut self, value: i64) {
+        self.data.push(value);
+        let mut i = self.data.len() - 1;
+        while i &gt; 0 {
+            let parent = (i - 1) / 2;
+            if self.data[i] &lt;= self.data[parent] {
+                break; // heap property restored
+            }
+            self.data.swap(i, parent); // sift up
+            i = parent;
+        }
+    }
+
+    pub fn pop(&amp;mut self) -&gt; Option&lt;i64&gt; {
+        if self.data.is_empty() {
+            return None;
+        }
+        let last = self.data.len() - 1;
+        self.data.swap(0, last);
+        let top = self.data.pop();
+        let mut i = 0;
+        loop {
+            let (l, r) = (2 * i + 1, 2 * i + 2);
+            let mut largest = i;
+            if l &lt; self.data.len() &amp;&amp; self.data[l] &gt; self.data[largest] { largest = l; }
+            if r &lt; self.data.len() &amp;&amp; self.data[r] &gt; self.data[largest] { largest = r; }
+            if largest == i {
+                break;
+            }
+            self.data.swap(i, largest); // sift down
+            i = largest;
+        }
+        top
+    }
+}
+
+impl Default for MaxHeap {
+    fn default() -&gt; Self {
+        Self::new() // Clippy's suggestion: types with a no-argument new() should implement Default
+    }
+}
+
+fn main() {
+    let mut h = MaxHeap::new();
+    for v in [5, 3, 8, 1, 9, 2] {
+        h.push(v);
+    }
+    let mut out = Vec::new();
+    while let Some(v) = h.pop() {
+        out.push(v);
+    }
+    println!("{out:?}"); // [9, 8, 5, 3, 2, 1]
+}</code></pre>
+  <p>Popping every element of a heap yields them in sorted order: that's <em>heapsort</em>, O(n log n) (chapter F7). No pointers, no allocations beyond the <code>Vec</code>: the complete-tree shape is what makes the array layout possible.</p>
+  </details>
+</div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "A BST is O(log n)."</div>
+  <p>Only a <em>balanced</em> one. Unbalanced, it's O(height), up to O(n), and sorted input (IDs, timestamps) is the common worst case. Use a library's balanced structure; don't hand-roll a BST for production.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Iterating a heap and expecting sorted order</div>
+  <p><code>BinaryHeap::iter()</code> visits items "in arbitrary order" (per its docs). Only repeated <code>pop</code> (or <code>into_sorted_vec</code>) gives sorted output.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Forgetting Rust's heap is a <em>max</em>-heap</div>
+  <p>A timer queue built with plain <code>BinaryHeap&lt;u64&gt;</code> fires the <em>latest</em> deadline first. Wrap with <code>Reverse</code>. .NET's <code>PriorityQueue</code> is the opposite default (min).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Assuming equal priorities come out in insertion order</div>
+  <p>Neither Rust's <code>BinaryHeap</code> nor .NET's <code>PriorityQueue</code> promises FIFO among equals. Add a sequence number to the priority tuple when it matters.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "BTreeMap is slow, avoid it."</div>
+  <p>It's about 5× slower than <code>HashMap</code> for random point lookups (Figure 4), and the right choice whenever you need order, ranges or deterministic iteration. Pick by required operations first, then by speed.</p></div>
+
+<h2 id="real-world">Real-world view: trees and heaps in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Workflow timers (in memory):</strong> a min-heap of <code>(due_time, sequence, timer_id)</code>. <code>peek</code> tells the scheduler how long to sleep; <code>pop</code> fires due timers in O(log n). Cancelled timers are usually left in the heap and skipped when popped ("lazy deletion"), because removing from the middle of a heap is awkward. Chapter 10.6 builds this.</li>
+    <li><strong>Workflow timers (durable):</strong> after a restart the heap is rebuilt from the database by a query like <code>WHERE due_at &lt; now() + interval ORDER BY due_at</code>, served by a B-tree index on <code>due_at</code>. Same idea, different storage.</li>
+    <li><strong>Rule engine:</strong> ordered indexes (<code>BTreeMap</code>) make range conditions like <code>amount &gt; 10000</code> cheap: one O(log n) jump, then read the matches. Hash indexes serve equality joins (chapter F4). The engine will use both.</li>
+    <li><strong>Agenda and conflict resolution:</strong> when several rules match, the engine must pick which fires first, by salience then recency. That's a priority queue (chapter 9.4).</li>
+    <li><strong>Deterministic output:</strong> audit logs, reports and anything replayed should come from ordered structures, as chapter F4 warned.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F5">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why did the lab's BST take 300× longer when keys were inserted in sorted order?</div>
+    <ol class="options">
+      <li data-key="a">Sorted keys are bigger</li>
+      <li data-key="b">The optimiser skipped the random case</li>
+      <li data-key="c">Each new key went to the right of the previous one, so the tree became a chain of height n, and lookups became O(n)</li>
+      <li data-key="d">Binary search trees can't store sorted data</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Key size didn't change.</p>
+      <p data-for="b">Both cases did identical work per lookup step; only the number of steps differed.</p>
+      <p data-for="c">Correct. Height 20,000 vs 39.</p>
+      <p data-for="d">They store it; they just lose their balance without a balancing scheme.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">According to Rust's documentation, why is <code>BTreeMap</code> a B-tree rather than a balanced binary search tree?</div>
+    <ol class="options">
+      <li data-key="a">A BST allocates one heap node per element, and every comparison risks a cache miss. B-tree nodes hold many keys contiguously, cutting allocations and improving cache efficiency</li>
+      <li data-key="b">B-trees do fewer comparisons</li>
+      <li data-key="c">Binary trees can't be balanced in Rust</li>
+      <li data-key="d">B-trees use less code</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's the docs' "Background" section, almost verbatim.</p>
+      <p data-for="b">The docs say the opposite: B-trees do <em>more</em> comparisons (B × log n). They win on memory behaviour.</p>
+      <p data-for="c">They can; .NET's <code>SortedSet</code> is one, and Rust crates provide them.</p>
+      <p data-for="d">Not the reason given.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In a binary heap stored in an array, where are the children of the node at index 4?</div>
+    <ol class="options">
+      <li data-key="a">5 and 6</li><li data-key="b">8 and 9</li><li data-key="c">3 and 5</li><li data-key="d">9 and 10</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Those are its neighbours in the array, not its children.</p>
+      <p data-for="b">That's 2i and 2i+1, the formula for 1-based arrays.</p>
+      <p data-for="c">Not related.</p>
+      <p data-for="d">Correct. 2·4+1 = 9 and 2·4+2 = 10 (0-based).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your workflow engine's timer queue is a <code>BinaryHeap&lt;(u64, u64)&gt;</code> of <code>(due_time, id)</code>. In testing, timers due <em>last</em> fire first. What's wrong?</div>
+    <ol class="options">
+      <li data-key="a">The tuple order should be <code>(id, due_time)</code></li>
+      <li data-key="b">Rust's <code>BinaryHeap</code> is a max-heap. Wrap entries in <code>Reverse</code> to pop the smallest due time first</li>
+      <li data-key="c">Use a <code>HashMap</code> instead</li>
+      <li data-key="d">Call <code>sort()</code> on the heap</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That would order by id, which is worse.</p>
+      <p data-for="b">Correct, exactly as Lab step 4 does.</p>
+      <p data-for="c">A hash map has no notion of "smallest".</p>
+      <p data-for="d">Heaps don't expose sorting; that would defeat the structure.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">When does a sorted <code>Vec</code> with <code>binary_search</code> make sense instead of a map?</div>
+    <ol class="options">
+      <li data-key="a">When you insert and delete constantly</li>
+      <li data-key="b">Never; maps are always better</li>
+      <li data-key="c">When data is built once (or rarely) and read many times. Lookups were as fast as <code>HashMap</code> in the lab, with sorted order and compact memory</li>
+      <li data-key="d">Only for strings</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Each insert or delete is O(n) shifting.</p>
+      <p data-for="b">Figure 4 shows it matching <code>HashMap</code> for reads.</p>
+      <p data-for="c">Correct. For example, a rule set compiled at deploy time.</p>
+      <p data-for="d">Any <code>Ord</code> type works.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does a B-tree stay balanced automatically?</div>
+    <ol class="options">
+      <li data-key="a">Overfull nodes split and push their middle key up, so the tree grows only at the root and all leaves stay at the same depth</li>
+      <li data-key="b">It re-sorts itself periodically</li>
+      <li data-key="c">It uses hashing</li>
+      <li data-key="d">It limits the number of keys to 1,000</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Figure 2's steps 3 and 5.</p>
+      <p data-for="b">No periodic re-sorting; balance is maintained on every insert.</p>
+      <p data-for="c">B-trees are comparison-based.</p>
+      <p data-for="d">There's no such limit.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A dashboard needs "the 10 slowest rule evaluations" out of 50 million per day, updated continuously. Which approach fits best?</div>
+    <ol class="options">
+      <li data-key="a">Store all 50 million timings and sort them every minute</li>
+      <li data-key="b">A <code>HashMap</code> from timing to rule</li>
+      <li data-key="c">A <code>BTreeMap</code> of all timings</li>
+      <li data-key="d">A min-heap capped at 10 entries: O(log 10) per evaluation, constant memory (Exercise 1)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">O(n log n) every minute and gigabytes of memory, for 10 numbers.</p>
+      <p data-for="b">It doesn't give you the largest values.</p>
+      <p data-for="c">It works, but stores everything: O(n) memory.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which .NET type is the closest analogue of Rust's <code>BTreeMap</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>Dictionary&lt;K,V&gt;</code></li>
+      <li data-key="b"><code>SortedDictionary&lt;K,V&gt;</code>: sorted, O(log n), though a binary search tree internally</li>
+      <li data-key="c"><code>PriorityQueue&lt;T,P&gt;</code></li>
+      <li data-key="d"><code>List&lt;T&gt;</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the <code>HashMap</code> analogue: unordered.</p>
+      <p data-for="b">Correct.</p>
+      <p data-for="c">That's the <code>BinaryHeap</code> analogue.</p>
+      <p data-for="d">That's <code>Vec</code>.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Tree operations cost O(height). An unbalanced BST degrades to O(n) on sorted input (measured: height 20,000, 300× slower). Balanced trees keep height O(log n).</li>
+  <li>B-trees store many keys per node in a contiguous array: shallow, always balanced, cache-friendly. Rust's <code>BTreeMap</code> (B = 6, 5–11 keys per node) and database indexes (PostgreSQL's default) are B-trees.</li>
+  <li>A binary heap is a complete tree in an array (children at 2i+1, 2i+2). Push sifts up, pop sifts down, both O(log n), and peek is O(1). <code>BinaryHeap</code> is a max-heap; use <code>Reverse</code> for min.</li>
+  <li>Measured: <code>HashMap</code> ≈ sorted <code>Vec</code> (~24–27 ms per million lookups) &gt; <code>BTreeMap</code> (~116 ms) for point lookups. Choose <code>BTreeMap</code> for order, ranges and determinism.</li>
+  <li>Priority queues turn "what's next?" from O(n) to O(log n): measured 1.8 s vs 0.1 ms to fire 1,000 of a million timers. This is the core of your workflow engine's scheduler.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">tree</li><li class="chip">binary tree</li><li class="chip">height</li><li class="chip">binary search tree</li><li class="chip">balanced tree</li>
+  <li class="chip">B-tree</li><li class="chip">priority queue</li><li class="chip">binary heap</li><li class="chip">trie</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html"><code>BTreeMap</code></a>: read the "Background" section<span class="why">The B-tree vs BST argument, in the standard library's own words.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html"><code>BinaryHeap</code></a> and <a href="https://doc.rust-lang.org/std/cmp/struct.Reverse.html"><code>Reverse</code></a><span class="why">Exact cost guarantees, and the min-heap idiom.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/standard/collections/sorted-collection-types">Microsoft Learn — Sorted collection types</a>, <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.sorteddictionary-2"><code>SortedDictionary</code></a>, <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"><code>PriorityQueue</code></a><span class="why">The .NET counterparts quoted in this chapter.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://www.postgresql.org/docs/current/indexes-types.html">PostgreSQL — Index Types</a><span class="why">B-tree indexes as the default, and what they can answer.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1007/BF00288683">R. Bayer, E. McCreight — “Organization and maintenance of large ordered indexes”, Acta Informatica 1(3), 1972</a><span class="why">The paper that introduced B-trees, motivated by disk-based indexes.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.wikipedia.org/wiki/AVL_tree">AVL tree</a>, <a href="https://en.wikipedia.org/wiki/Red%E2%80%93black_tree">red–black tree</a>, <a href="https://en.wikipedia.org/wiki/Trie">trie</a> (Wikipedia)<span class="why">Rotation mechanics, if you want the balancing details.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=76dhtgZt38A">“6. Binary Trees, Part 1” — MIT OpenCourseWare (YouTube)</a><span class="why">Tree vocabulary and navigation, done rigorously. Its sequel, Lecture 7, covers AVL balancing.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=Xnpo1atN-Iw">“8. Binary Heaps” — MIT OpenCourseWare (YouTube)</a><span class="why">The array-based heap and in-place heapsort; matches Figure 3 and Exercise 3.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  Course.chart("lookup-chart", function (c) {
+    return {
+      type: "bar",
+      data: { labels: ["HashMap", "sorted Vec + binary_search", "BTreeMap"],
+        datasets: [{ label: "ms for 1M random lookups (median of 3)", data: [23.9, 27.5, 115.8], backgroundColor: [c.teal, c.blue, c.purple], borderRadius: 6 }] },
+      options: { plugins: { legend: { display: false } }, scales: { y: { title: { display: true, text: "milliseconds (lower is better)" } } } }
+    };
+  });
+  Course.chart("timer-chart", function (c) {
+    return {
+      type: "bar",
+      data: { labels: ["Vec: scan for minimum", "BinaryHeap min-heap: pop"],
+        datasets: [{ label: "ms to fire earliest 1,000 of 1M timers", data: [1816.9, 0.103], backgroundColor: [c.red, c.teal], borderRadius: 6 }] },
+      options: { plugins: { legend: { display: false } },
+        scales: { y: { type: "logarithmic", min: 0.01, title: { display: true, text: "milliseconds (log scale)" } } } }
+    };
+  });
+});
+</script>
+</body>
+</html>

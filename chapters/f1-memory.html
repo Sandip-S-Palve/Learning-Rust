@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F1 How a program uses memory</title>
+<meta name="description" content="Bytes, addresses, pointers, the stack, the heap, alignment, caches and locality — measured on real hardware — and what the .NET GC hides from you.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  /* Chapter-specific widget: struct layout explorer */
+  .layout-fields { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+  .layout-fields li { display: flex; align-items: center; gap: 8px; margin: 0; font-size: .92rem; }
+  .layout-fields .swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+  .layout-fields button { font: 600 .8rem var(--font-body); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .layout-fields button:disabled { opacity: .35; cursor: default; }
+  .layout-fields code { min-width: 9.5em; }
+  .byte-rows { display: grid; gap: 4px; margin: 6px 0 4px; }
+  .byte-row { display: grid; grid-template-columns: 3.2em repeat(8, 1fr); gap: 3px; align-items: center; }
+  .byte-row .off { font: .72rem var(--font-mono); color: var(--muted); text-align: right; padding-right: 4px; }
+  .byte { height: 30px; border-radius: 4px; font: 600 .68rem var(--font-mono); display: flex; align-items: center; justify-content: center; color: #fff; overflow: hidden; }
+  .byte.pad { background: repeating-linear-gradient(45deg, var(--surface-2), var(--surface-2) 4px, var(--border) 4px, var(--border) 8px); color: var(--muted); }
+  .layout-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 760px) { .layout-cols { grid-template-columns: 1fr; } }
+  .layout-total { font-weight: 700; margin-top: 4px; }
+</style>
+</head>
+<body data-chapter="F1">
+<article class="content">
+<h1>How a program uses memory</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Explain bytes, addresses and pointers, and read hexadecimal addresses</li>
+      <li>Describe what lives on the <strong>stack</strong> and what lives on the <strong>heap</strong>, and why each exists</li>
+      <li>Predict the size of a struct, including alignment padding, and shrink it by reordering fields</li>
+      <li>Explain caches, cache lines and locality, and why memory <em>access patterns</em> can matter more than instruction counts</li>
+      <li>Name the classic memory bugs (dangling pointer, use-after-free, double free, leak, overflow) that Rust's rules exist to prevent</li>
+      <li>Describe what the .NET garbage collector does for you, so you can see what Rust does differently</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>In C# you rarely think about where data lives: the CLR and its garbage collector decide. Rust hands that decision back to you, safely. Every rule you'll meet in Module 2 (ownership, borrowing, lifetimes, <code>Box</code>, <code>Rc</code>) is a rule about memory. If you know what the stack and heap are, those rules read as common sense. If you don't, they feel arbitrary.</p>
+  <p>There's also a performance reason. Your rule engine will hold millions of facts in memory, and your workflow engine will track millions of timers. On real hardware, <strong>how data is laid out decides speed</strong>: in this chapter you'll measure the same work running 30× slower just because the data was visited in a different order.</p>
+</div>
+
+<h2 id="intuition">Intuition first: one long street of numbered mailboxes</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Picture a program's memory as one very long street of mailboxes, each holding exactly one <strong>byte</strong> and each with a house number: its <strong>address</strong>. A <strong>pointer</strong> is a slip of paper with a house number written on it. The paper isn't the house; it tells you where to go.</p>
+  <ul>
+    <li>The <strong>stack</strong> is a pile of trays at the canteen. Each function call puts a tray on top holding that call's local variables. When the function returns, its tray is taken off. Fast, automatic, strictly last-in-first-out, and the pile has a height limit.</li>
+    <li>The <strong>heap</strong> is a self-storage warehouse. You ask the front desk (the <em>allocator</em>) for a unit of a given size, get a unit number back, and must eventually hand the unit back. It's flexible (any size, any lifetime) but slower, and someone has to remember to return it.</li>
+  </ul>
+</div>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · a process's address space</span>
+  <svg viewBox="0 0 720 360" role="img" aria-label="Address space of a running program, showing code, static data, heap and stack regions">
+    <defs>
+      <marker id="am-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="120" y="18" class="svg-text-sm" text-anchor="middle">high addresses</text>
+    <text x="120" y="350" class="svg-text-sm" text-anchor="middle">low addresses</text>
+    <rect x="40" y="28" width="160" height="70" rx="6" class="svg-accent"/>
+    <text x="120" y="56" class="svg-title" text-anchor="middle">Stack</text>
+    <text x="120" y="78" class="svg-text-sm" text-anchor="middle">one per thread</text>
+    <line x1="120" y1="100" x2="120" y2="138" class="svg-line-accent" marker-end="url(#am-a)"/>
+    <text x="130" y="122" class="svg-text-sm">grows down</text>
+    <rect x="40" y="146" width="160" height="60" rx="6" class="svg-box" stroke-dasharray="5 4"/>
+    <text x="120" y="180" class="svg-text-sm" text-anchor="middle">unused address space</text>
+    <rect x="40" y="214" width="160" height="56" rx="6" class="svg-teal"/>
+    <text x="120" y="240" class="svg-title" text-anchor="middle">Heap</text>
+    <text x="120" y="258" class="svg-text-sm" text-anchor="middle">allocator-managed</text>
+    <rect x="40" y="276" width="160" height="28" rx="6" class="svg-box"/>
+    <text x="120" y="291" class="svg-text-sm" text-anchor="middle">static data</text>
+    <rect x="40" y="308" width="160" height="28" rx="6" class="svg-box"/>
+    <text x="120" y="323" class="svg-text-sm" text-anchor="middle">program code</text>
+    <!-- annotations -->
+    <text x="240" y="50" class="svg-text">Local variables, function arguments, return addresses.</text>
+    <text x="240" y="72" class="svg-text-sm">Measured on the lab Mac: a local lived at 0x16d671d88</text>
+    <text x="240" y="236" class="svg-text">Data whose size or lifetime is decided at runtime.</text>
+    <text x="240" y="258" class="svg-text-sm">Measured: a heap value lived at 0x102ec9290</text>
+    <text x="240" y="291" class="svg-text-sm">Constants and globals, e.g. string literals like "Ada"</text>
+    <text x="240" y="323" class="svg-text-sm">The compiled machine instructions</text>
+    <text x="240" y="176" class="svg-text-sm">The exact layout varies by operating system, and is randomised on every run (ASLR).</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Every running program (a <em>process</em>) sees its own private range of addresses. The stack and the heap are just different regions of it, managed in different ways. The addresses shown are real values printed by this chapter's lab.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="bytes">Bits, bytes and hexadecimal</h3>
+<p>A <dfn data-term="bit" data-def="The smallest unit of data: a single 0 or 1.">bit</dfn> is a single 0 or 1. A <dfn data-term="byte" data-def="8 bits; the smallest individually addressable unit of memory. Holds a value from 0 to 255.">byte</dfn> is 8 bits and can hold 256 different values (0–255). Memory is addressed byte by byte.</p>
+<p>Programmers write addresses and raw bytes in <strong>hexadecimal</strong> (base 16, digits 0–9 then a–f), prefixed with <code>0x</code>. One hex digit is exactly 4 bits, so one byte is exactly two hex digits: <code>0xFF</code> = 255, <code>0x10</code> = 16. That's why <code>0x16d671d88</code> looks the way it does: it's just a large number. In this course KB, MB and GB mean powers of 1024 (1 KB = 1024 bytes), which is how operating systems report memory.</p>
+
+<h3 id="addresses">Addresses and pointers</h3>
+<p>Every byte has an <dfn data-term="address" data-def="The number that identifies a location in memory (a byte). Usually written in hexadecimal.">address</dfn>. A value bigger than one byte, such as a 4-byte integer, occupies consecutive addresses and is identified by its first one.</p>
+<p>A <dfn data-term="pointer" data-def="A value that holds a memory address, i.e. says where some other data lives. Following it is called dereferencing.">pointer</dfn> is a value that holds an address. Following a pointer to the data it refers to is called <em>dereferencing</em>. On a 64-bit computer an address is 64 bits, so <strong>every pointer is 8 bytes</strong>, whatever it points to.</p>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>You use pointers all the time without calling them that: a variable of a <code>class</code> type holds a <em>reference</em>, which is a pointer the runtime manages for you. <code>var b = a;</code> on a class copies the 8-byte reference, so both variables see the same object. On a <code>struct</code>, it copies the whole value. Rust has both kinds too, and makes the choice visible in the type: <code>&amp;T</code> is a reference (a pointer you borrow), while plain <code>T</code> is the value itself.</p>
+</div>
+
+<h3 id="sizes">Every type has a size</h3>
+<p>Because memory is just bytes, every type occupies a fixed number of them. Rust's standard library can tell you. This is real output from <code>std::mem::size_of</code> on the lab machine (64-bit Apple Silicon):</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Rust type</th><th>Size (bytes)</th><th>Alignment</th><th>C# equivalent</th></tr></thead>
+  <tbody>
+    <tr><td><code>u8</code> (unsigned 8-bit integer)</td><td>1</td><td>1</td><td><code>byte</code></td></tr>
+    <tr><td><code>bool</code></td><td>1</td><td>1</td><td><code>bool</code></td></tr>
+    <tr><td><code>u16</code></td><td>2</td><td>2</td><td><code>ushort</code></td></tr>
+    <tr><td><code>i32</code> (signed 32-bit integer)</td><td>4</td><td>4</td><td><code>int</code></td></tr>
+    <tr><td><code>char</code> (one Unicode character)</td><td>4</td><td>4</td><td><code>char</code> is 2 bytes (UTF-16 unit) — different!</td></tr>
+    <tr><td><code>u64</code> / <code>f64</code></td><td>8</td><td>8</td><td><code>ulong</code> / <code>double</code></td></tr>
+    <tr><td><code>&amp;i32</code> (a reference: a pointer)</td><td>8</td><td>8</td><td>a reference / <code>ref int</code></td></tr>
+    <tr><td><code>String</code></td><td>24</td><td>8</td><td><code>string</code> reference is 8; the object lives on the heap</td></tr>
+  </tbody>
+  <caption>Why is <code>String</code> 24 bytes? It's three 8-byte fields — a pointer to the text on the heap, the length, and the capacity — kept wherever the <code>String</code> variable lives. You'll see this in Figure 2.</caption>
+</table></div>
+
+<h3 id="stack">The stack</h3>
+<p>A <em>stack</em>, as a data structure, is a pile where you can only add or remove at the top: last in, first out (chapter F3 covers it fully). Each thread of a program (an independent path of execution; chapter F9) gets one region of memory managed exactly this way: <dfn data-term="stack" data-def="A region of memory per thread, managed last-in-first-out. Each function call pushes a frame of local data; returning pops it. Very fast; fixed maximum size.">the stack</dfn>.</p>
+<ul>
+  <li>Every function call pushes a <dfn data-term="stack frame" data-def="The block of stack memory for one function call: its arguments, local variables and the address to return to.">stack frame</dfn>: room for its arguments, its local variables, and the address to return to.</li>
+  <li>Returning pops the frame. "Freeing" it is just moving one CPU register (the stack pointer), so it's practically free.</li>
+  <li>The compiler must know each frame's size <strong>at compile time</strong>. So stack values have a fixed, known size.</li>
+  <li>The stack has a fixed maximum size. On the lab Mac the main thread gets 8 MB (<code>ulimit -s</code> reports 8176 KB). Rust's own spawned threads currently get 2 MiB by default on Tier-1 platforms, per the standard library docs. Exceed it and the program stops with a <dfn data-term="stack overflow" data-def="Running out of stack space, usually from very deep or infinite recursion or huge local arrays. The program is stopped.">stack overflow</dfn>.</li>
+</ul>
+
+<h3 id="heap">The heap</h3>
+<p><dfn data-term="heap" data-def="A region of memory for data whose size or lifetime isn't known at compile time. Space is requested from and returned to an allocator.">The heap</dfn> is for data that doesn't fit the stack's rules: data whose size is only known at runtime (a string the user types, a list that grows) or that must outlive the function that created it.</p>
+<ul>
+  <li>The program asks an <dfn data-term="allocator" data-def="The component that hands out heap memory on request and takes it back when freed (e.g. malloc/free). Rust uses the operating system's allocator by default.">allocator</dfn> for <em>n</em> bytes and gets back a pointer to them.</li>
+  <li>The pointer itself usually lives on the stack (or inside another value), and the data lives on the heap.</li>
+  <li>The memory must be given back when it's no longer needed. Who does that, and when, is the whole question chapter 0.1 was about: the programmer (C), a garbage collector (C#), or code the compiler inserts based on ownership (Rust).</li>
+  <li>Allocation costs more than pushing a stack frame: the allocator has to find a free block, and the data ends up somewhere else in memory, which matters for caches (below).</li>
+</ul>
+
+<p>Step through a real program to see both regions at work:</p>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">fn add(a: i32, b: i32) -> i32 {
+    let sum = a + b; // a local variable in add's frame (Clippy would say: just return a + b)
+    sum
+}
+
+fn main() {
+    let count = 3;
+    let name = String::from("Ada"); // text goes on the heap
+    let total = add(count, 4);
+    println!("{name}: {total}");
+}</code></pre>
+<pre class="output">Ada: 7</pre>
+
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · stack frames and the heap</span>
+  <svg viewBox="0 0 720 330" role="img" aria-label="Stack frames for main and add, and a heap allocation for a String">
+    <defs>
+      <marker id="sh-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="175" y="20" class="svg-title" text-anchor="middle">Stack (this thread)</text>
+    <text x="560" y="20" class="svg-title" text-anchor="middle">Heap</text>
+    <line x1="380" y1="10" x2="380" y2="320" class="svg-line-dash"/>
+    <!-- main frame -->
+    <g data-show="-5" data-hl="1">
+      <rect x="20" y="36" width="310" height="126" rx="8" class="svg-box"/>
+      <text x="32" y="54" class="svg-text-sm">frame: main()</text>
+    </g>
+    <g data-show="1-5"><text x="40" y="80" class="svg-mono">count = 3</text></g>
+    <g data-show="2-5" data-hl="2"><text x="40" y="108" class="svg-mono">name  = ptr, len 3, cap 3</text></g>
+    <g data-show="1-4"><text x="40" y="136" class="svg-mono">total = (not set yet)</text></g>
+    <g data-show="5" data-hl="5"><text x="40" y="136" class="svg-mono">total = 7</text></g>
+    <!-- add frame -->
+    <g data-show="3-4" data-hl="3">
+      <rect x="20" y="176" width="310" height="128" rx="8" class="svg-accent"/>
+      <text x="32" y="194" class="svg-text-sm">frame: add(a, b) — pushed on top</text>
+      <text x="40" y="220" class="svg-mono">a = 3</text>
+      <text x="40" y="244" class="svg-mono">b = 4</text>
+      <text x="40" y="292" class="svg-text-sm">return address → back into main</text>
+    </g>
+    <g data-show="4" data-hl="4"><text x="40" y="268" class="svg-mono">sum = 7</text></g>
+    <g data-show="5"><rect x="20" y="176" width="310" height="128" rx="8" class="svg-box" stroke-dasharray="5 4"/>
+      <text x="175" y="240" class="svg-text-sm" text-anchor="middle">add's frame popped (just a pointer move)</text></g>
+    <!-- heap -->
+    <g data-show="2-5" data-hl="2">
+      <rect x="440" y="88" width="240" height="44" rx="6" class="svg-teal"/>
+      <text x="480" y="110" class="svg-mono">A</text><text x="540" y="110" class="svg-mono">d</text><text x="600" y="110" class="svg-mono">a</text>
+      <text x="560" y="150" class="svg-text-sm" text-anchor="middle">3 bytes from the allocator</text>
+    </g>
+    <circle cx="330" cy="104" r="4" class="svg-accent" data-show="2-5"/>
+    <path d="M334 104 C 380 104, 400 108, 436 108" class="svg-line-accent" marker-end="url(#sh-a)" data-show="2-5"/>
+    <!-- end -->
+    <g data-show="6" data-hl="6">
+      <rect x="440" y="88" width="240" height="44" rx="6" class="svg-box" stroke-dasharray="5 4"/>
+      <text x="560" y="110" class="svg-text-sm" text-anchor="middle">freed when name was dropped</text>
+      <text x="175" y="100" class="svg-text" text-anchor="middle">main returned: its frame is gone</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>main</code> starts. Its frame is pushed, with room for <code>count</code>, <code>name</code> and <code>total</code>. <code>count = 3</code> is stored directly in the frame. No heap is involved.</li>
+    <li><code>String::from("Ada")</code> asks the allocator for heap space and copies the 3 bytes there. <code>name</code> on the stack holds the 24-byte header: a pointer to the text, the length (3) and the capacity (3).</li>
+    <li>Calling <code>add(count, 4)</code> pushes a new frame on top of <code>main</code>'s. It holds copies of the arguments (<code>a = 3</code>, <code>b = 4</code>) and the return address.</li>
+    <li><code>let sum = a + b;</code> stores 7 in <code>add</code>'s frame.</li>
+    <li><code>add</code> returns. Its frame is popped instantly, and the result 7 is copied into <code>total</code> in <code>main</code>'s frame. Nothing on the heap changed.</li>
+    <li><code>main</code> ends. Rust drops <code>name</code>, which frees the heap bytes (ownership, chapter 2.2), and the frame is popped. Every allocation was returned, without a garbage collector.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> Stack frames come and go with function calls. Heap data lives until something frees it. In Rust that "something" is the owner going out of scope.</figcaption>
+</figure>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="alignment">Alignment and padding</h3>
+<p>CPUs read memory fastest (and on some CPUs, only correctly) when a value starts at an address that is a multiple of its size. That requirement is the type's <dfn data-term="alignment" data-def="The rule that a value must start at an address that is a multiple of N (its alignment), e.g. 8 for u64.">alignment</dfn>: a <code>u32</code> must start at a multiple of 4, a <code>u64</code> at a multiple of 8. To satisfy it, the compiler inserts unused <dfn data-term="padding" data-def="Unused bytes inserted between or after fields so that every field meets its alignment.">padding</dfn> bytes between fields, and at the end so that arrays of the struct stay aligned too.</p>
+<p>Field order therefore matters. Here is one struct, measured two ways:</p>
+<pre data-title="src/bin/sizes.rs (excerpt)"><code class="language-rust">#[repr(C)] // C rules: fields stay in the order written
+struct OrderC { flag: u8, id: u32, qty: u16, price: u64 }
+
+struct OrderRust { flag: u8, id: u32, qty: u16, price: u64 } // default: compiler may reorder</code></pre>
+<pre class="output">OrderC           24      8
+OrderRust        16      8</pre>
+<p>Same fields, 24 bytes vs 16. With <code>#[repr(C)]</code> the compiler must keep your order and pad around it. With Rust's default layout it is <em>allowed</em> to reorder fields, and in practice it packs them to minimise padding. Use the explorer to see where the bytes go:</p>
+
+<figure class="visual" id="layout-widget">
+  <span class="visual-tag">Interactive · struct layout explorer</span>
+  <p class="small" style="margin-top:0">Reorder the fields with ▲ ▼. Left: C-style layout (your order). Right: a typical Rust layout (largest alignment first). Each cell is one byte; hatched cells are padding.</p>
+  <ul class="layout-fields" id="lf-list"></ul>
+  <div class="layout-cols">
+    <div><div class="compare-label">#[repr(C)] — your order</div><div class="byte-rows" id="lf-c"></div><div class="layout-total" id="lf-c-total"></div></div>
+    <div><div class="compare-label">Rust default — reordered</div><div class="byte-rows" id="lf-r"></div><div class="layout-total" id="lf-r-total"></div></div>
+  </div>
+  <figcaption><strong>Figure 3.</strong> Padding is wasted memory, multiplied by every instance you store. 1,000 <code>OrderC</code> values take 24,000 bytes; 1,000 <code>OrderRust</code> values take 16,000. Rust does not <em>guarantee</em> any particular default layout; it only promises correctness. Use <code>#[repr(C)]</code> when the exact layout matters (talking to C or C#, chapter 5.6).</figcaption>
+</figure>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>C# compilers apply <code>LayoutKind.Sequential</code> to structs by default (keep declared order, like <code>#[repr(C)]</code>). The runtime's own default for classes is <code>Auto</code> (free to reorder). That's the mirror image of Rust, where the default is "free to reorder" and you opt into fixed order with <code>#[repr(C)]</code>.</p>
+</div>
+
+<h3 id="bugs">The classic memory bugs, in one place</h3>
+<p>These are the bugs behind the "70% of CVEs" statistic in chapter 0.1. Each one is a mismatch between a pointer and the memory it points to:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Bug</th><th>What happens</th><th>How C# avoids it</th><th>How Rust avoids it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Dangling pointer / use-after-free</strong></td><td>A pointer still holds an address after that memory was freed (or after its stack frame was popped), and the program reads or writes it</td><td>The GC never frees an object that is still referenced</td><td>The compiler rejects references that could outlive their data (borrow checking, 2.3 and 2.11)</td></tr>
+    <tr><td><strong>Double free</strong></td><td>The same heap block is freed twice, corrupting the allocator</td><td>Only the GC frees</td><td>Exactly one owner frees, exactly once (2.2)</td></tr>
+    <tr><td><strong>Memory leak</strong></td><td>Memory is never freed, so usage grows until the process dies</td><td>Mostly avoided; references held by forgotten event handlers or caches still leak</td><td>Owners free automatically; leaks are possible but must be deliberate or come from reference cycles (2.12)</td></tr>
+    <tr><td><strong>Buffer overflow</strong></td><td>Writing past the end of an array overwrites neighbouring data</td><td>Bounds checks (<code>IndexOutOfRangeException</code>)</td><td>Bounds checks (a <em>panic</em>, which stops cleanly)</td></tr>
+    <tr><td><strong>Stack overflow</strong></td><td>Too much stack used</td><td>Process terminates</td><td>Process aborts with a clear message (lab below)</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="caches">Caches, cache lines and locality</h3>
+<p>Main memory (RAM) is far slower than the CPU. To hide that, CPUs keep small, very fast copies of recently used memory in <dfn data-term="cache" data-def="A small, fast memory close to the CPU (L1, L2, …) holding copies of recently used main memory.">caches</dfn>, arranged in levels: L1 (smallest, fastest), L2, sometimes more, then RAM. Data moves between them in fixed-size blocks called <dfn data-term="cache line" data-def="The fixed-size block (typically 64 bytes on x86, 128 bytes reported on Apple M-series) in which data moves between memory and caches.">cache lines</dfn>. On this Mac, <code>sysctl</code> reports a 128-byte line, 128 KB of L1 data cache and 16 MB of L2 per performance-core cluster. Most x86 server CPUs use 64-byte lines.</p>
+<p>How much does it matter? This chapter's lab chases pointers through randomly linked arrays of increasing size, so each read must wait for the previous one. That measures the true cost of fetching from each level:</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · measured memory latency ladder</span>
+  <div class="chart-box"><canvas id="latency-chart" aria-label="Bar chart of nanoseconds per dependent memory load versus working set size, from 16 KB to 512 MB"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Average time per dependent load on the lab Mac (Apple M2 Pro, release build, log scale). About <strong>1.2 ns</strong> while the data fits in L1 (≤128 KB), <strong>4–7 ns</strong> in L2 (≤8 MB), then a climb to <strong>100–120 ns</strong> once it spills to RAM: a ~100× gap between the fastest and slowest level. Your hardware will differ in detail but show the same staircase.</figcaption>
+</figure>
+<p>Programs are fast when they have good <dfn data-term="locality" data-def="The tendency of a program to access memory near recently accessed memory (spatial) or the same memory again soon (temporal). Good locality means caches work well.">locality</dfn>:</p>
+<ul>
+  <li><strong>Spatial locality:</strong> using memory next to memory you just used. One cache line brings in neighbours for free.</li>
+  <li><strong>Temporal locality:</strong> using the same memory again soon, while it's still cached.</li>
+</ul>
+<p>Here's spatial locality measured directly: sum every cell of a grid stored row after row, once in row order and once in column order. It's the same additions, the same data and the same result.</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · same work, different order</span>
+  <div class="chart-box"><canvas id="grid-chart" aria-label="Bar chart comparing row-order and column-order traversal times for 4 MB and 64 MB grids"></canvas></div>
+  <figcaption><strong>Figure 5.</strong> Median of 3 runs, release build. 4 MB grid (fits in L2): 0.09 ms vs 1.30 ms, about 14×. 64 MB grid (spills to RAM): 2.0 ms vs 64.6 ms, about <strong>32×</strong>. Row order uses every byte of each cache line it fetches, and its contiguous access also lets the compiler use SIMD instructions (several numbers per instruction). Column order jumps 16 KB per step, using 4 bytes of each 128-byte line it fetches.</figcaption>
+</figure>
+<div class="callout tip"><div class="callout-title">✅ The rule of thumb this gives you</div>
+  <p><strong>Contiguous beats scattered.</strong> A plain array (Rust <code>Vec</code>, C# <code>T[]</code> of structs) walked in order is the fastest data structure on modern hardware for most sizes. Pointer-heavy structures (linked lists, trees of individually allocated nodes) pay a cache miss per hop. Chapters F3–F6 keep returning to this, and it's why Rust code often stores graphs as arrays plus indices (chapter 2.12).</p>
+</div>
+
+<h3 id="dotnet-gc">What the .NET garbage collector does for you</h3>
+<p>To see what Rust changes, it helps to be precise about what the CLR does (all from Microsoft's "Fundamentals of garbage collection"):</p>
+<ul>
+  <li><strong>Allocation is a pointer bump.</strong> The managed heap keeps a pointer to the next free address. Allocating "adds a value to a pointer", which Microsoft describes as "almost as fast as allocating memory from the stack".</li>
+  <li><strong>Collection traces from roots</strong> (static fields, locals on each thread's stack, CPU registers, GC handles), marks everything reachable, and reclaims the rest.</li>
+  <li><strong>Compaction moves objects</strong> together and fixes up every reference. So in .NET, an object's address can change, which is why native interop needs <em>pinning</em>.</li>
+  <li><strong>Generations 0, 1, 2:</strong> most objects die young in gen 0, which is collected often and cheaply. Survivors are promoted. A gen 2 collection is a <em>full</em> GC.</li>
+  <li><strong>The large object heap:</strong> objects of 85,000 bytes or more go there. It is collected with gen 2 and usually not compacted.</li>
+  <li><strong>Value types</strong> live "either on the stack or inline in containing types" (Framework Design Guidelines), so a <code>struct</code> field inside a class is on the heap with its class. Boxing a value type copies it into a new heap object.</li>
+</ul>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET — the key differences</div>
+  <ul>
+    <li><strong>Rust never moves your heap data behind your back.</strong> There's no compacting collector, so an address stays valid until the value is moved or freed by your own code, and the compiler checks that.</li>
+    <li><strong>Rust's heap allocation is <code>malloc</code>-style</strong> (the system allocator by default), not a pointer bump. It's somewhat costlier per allocation, but frees are immediate and deterministic, with no pauses later. Idiomatic Rust compensates by allocating less: more data stays on the stack or inline.</li>
+    <li><strong>"Value vs reference type" isn't fixed per type in Rust.</strong> Any type can live on the stack, inline in another value, or on the heap (via <code>Box</code>, <code>Vec</code>, …). You choose per use.</li>
+  </ul>
+</div>
+
+<details class="deep-dive"><summary>Deep dive: virtual memory, pages, ASLR — and why benchmarks lie</summary><div class="body">
+  <p><strong>Virtual memory.</strong> The addresses your program prints are <em>virtual</em>. The CPU and operating system translate them to physical RAM locations in fixed-size blocks called <dfn data-term="page" data-def="The fixed-size block (e.g. 4 KB on most x86 systems, 16 KB on Apple Silicon macOS) in which the OS maps virtual addresses to physical memory.">pages</dfn>: 16 KB on this Mac (<code>hw.pagesize: 16384</code>), typically 4 KB on x86-64 Linux and Windows. Each process gets its own private mapping. That's why two programs can both use address <code>0x102ec9290</code> without conflict, and why one process can't read another's memory. A page is only given real RAM the first time it is touched (a <em>page fault</em>), which is one reason first runs of a benchmark are slower.</p>
+  <p><strong>ASLR.</strong> Run the lab's address program twice and the stack moves: <code>0x16d671d88</code> in one run, <code>0x16b859d88</code> in the next. Address Space Layout Randomisation places regions at random offsets on every run, so attackers can't hard-code addresses. Never store raw addresses anywhere they might outlive the process.</p>
+  <p><strong>How the measurements were made honest.</strong> My first version of the grid benchmark reported column order as <em>faster</em> than row order, which is physically implausible. In release mode the optimiser had restructured the loops, because it could see the whole computation. The fix: pass the data through <code>std::hint::black_box</code> (which hides values from the optimiser) and keep each traversal in its own <code>#[inline(never)]</code> function. Likewise, the latency test builds one random cycle through the array (Sattolo's algorithm), so each load depends on the previous one and the CPU can't prefetch or overlap them. The lesson for client work: <em>a microbenchmark result you can't explain is probably measuring the wrong thing</em>. Chapter 6.1 introduces proper tooling (criterion).</p>
+<pre data-title="src/bin/latency.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+/// Tiny deterministic random-number generator (xorshift), so we need no crates.
+fn next_rand(state: &amp;mut u64) -> u64 {
+    *state ^= *state &lt;&lt; 13;
+    *state ^= *state &gt;&gt; 7;
+    *state ^= *state &lt;&lt; 17;
+    *state
+}
+
+/// Average time of one dependent memory load when the data is `bytes` big.
+fn ns_per_load(bytes: usize) -> f64 {
+    let n = bytes / std::mem::size_of::&lt;usize&gt;();
+    // Build one random cycle through all slots (Sattolo's algorithm):
+    // next[i] holds the index to visit after i, so every load depends on the last.
+    let mut next: Vec&lt;usize&gt; = (0..n).collect();
+    let mut seed = 0x9E37_79B9_7F4A_7C15;
+    for i in (1..n).rev() {
+        let j = (next_rand(&amp;mut seed) % i as u64) as usize;
+        next.swap(i, j);
+    }
+    let steps = 20_000_000;
+    let mut i = 0;
+    for _ in 0..n.min(steps) { i = next[i]; } // warm-up pass
+    let start = Instant::now();
+    for _ in 0..steps {
+        i = next[i];
+    }
+    black_box(i);
+    start.elapsed().as_nanos() as f64 / steps as f64
+}
+
+fn main() {
+    let mut kb = 16;
+    while kb &lt;= 512 * 1024 {
+        let ns = ns_per_load(kb * 1024);
+        let label = if kb &gt;= 1024 { format!("{} MB", kb / 1024) } else { format!("{kb} KB") };
+        println!("{label:&gt;7}: {ns:6.2} ns per load");
+        kb *= 2;
+    }
+}</code></pre>
+<pre class="output">  16 KB:   1.99 ns per load
+  32 KB:   1.47 ns per load
+  64 KB:   1.31 ns per load
+ 128 KB:   1.20 ns per load
+ 256 KB:   3.62 ns per load
+ 512 KB:   4.67 ns per load
+   1 MB:   5.15 ns per load
+   2 MB:   5.43 ns per load
+   4 MB:   7.42 ns per load
+   8 MB:   6.89 ns per load
+  16 MB:  15.55 ns per load
+  32 MB:  46.27 ns per load
+  64 MB:  84.51 ns per load
+ 128 MB: 103.72 ns per load
+ 256 MB: 113.92 ns per load
+ 512 MB: 119.03 ns per load</pre>
+  <p class="small muted">Run with <code>cargo run --release --bin latency</code>. It allocates up to 512 MB. The smallest sizes read slightly high because timer and loop overhead dominate there.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab: look at memory yourself</h2>
+<p>Create a project with several small programs. Cargo builds every file in <code>src/bin/</code> as its own executable, selected with <code>--bin</code>.</p>
+<pre><code class="language-bash">cargo new memlab
+cd memlab
+mkdir -p src/bin</code></pre>
+
+<h3 id="lab-1">Step 1 — sizes</h3>
+<pre data-playground data-title="src/bin/sizes.rs"><code class="language-rust">use std::mem::{align_of, size_of};
+
+#[allow(dead_code)]
+#[repr(C)] // C rules: fields stay in the order written
+struct OrderC {
+    flag: u8,
+    id: u32,
+    qty: u16,
+    price: u64,
+}
+
+#[allow(dead_code)]
+struct OrderRust {
+    // default Rust layout: the compiler may reorder fields
+    flag: u8,
+    id: u32,
+    qty: u16,
+    price: u64,
+}
+
+fn main() {
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "type", "size", "align");
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "u8", size_of::&lt;u8&gt;(), align_of::&lt;u8&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "i32", size_of::&lt;i32&gt;(), align_of::&lt;i32&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "char", size_of::&lt;char&gt;(), align_of::&lt;char&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "u64", size_of::&lt;u64&gt;(), align_of::&lt;u64&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "&amp;i32 (pointer)", size_of::&lt;&amp;i32&gt;(), align_of::&lt;&amp;i32&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "String", size_of::&lt;String&gt;(), align_of::&lt;String&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "OrderC", size_of::&lt;OrderC&gt;(), align_of::&lt;OrderC&gt;());
+    println!("{:&lt;14} {:&gt;4} {:&gt;6}", "OrderRust", size_of::&lt;OrderRust&gt;(), align_of::&lt;OrderRust&gt;());
+}</code></pre>
+<pre class="output">type           size  align
+u8                1      1
+i32               4      4
+char              4      4
+u64               8      8
+&amp;i32 (pointer)    8      8
+String           24      8
+OrderC           24      8
+OrderRust        16      8</pre>
+<p class="small muted"><code>{:&lt;14}</code> means "left-align in 14 characters" and <code>{:&gt;4}</code> "right-align in 4". <code>#[allow(dead_code)]</code> silences the warning that the fields are never read.</p>
+
+<h3 id="lab-2">Step 2 — where things live</h3>
+<pre data-playground data-title="src/bin/addresses.rs"><code class="language-rust">fn depth(n: u32) {
+    let local = n; // one small variable in each call's stack frame
+    println!("  depth {n}: local lives at {:p}", &amp;local);
+    if n &lt; 3 {
+        depth(n + 1);
+    }
+}
+
+fn main() {
+    let a: u64 = 1;
+    let b: u64 = 2;
+    let on_heap = Box::new(3u64); // Box puts the value on the heap
+    let text = String::from("Ada");
+
+    println!("stack: a      at {:p}", &amp;a);
+    println!("stack: b      at {:p}", &amp;b);
+    println!("heap:  *on_heap at {:p}", on_heap);
+    println!("heap:  text's bytes at {:p}", text.as_ptr());
+    println!("nested calls:");
+    depth(1);
+}</code></pre>
+<pre class="output">stack: a      at 0x16d671d88
+stack: b      at 0x16d671d90
+heap:  *on_heap at 0x102ec9290
+heap:  text's bytes at 0x102ec92c0
+nested calls:
+  depth 1: local lives at 0x16d671ca4
+  depth 2: local lives at 0x16d671c24
+  depth 3: local lives at 0x16d671ba4</pre>
+<p>What to notice: <code>{:p}</code> prints an address. <code>&amp;a</code> means "a reference to <code>a</code>", here used just to get its address. The stack values sit together around <code>0x16d6…</code>, while the heap values are in a completely different region (<code>0x102e…</code>). Each nested call's local is exactly <code>0x80</code> (128) bytes <em>lower</em> than the previous one: each frame is placed below its caller's, because on this platform the stack grows downward. Your addresses will differ, and will change on every run (ASLR).</p>
+
+<h3 id="lab-3">Step 3 — overflow the stack</h3>
+<pre data-playground data-title="src/bin/overflow.rs"><code class="language-rust">fn recurse(n: u64) -> u64 {
+    let buffer = [n; 64]; // 512 bytes on the stack in every call
+    if n == 0 { 0 } else { buffer[0] + recurse(n - 1) }
+}
+
+fn main() {
+    println!("{}", recurse(10_000_000));
+}</code></pre>
+<pre class="output error runtime">$ cargo run --bin overflow
+
+thread 'main' (4466841) has overflowed its stack
+fatal runtime error: stack overflow, aborting
+(exit code 134)</pre>
+<p>Ten million nested calls × at least 512 bytes is about 5 GB, far beyond the 8 MB stack. Rust detects the overflow and aborts cleanly; it never silently corrupts memory. Now try the release build:</p>
+<pre class="output">$ cargo run --release --bin overflow
+50000005000000</pre>
+<p>It worked, because the optimiser removed the recursion entirely and computed the same sum without nesting 10 million calls. <strong>Never rely on this.</strong> Optimisations aren't guaranteed, and the debug build in your test suite will still crash. Deep recursion over unbounded input (say, a deeply nested rule expression from a customer) should be written with an explicit stack or a loop. You'll do exactly that in the rule engine (chapter 9.3).</p>
+
+<h3 id="lab-4">Step 4 — feel the cache</h3>
+<pre data-playground data-title="src/bin/grid.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+const N: usize = 4096; // a 4096 x 4096 grid of u32 = 64 MB
+
+/// Visit every cell, row by row: consecutive cells are neighbours in memory.
+#[inline(never)]
+fn sum_by_rows(grid: &amp;[u32], n: usize) -> u64 {
+    let mut sum = 0u64;
+    for row in 0..n {
+        for col in 0..n {
+            sum += grid[row * n + col] as u64;
+        }
+    }
+    sum
+}
+
+/// Visit every cell, column by column: each step jumps a whole row (16 KB).
+#[inline(never)]
+fn sum_by_cols(grid: &amp;[u32], n: usize) -> u64 {
+    let mut sum = 0u64;
+    for col in 0..n {
+        for row in 0..n {
+            sum += grid[row * n + col] as u64;
+        }
+    }
+    sum
+}
+
+fn main() {
+    // One flat Vec stored row after row ("row-major"), like a C# int[,].
+    let grid: Vec&lt;u32&gt; = (0..N * N).map(|x| x as u32 % 7).collect();
+    let n = black_box(N); // hide N from the optimiser so it can't restructure the loops
+
+    let start = Instant::now();
+    let a = sum_by_rows(black_box(&amp;grid), n);
+    let t_rows = start.elapsed();
+
+    let start = Instant::now();
+    let b = sum_by_cols(black_box(&amp;grid), n);
+    let t_cols = start.elapsed();
+
+    assert_eq!(a, b);
+    println!("row by row:       {:&gt;6} µs", t_rows.as_micros());
+    println!("column by column: {:&gt;6} µs", t_cols.as_micros());
+}</code></pre>
+<pre class="output">$ cargo run --release --bin grid
+row by row:         2006 µs
+column by column:  64585 µs</pre>
+<p class="small muted">Always use <code>--release</code> for timing (chapter 0.2). <code>assert_eq!</code> stops the program if the two sums ever differ: a cheap guard that both versions do the same work.</p>
+
+<h2 id="exercises">Exercises</h2>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — shrink a struct <span class="difficulty">★☆☆</span></div>
+  <p>An IoT service stores millions of these readings in memory and must keep the C layout for a native library:</p>
+<pre><code class="language-rust">#[repr(C)]
+struct Reading { sensor: u8, value: u64, status: u8 }</code></pre>
+  <p>(a) Predict <code>size_of::&lt;Reading&gt;()</code>. (b) Reorder the fields to make it as small as possible while keeping <code>#[repr(C)]</code>. (c) How much memory does that save per million readings? Check with the explorer above, then with code.</p>
+  <details class="solution"><summary>Show solution</summary>
+    <p>(a) <strong>24 bytes</strong>: <code>sensor</code> at offset 0, 7 bytes of padding so <code>value</code> can start at 8, <code>value</code> at 8–15, <code>status</code> at 16, then 7 bytes of tail padding so the size is a multiple of 8.<br>
+    (b) Put the large field first: <code>{ value: u64, sensor: u8, status: u8 }</code> gives 8 + 1 + 1 + 6 tail padding = <strong>16 bytes</strong>.<br>
+    (c) 8 bytes × 1,000,000 = 8,000,000 bytes, about 7.6 MB saved per million readings, a third of the memory.</p>
+<pre data-playground><code class="language-rust">use std::mem::size_of;
+
+#[allow(dead_code)]
+#[repr(C)]
+struct Reading { sensor: u8, value: u64, status: u8 }
+
+#[allow(dead_code)]
+#[repr(C)]
+struct ReadingReordered { value: u64, sensor: u8, status: u8 }
+
+#[allow(dead_code)]
+struct ReadingRust { sensor: u8, value: u64, status: u8 }
+
+fn main() {
+    println!("Reading (repr C):          {} bytes", size_of::&lt;Reading&gt;());
+    println!("ReadingReordered (repr C): {} bytes", size_of::&lt;ReadingReordered&gt;());
+    println!("ReadingRust (default):     {} bytes", size_of::&lt;ReadingRust&gt;());
+    println!("[Reading; 1000] (repr C):  {} bytes", size_of::&lt;[Reading; 1000]&gt;());
+    println!("[ReadingRust; 1000]:       {} bytes", size_of::&lt;[ReadingRust; 1000]&gt;());
+}</code></pre>
+<pre class="output">Reading (repr C):          24 bytes
+ReadingReordered (repr C): 16 bytes
+ReadingRust (default):     16 bytes
+[Reading; 1000] (repr C):  24000 bytes
+[ReadingRust; 1000]:       16000 bytes</pre>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — predict, then measure <span class="difficulty">★★☆</span></div>
+  <p>Change <code>N</code> in <code>grid.rs</code> from 4096 (64 MB) to 1024 (4 MB, which fits in this Mac's 16 MB L2 cache). Before running it: will the column-order penalty grow, shrink, or disappear? Why? Then run it.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">row by row:           91 µs
+column by column:   1296 µs</pre>
+    <p>The penalty <strong>shrinks</strong> (about 32× down to about 14×) but does <strong>not disappear</strong>. With the whole grid in L2, a column-order miss costs an L2 hit (≈5 ns) instead of a RAM trip (≈100 ns), so it hurts less. But column order still pulls a whole 128-byte line from L2 into L1 to use 4 bytes of it, and it can't use SIMD. Contiguous access wins at every level of the hierarchy, by different margins.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — read the addresses <span class="difficulty">★★☆</span></div>
+  <p>Run <code>addresses</code> twice. A second run on the lab Mac printed <code>a at 0x16b859d88</code> where the first printed <code>0x16d671d88</code>. (a) Why did it change? (b) In both runs, what is the distance between consecutive <code>depth</code> frames, and what does its sign tell you? (c) A colleague suggests caching object addresses in Redis to "speed up lookups". What do you say?</p>
+  <details class="solution"><summary>Show solution</summary>
+    <p>(a) ASLR: the operating system randomises where the stack and heap start on every run (deep dive).<br>
+    (b) <code>0x…ca4 → 0x…c24 → 0x…ba4</code>: each is 0x80 = 128 bytes lower. Each new frame is placed <em>below</em> its caller's, so the stack grows towards lower addresses on this platform.<br>
+    (c) Addresses are virtual, private to one process, and only valid until the memory is freed. They mean nothing in another process, after a restart, or (in .NET) even after the next compacting GC. Store stable identifiers (keys, indices) instead.</p>
+  </details>
+</div>
+
+<h2 id="comparison">Comparison: stack vs heap</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th></th><th>Stack</th><th>Heap</th></tr></thead>
+  <tbody>
+    <tr><td>Size of each value</td><td>Fixed, known at compile time</td><td>Any, decided at runtime</td></tr>
+    <tr><td>Lifetime</td><td>Until the function returns</td><td>Until explicitly freed (Rust: when the owner is dropped)</td></tr>
+    <tr><td>Allocation cost</td><td>Essentially free (move the stack pointer)</td><td>An allocator call (Rust) or a pointer bump plus later GC work (.NET)</td></tr>
+    <tr><td>Freeing</td><td>Automatic on return</td><td>Owner drop (Rust) / GC (.NET) / manual (C)</td></tr>
+    <tr><td>Locality</td><td>Excellent: the top of the stack is almost always in cache</td><td>Depends on allocation pattern; scattered nodes miss the cache</td></tr>
+    <tr><td>Capacity</td><td>Small: MBs per thread</td><td>Large: up to available memory</td></tr>
+    <tr><td>Shared across threads</td><td>No, one stack per thread</td><td>Yes (Rust checks this safely, chapter 4.1)</td></tr>
+    <tr><td>Typical Rust contents</td><td>Integers, small structs, the headers of <code>String</code>/<code>Vec</code>/<code>Box</code></td><td>The text of a <code>String</code>, the elements of a <code>Vec</code>, a <code>Box</code>'s value</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "C# value types always live on the stack."</div>
+  <p>Only as locals (and even then the JIT may keep them in registers). A struct field of a class, or an element of an array, lives inline in that object, on the heap. "Value type" describes copy behaviour, not location. The same is true in Rust.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "The heap is slow, so avoid it at all costs."</div>
+  <p>On the lab Mac, allocating and freeing a small <code>Box</code> or <code>String</code> took about 19–24 ns (measured, 10 million iterations, release). One cache miss to RAM costs about 100 ns. Allocating in a hot loop is worth avoiding, but scattering data across memory is often the bigger cost. Measure (chapter 6.1) rather than guess.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Big-O tells you which algorithm is faster."</div>
+  <p>Big-O (chapter F2) counts operations, but Figure 5 shows identical operation counts differing 32×. For realistic sizes, memory access patterns can outweigh a better complexity class. That's why arrays often beat linked lists even where theory says otherwise (F3).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Rust's default struct layout is the order I wrote."</div>
+  <p>It isn't guaranteed. Code that depends on field order (FFI, binary file formats, network packets) must use <code>#[repr(C)]</code> or explicit serialisation.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Deep recursion is fine; it worked in release."</div>
+  <p>As Step 3 showed, the optimiser may hide a stack overflow in release that crashes debug, or a slightly different input may crash production. Bound your recursion, or use an explicit stack.</p></div>
+
+<h2 id="real-world">Real-world view: memory decisions in your two products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine:</strong> evaluating millions of facts per second means storing them contiguously (vectors of compact structs, or columns of values) rather than a web of individually allocated objects. Rete networks (chapter 9.4) are graphs, and you'll store them as arrays plus indices for exactly the cache reasons above.</li>
+    <li><strong>Workflow engine:</strong> each in-flight workflow costs memory. 10 million parked workflows × 1 KB each is about 10 GB. The size of your per-instance struct (padding included) directly sets how many fit per node, and so your cloud bill.</li>
+    <li><strong>Untrusted input and the stack:</strong> recursive evaluation of customer-supplied rule expressions is a denial-of-service risk. Cap the nesting depth, or evaluate iteratively.</li>
+    <li><strong>Containers:</strong> a Kubernetes memory limit is a hard wall. Rust's deterministic freeing makes memory use predictable and flat. A GC'd service needs headroom for garbage awaiting collection, which is one reason Rust services often run in smaller containers (the Pingora numbers in 0.1).</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F1">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">On a 64-bit machine, how big is a pointer to a 1 MB array?</div>
+    <ol class="options">
+      <li data-key="a">1 MB</li><li data-key="b">4 bytes</li><li data-key="c">8 bytes</li><li data-key="d">It depends on the element type</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the data, not the pointer to it.</p>
+      <p data-for="b">That's a 32-bit address.</p>
+      <p data-for="c">Correct. A pointer holds one 64-bit address, whatever it points to. (Chapter 2.4 introduces "fat" pointers that also carry a length.)</p>
+      <p data-for="d">The pointee's type doesn't change the address size.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why can't a value whose size is only known at runtime (say, text typed by a user) be stored directly in a stack frame?</div>
+    <ol class="options">
+      <li data-key="a">The stack is read-only</li>
+      <li data-key="b">Each frame's layout is fixed at compile time, so the data goes on the heap with a fixed-size pointer (plus length) on the stack</li>
+      <li data-key="c">Text must always be stored in static data</li>
+      <li data-key="d">The stack can only hold integers</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Stack memory is written all the time.</p>
+      <p data-for="b">Correct. That's exactly the shape of <code>String</code>: a 24-byte header on the stack, the text on the heap.</p>
+      <p data-for="c">Only literals written in the source code live in static data.</p>
+      <p data-for="d">Any fixed-size value can live on the stack.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text"><code>#[repr(C)] struct S { a: u8, b: u32, c: u8 }</code> — what is <code>size_of::&lt;S&gt;()</code>?</div>
+    <ol class="options">
+      <li data-key="a">6</li><li data-key="b">8</li><li data-key="c">9</li><li data-key="d">12</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the sum of the field sizes, ignoring alignment.</p>
+      <p data-for="b">That's what you'd get with the u32 first (or Rust's default layout): 4 + 1 + 1 + 2 padding.</p>
+      <p data-for="c">Padding inside is counted, but the tail padding is missing.</p>
+      <p data-for="d">Correct. <code>a</code>@0, 3 padding, <code>b</code>@4–7, <code>c</code>@8, 3 tail padding so the total is a multiple of the struct's alignment (4).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A client's analytics service stores 50 million <code>Order</code> objects as a <code>List&lt;Order&gt;</code> of classes and iterates over all of them every minute. Profiling shows the CPU mostly waiting on memory. Which change most directly addresses the cause?</div>
+    <ol class="options">
+      <li data-key="a">Store the data contiguously, e.g. as an array of compact structs (or columns of values), so iteration walks memory in order</li>
+      <li data-key="b">Add more CPU cores</li>
+      <li data-key="c">Switch to a linked list for faster insertion</li>
+      <li data-key="d">Call <code>GC.Collect()</code> before each pass</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. A list of class instances is a list of pointers to objects scattered across the heap, so every element is a potential cache miss. Contiguous layout gives spatial locality (Figure 5).</p>
+      <p data-for="b">More cores waiting on memory don't help, and may compete for memory bandwidth.</p>
+      <p data-for="c">Linked lists make locality worse.</p>
+      <p data-for="d">Forcing collections adds pauses and doesn't change the layout.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which statement about the .NET GC is accurate, per Microsoft's documentation?</div>
+    <ol class="options">
+      <li data-key="a">Objects never move once allocated</li>
+      <li data-key="b">All objects, including large arrays, start in generation 0</li>
+      <li data-key="c">Allocation adds a value to a pointer, and compaction moves live objects together and updates references</li>
+      <li data-key="d">Value types are always on the stack</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Compaction moves objects, which is why native interop pins them.</p>
+      <p data-for="b">Objects of 85,000 bytes or more go to the large object heap, collected with gen 2.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d">Value types are stored on the stack or inline in their containing type.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">The lab's overflow program crashed in a debug build but printed a result in release. What's the right conclusion?</div>
+    <ol class="options">
+      <li data-key="a">Release builds have a larger stack</li>
+      <li data-key="b">The optimiser happened to remove the recursion. The code is still unsafe to rely on, so bound the recursion or make it iterative</li>
+      <li data-key="c">Release builds turn off overflow detection</li>
+      <li data-key="d">The debug build has a bug</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Stack size is set by the OS and thread, not the profile.</p>
+      <p data-for="b">Correct. Optimisations are not guarantees.</p>
+      <p data-for="c">Stack overflow detection works in both profiles.</p>
+      <p data-for="d">The debug build is correctly showing the real behaviour of the code as written.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which of these is a <em>use-after-free</em>?</div>
+    <ol class="options">
+      <li data-key="a">Never freeing a buffer</li>
+      <li data-key="b">Freeing the same buffer twice</li>
+      <li data-key="c">Writing to index 10 of a 10-element array</li>
+      <li data-key="d">Keeping a pointer to a function's local variable and reading through it after the function has returned</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's a leak.</p>
+      <p data-for="b">That's a double free.</p>
+      <p data-for="c">That's a buffer overflow (index 10 is past the end).</p>
+      <p data-for="d">Correct. The frame was popped, so the pointer dangles. Rust's borrow checker rejects this at compile time (chapter 2.11).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why did the latency test link array slots into one random cycle instead of reading the array in order?</div>
+    <ol class="options">
+      <li data-key="a">So that each load depends on the previous one and lands somewhere unpredictable, defeating prefetching and revealing the true latency of each cache level</li>
+      <li data-key="b">Random access is faster</li>
+      <li data-key="c">To use more memory</li>
+      <li data-key="d">Rust can't read arrays in order</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Sequential reads would be prefetched and overlapped by the CPU, hiding the latency we wanted to measure.</p>
+      <p data-for="b">It's much slower; that was the point.</p>
+      <p data-for="c">The array size was controlled separately.</p>
+      <p data-for="d">The grid test does exactly that.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Memory is a long row of bytes, each with an address. A pointer holds an address and is 8 bytes on 64-bit machines.</li>
+  <li>The <strong>stack</strong> holds fixed-size local data in per-call frames that vanish on return. It's fast, automatic and size-limited. The <strong>heap</strong> holds runtime-sized or long-lived data, obtained from an allocator, and must be freed by someone.</li>
+  <li>Alignment forces padding, so field order changes struct size (24 vs 16 bytes in the lab). Rust may reorder fields by default; <code>#[repr(C)]</code> fixes the order.</li>
+  <li>Caches make memory fast only for good locality. Measured on the lab Mac: ~1 ns per load in L1, ~100+ ns from RAM, and the same work 32× slower in the wrong order. Contiguous beats scattered.</li>
+  <li>.NET hides all this with a bump-pointer allocator and a moving, generational GC. Rust gives you the choice explicitly and frees deterministically, which is the subject of Module 2.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">bit</li><li class="chip">byte</li><li class="chip">address</li><li class="chip">pointer</li><li class="chip">stack</li>
+  <li class="chip">stack frame</li><li class="chip">heap</li><li class="chip">allocator</li><li class="chip">alignment</li><li class="chip">padding</li>
+  <li class="chip">cache</li><li class="chip">cache line</li><li class="chip">locality</li><li class="chip">page</li><li class="chip">stack overflow</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html">The Rust Book — What is Ownership? (section "The Stack and the Heap")</a><span class="why">The official framing of stack vs heap, as a bridge into Module 2.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/type-layout.html">The Rust Reference — Type layout</a><span class="why">The exact rules for size, alignment, <code>repr(C)</code> and the (unspecified) default layout.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/mem/fn.size_of.html"><code>std::mem::size_of</code></a> and <a href="https://doc.rust-lang.org/std/hint/fn.black_box.html"><code>std::hint::black_box</code></a><span class="why">The two functions used in this chapter's experiments.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/thread/index.html"><code>std::thread</code> — Stack size</a><span class="why">The source for the 2 MiB default for spawned threads.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/standard/garbage-collection/fundamentals">Microsoft Learn — Fundamentals of garbage collection</a><span class="why">The source for the .NET GC facts quoted above.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/standard/design-guidelines/choosing-between-class-and-struct">Microsoft Learn — Choosing between class and struct</a><span class="why">Where .NET value types live, and why value-type arrays have better locality.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://people.freebsd.org/~lstewart/articles/cpumemory.pdf">Ulrich Drepper — “What Every Programmer Should Know About Memory” (2007)</a><span class="why">The classic deep treatment of caches, RAM and virtual memory. Long, but the first sections are the best explanation of the latency ladder you measured.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.wikipedia.org/wiki/Sattolo%27s_algorithm">Sattolo's algorithm (Wikipedia)</a><span class="why">How the latency test builds a single random cycle.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=rDoqT-a6UFg">“Visualizing memory layout of Rust's data types” — Sreekanth (YouTube)</a><span class="why">Animated walkthrough of stack/heap layouts for Rust types. Watch the first third now (integers, structs, <code>String</code>, <code>Vec</code>) and save the rest for after chapter 2.12.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---- Latency ladder (measured on Apple M2 Pro, Rust 1.99.0, release) ----
+  var sizes = ["16K","32K","64K","128K","256K","512K","1M","2M","4M","8M","16M","32M","64M","128M","256M","512M"];
+  var ns = [1.99,1.47,1.31,1.20,3.62,4.67,5.15,5.43,7.42,6.89,15.55,46.27,84.51,103.72,113.92,119.03];
+  Course.chart("latency-chart", function (c) {
+    var colours = ns.map(function (v, i) { return i <= 3 ? c.green : i <= 9 ? c.teal : i <= 11 ? c.amber : c.red; });
+    return {
+      type: "bar",
+      data: { labels: sizes, datasets: [{ label: "ns per dependent load", data: ns, backgroundColor: colours, borderRadius: 4 }] },
+      options: {
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: function (ctx) {
+            var i = ctx.dataIndex, where = i <= 3 ? "L1" : i <= 9 ? "L2" : i <= 11 ? "beyond L2" : "RAM";
+            return ctx.parsed.y + " ns (" + where + ")"; } } } },
+        scales: {
+          y: { type: "logarithmic", min: 1, max: 200, title: { display: true, text: "ns per load (log scale)" } },
+          x: { title: { display: true, text: "working-set size (green L1 · teal L2 · amber transition · red RAM)" } }
+        }
+      }
+    };
+  });
+
+  // ---- Grid traversal (measured, medians of 3) ----
+  Course.chart("grid-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["4 MB grid (fits in L2)", "64 MB grid (spills to RAM)"],
+        datasets: [
+          { label: "row by row", data: [0.091, 2.006], backgroundColor: c.accent, borderRadius: 6 },
+          { label: "column by column", data: [1.296, 64.585], backgroundColor: c.muted, borderRadius: 6 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: { y: { type: "logarithmic", min: 0.05, title: { display: true, text: "milliseconds (log scale)" } } }
+      }
+    };
+  });
+
+  // ---- Struct layout explorer ----
+  var palette = ["#b5420f", "#0f766e", "#5b3cc4", "#1d5fa8"];
+  var fields = [
+    { name: "flag", type: "u8", size: 1, align: 1, colour: palette[0] },
+    { name: "id", type: "u32", size: 4, align: 4, colour: palette[1] },
+    { name: "qty", type: "u16", size: 2, align: 2, colour: palette[2] },
+    { name: "price", type: "u64", size: 8, align: 8, colour: palette[3] }
+  ];
+  function layout(order) {
+    var cells = [], offset = 0, maxAlign = 1;
+    order.forEach(function (f) {
+      maxAlign = Math.max(maxAlign, f.align);
+      while (offset % f.align !== 0) { cells.push(null); offset++; }
+      for (var i = 0; i < f.size; i++) { cells.push({ f: f, first: i === 0 }); offset++; }
+    });
+    while (offset % maxAlign !== 0) { cells.push(null); offset++; }
+    return cells;
+  }
+  function render(target, totalEl, cells) {
+    target.innerHTML = "";
+    var pad = cells.filter(function (x) { return !x; }).length;
+    for (var r = 0; r < cells.length; r += 8) {
+      var row = document.createElement("div"); row.className = "byte-row";
+      var off = document.createElement("span"); off.className = "off"; off.textContent = r; row.appendChild(off);
+      for (var k = r; k < r + 8; k++) {
+        var cell = document.createElement("div");
+        if (k >= cells.length) { cell.style.visibility = "hidden"; cell.className = "byte"; }
+        else if (!cells[k]) { cell.className = "byte pad"; cell.title = "padding"; }
+        else { cell.className = "byte"; cell.style.background = cells[k].f.colour; cell.title = cells[k].f.name + ": " + cells[k].f.type;
+          if (cells[k].first) cell.textContent = cells[k].f.name; }
+        row.appendChild(cell);
+      }
+      target.appendChild(row);
+    }
+    totalEl.textContent = "Size: " + cells.length + " bytes (" + pad + " padding)";
+  }
+  var list = document.getElementById("lf-list");
+  function draw() {
+    list.innerHTML = "";
+    fields.forEach(function (f, i) {
+      var li = document.createElement("li");
+      li.innerHTML = '<span class="swatch" style="background:' + f.colour + '"></span><code>' + f.name + ": " + f.type +
+        '</code><span class="small muted">size ' + f.size + ", align " + f.align + "</span>";
+      var up = document.createElement("button"); up.type = "button"; up.textContent = "▲"; up.disabled = i === 0;
+      up.setAttribute("aria-label", "Move " + f.name + " up");
+      up.onclick = function () { fields.splice(i - 1, 0, fields.splice(i, 1)[0]); draw(); };
+      var down = document.createElement("button"); down.type = "button"; down.textContent = "▼"; down.disabled = i === fields.length - 1;
+      down.setAttribute("aria-label", "Move " + f.name + " down");
+      down.onclick = function () { fields.splice(i + 1, 0, fields.splice(i, 1)[0]); draw(); };
+      li.insertBefore(down, li.firstChild); li.insertBefore(up, li.firstChild);
+      list.appendChild(li);
+    });
+    render(document.getElementById("lf-c"), document.getElementById("lf-c-total"), layout(fields));
+    var sorted = fields.slice().sort(function (a, b) { return b.align - a.align; });
+    render(document.getElementById("lf-r"), document.getElementById("lf-r-total"), layout(sorted));
+  }
+  draw();
+});
+</script>
+</body>
+</html>

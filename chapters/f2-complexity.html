@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F2 Measuring cost: complexity</title>
+<meta name="description" content="Big-O, Θ and Ω explained plainly, with amortised and expected cost, measured on real code — including a regex that takes 10 seconds on 26 characters.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .growth-table td:nth-child(2), .growth-table td:nth-child(3) { font-family: var(--font-mono); font-size: .86rem; white-space: nowrap; }
+  .growth-table tr.too-slow td { color: var(--red); }
+  .growth-table tr.ok td:last-child { color: var(--green); }
+  #n-label { font: 700 1rem var(--font-mono); min-width: 9ch; display: inline-block; }
+</style>
+</head>
+<body data-chapter="F2">
+<article class="content">
+<h1>Measuring cost: complexity</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Describe how an algorithm's cost grows with input size, using Big-O, Ω and Θ, both intuitively and formally</li>
+      <li>Read code and state its time and space complexity, including costs hidden inside library calls</li>
+      <li>Distinguish worst-case, best-case, average, <em>amortised</em> and <em>expected</em> cost, and know which one an SLA cares about</li>
+      <li>Explain why constants and caches still matter, and where the crossover points are</li>
+      <li>Recognise exponential-time traps such as catastrophic regex backtracking, and choose safe alternatives</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>The most valuable question an architect can ask about any design is <strong>"what happens at 10× the data?"</strong> Complexity analysis answers it before you build anything. It's the vocabulary for spotting the <code>List.Contains</code> inside a loop that passes every test and then takes production down at month-end. In this chapter you'll measure exactly that kind of code: <strong>1.5 seconds versus 1 millisecond</strong> for the same answer on 100,000 items, and a one-line regular expression that takes <strong>10 seconds on a 26-character input</strong>.</p>
+  <p>For your products, complexity decides whether the rule engine can evaluate a million facts, and whether the workflow engine can track a million timers, on one machine.</p>
+</div>
+
+<h2 id="intuition">Intuition first: finding a name in a phone book</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>To find "Okafor" in a 1,000-page phone book you could read page 1, then page 2, and so on: up to 1,000 page-reads. Or you could open the middle, see "M", know Okafor is in the second half, open the middle of <em>that</em>, and keep halving. About 10 page-reads, because 1,000 halves to 1 in 10 steps. Double the book to 2,000 pages and the first method needs up to 2,000 reads, but the second needs just <strong>one more</strong>.</p>
+  <p>Complexity isn't about how fast <em>you</em> read a page. It's about how the number of page-reads <strong>grows</strong> as the book gets bigger.</p>
+</div>
+
+<figure class="visual stepper" data-interval="2400">
+  <span class="visual-tag">Animation · binary search for 51 in 16 sorted values</span>
+  <svg viewBox="0 0 720 200" role="img" aria-label="Binary search narrowing a range of 16 sorted numbers down to the target 51">
+    <!-- cells -->
+    <g id="bs-cells"></g>
+    <!-- dimming overlays (cumulative) -->
+    <rect x="16" y="56" width="378" height="52" rx="6" class="svg-box" opacity=".82" data-show="3-"/>
+    <rect x="520" y="56" width="168" height="52" rx="6" class="svg-box" opacity=".82" data-show="4-"/>
+    <rect x="394" y="56" width="84" height="52" rx="6" class="svg-box" opacity=".82" data-show="5-"/>
+    <!-- mid markers -->
+    <g data-show="=2"><rect x="352" y="54" width="42" height="56" rx="6" fill="none" stroke="var(--accent)" stroke-width="3"/><text x="373" y="140" class="svg-text" text-anchor="middle">mid = 37 &lt; 51</text></g>
+    <g data-show="=3"><rect x="520" y="54" width="42" height="56" rx="6" fill="none" stroke="var(--accent)" stroke-width="3"/><text x="541" y="140" class="svg-text" text-anchor="middle">mid = 57 &gt; 51</text></g>
+    <g data-show="=4"><rect x="436" y="54" width="42" height="56" rx="6" fill="none" stroke="var(--accent)" stroke-width="3"/><text x="457" y="140" class="svg-text" text-anchor="middle">mid = 46 &lt; 51</text></g>
+    <g data-show="5"><rect x="478" y="54" width="42" height="56" rx="6" class="svg-green" fill-opacity=".35"/><text x="499" y="140" class="svg-text" text-anchor="middle">found 51 ✓</text></g>
+    <!-- range bracket text -->
+    <text x="360" y="28" class="svg-title" text-anchor="middle" data-show="=1">search range: all 16 values (indices 0–15)</text>
+    <text x="360" y="28" class="svg-title" text-anchor="middle" data-show="=2">compare with the middle value (index 8)</text>
+    <text x="360" y="28" class="svg-title" text-anchor="middle" data-show="=3">range now indices 9–15 (7 values left)</text>
+    <text x="360" y="28" class="svg-title" text-anchor="middle" data-show="=4">range now indices 9–11 (3 values left)</text>
+    <text x="360" y="28" class="svg-title" text-anchor="middle" data-show="5">4 comparisons instead of 12</text>
+    <text x="360" y="180" class="svg-text-sm" text-anchor="middle">each comparison throws away half of what's left: 16 → 7 → 3 → 1</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>The values are <strong>sorted</strong>; that's what makes the trick possible. We're looking for 51. A front-to-back scan would need 12 comparisons to reach it.</li>
+    <li>Look at the middle element (index 8): it's 37. Since 51 &gt; 37, and the list is sorted, 51 can't be in the left half. Throw it away.</li>
+    <li>Middle of what's left (index 12) is 57. 51 &lt; 57, so throw away the right part. Only indices 9–11 remain.</li>
+    <li>Middle (index 10) is 46. 51 &gt; 46, so only index 11 remains.</li>
+    <li>Index 11 holds 51. Found in <strong>4</strong> comparisons. For 1 million sorted values the lab measures at most 20, and for 100 million at most 27.</li>
+  </ol>
+  <figcaption><strong>Figure 1.</strong> Binary search halves the search range at every step, so the number of steps grows with the logarithm of the input size. Rust's standard library provides it as <code>slice::binary_search</code>.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="what-we-count">What we count, and why not seconds</h3>
+<p>An <dfn data-term="algorithm" data-def="A precise, step-by-step procedure for solving a problem, e.g. binary search or sorting.">algorithm</dfn> is a step-by-step procedure, such as "check every page" or "halve the range". Its running time in seconds depends on the machine, the compiler and the cache (chapter F1). Its <em>growth</em> doesn't. So we count basic steps (comparisons, additions, memory reads) as a function of the input size, written <strong>n</strong>, and ask how that count grows as n grows. This is the algorithm's <dfn data-term="time complexity" data-def="How the number of basic steps an algorithm performs grows as its input size n grows, expressed with Big-O and related notations.">time complexity</dfn>. The memory it needs is its <dfn data-term="space complexity" data-def="How the extra memory an algorithm needs grows with its input size n.">space complexity</dfn>.</p>
+
+<h3 id="logarithms">Logarithms in one minute</h3>
+<p>The phone-book trick introduced the one piece of maths this chapter needs. \(\log_2 n\) ("log base 2 of n") is <strong>how many times you can halve n before reaching 1</strong>. Equivalently, it's the power you raise 2 to in order to get n: \(\log_2 1024 = 10\) because \(2^{10} = 1024\).</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>n</th><th>16</th><th>1,000</th><th>1,000,000</th><th>1,000,000,000</th></tr></thead>
+  <tbody><tr><td>\(\log_2 n\) (rounded up)</td><td>4</td><td>10</td><td>20</td><td>30</td></tr></tbody>
+  <caption>Logarithms grow extremely slowly: a thousand times more data adds only about 10 steps. In complexity, "log" means log base 2 unless stated otherwise. The base only changes a constant factor, which Big-O ignores anyway.</caption>
+</table></div>
+
+<h3 id="big-o">Big-O: describing growth</h3>
+<p><dfn data-term="Big-O" data-def="O(g(n)): an upper bound on growth. f(n) is O(g(n)) if, beyond some size, f(n) never exceeds a constant multiple of g(n).">Big-O</dfn> notation names the <em>shape</em> of the growth, ignoring two things that stop mattering as n gets large:</p>
+<ol>
+  <li><strong>Constant factors:</strong> 3n steps and 100n steps both grow linearly, so both are O(n).</li>
+  <li><strong>Smaller terms:</strong> n² + 50n + 7 is dominated by n² once n is large, so it's O(n²).</li>
+</ol>
+<div class="table-wrap"><table>
+  <thead><tr><th>Class</th><th>Name</th><th>Doubling n does this to the time</th><th>Typical example</th></tr></thead>
+  <tbody>
+    <tr><td>O(1)</td><td>constant</td><td>no change</td><td>read <code>v[i]</code>; <code>HashMap</code> lookup (expected)</td></tr>
+    <tr><td>O(log n)</td><td>logarithmic</td><td>adds one step</td><td>binary search; <code>BTreeMap</code> lookup</td></tr>
+    <tr><td>O(n)</td><td>linear</td><td>doubles</td><td>scan a list; <code>vec.contains(&amp;x)</code>; C# <code>List&lt;T&gt;.Contains</code></td></tr>
+    <tr><td>O(n log n)</td><td>linearithmic</td><td>slightly more than doubles</td><td>good sorting algorithms (chapter F7)</td></tr>
+    <tr><td>O(n²)</td><td>quadratic</td><td>×4</td><td>compare every pair; a linear search inside a loop</td></tr>
+    <tr><td>O(2ⁿ)</td><td>exponential</td><td>squares it (each +1 in n doubles it)</td><td>trying every subset; catastrophic regex backtracking</td></tr>
+  </tbody>
+</table></div>
+
+<p>Try it. Move the slider to see how many steps each class needs, and how long that takes at an optimistic one step per nanosecond:</p>
+<figure class="visual" id="growth-widget">
+  <span class="visual-tag">Interactive · growth explorer</span>
+  <div class="widget-controls">
+    <label for="n-slider">n =</label>
+    <input type="range" id="n-slider" min="0" max="9" step="0.1" value="3" style="flex:1;min-width:160px">
+    <span id="n-label">1,000</span>
+  </div>
+  <div class="table-wrap" style="margin:.6em 0">
+    <table class="growth-table">
+      <thead><tr><th>Class</th><th>Steps</th><th>Time at 1 ns/step</th><th>Within 1 s?</th></tr></thead>
+      <tbody id="growth-body"></tbody>
+    </table>
+  </div>
+  <div class="chart-box"><canvas id="growth-chart" aria-label="Log-log chart of operation counts for each complexity class from 1 to n"></canvas></div>
+  <figcaption><strong>Figure 2.</strong> Both axes are logarithmic, so every curve fits. Notice O(2ⁿ) leaving the chart almost immediately: at n = 100 it already exceeds the age of the universe at a billion steps per second.</figcaption>
+</figure>
+
+<h3 id="reading-code">Reading complexity from code</h3>
+<p>Four rules cover most real code:</p>
+<ol>
+  <li><strong>Sequence adds:</strong> an O(n) loop followed by another O(n) loop is O(n + n) = O(n).</li>
+  <li><strong>Nesting multiplies:</strong> a loop of n iterations whose body does O(n) work is O(n × n) = O(n²).</li>
+  <li><strong>Halving gives a log:</strong> a loop that halves (or doubles) its range each time runs O(log n) times.</li>
+  <li><strong>Library calls have costs too.</strong> <code>vec.contains(&amp;x)</code> is a hidden loop. Look up the cost of every collection operation you call inside a loop.</li>
+</ol>
+<div class="compare">
+  <div><div class="compare-label">C# — looks like one loop, is O(n·m)</div>
+<pre><code class="language-csharp">// List&lt;T&gt;.Contains "performs a linear search;
+// therefore, this method is an O(n) operation"
+var common = a.Where(x =&gt; b.Contains(x)).Count();</code></pre></div>
+  <div><div class="compare-label">Rust — the same trap</div>
+<pre><code class="language-rust">// Vec::contains also scans: O(m) per call
+let common = a.iter().filter(|x| b.contains(x)).count();</code></pre></div>
+</div>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>LINQ makes O(n²) code look like one tidy line. The quote in the C# comment is from Microsoft's own documentation for <code>List&lt;T&gt;.Contains</code>. Exercise 2 measures what this costs on 50,000 IDs, and the fix: build a <code>HashSet</code> once.</p>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="formal">The formal definitions</h3>
+<p>Big-O is an <em>upper bound</em>: a guarantee that, beyond some size, the cost never exceeds a constant multiple of the bound.</p>
+$$ f(n) \in O(g(n)) \iff \exists\, c &gt; 0,\ n_0 \ \text{such that}\ 0 \le f(n) \le c \cdot g(n)\ \text{for all}\ n \ge n_0 $$
+<p>Two companions complete the set:</p>
+<ul>
+  <li><dfn data-term="Big-Omega" data-def="Ω(g(n)): a lower bound on growth. f(n) is Ω(g(n)) if, beyond some size, f(n) is at least a constant multiple of g(n).">Ω</dfn> (Big-Omega) is a <em>lower</em> bound: \(f(n) \ge c \cdot g(n)\) for all \(n \ge n_0\). "It takes at least this long."</li>
+  <li><dfn data-term="Big-Theta" data-def="Θ(g(n)): a tight bound. f(n) is Θ(g(n)) if it is both O(g(n)) and Ω(g(n)).">Θ</dfn> (Big-Theta) is a <em>tight</em> bound: both O and Ω hold, so f grows exactly like g, up to constants.</li>
+</ul>
+<p><strong>Worked example.</strong> Show that \(f(n) = 3n^2 + 5n + 2\) is \(O(n^2)\). Choose \(c = 4\). We need \(3n^2 + 5n + 2 \le 4n^2\), that is \(n^2 - 5n - 2 \ge 0\), which is true for every \(n \ge 6\). So \(c = 4, n_0 = 6\) works. It's also \(\Omega(n^2)\) (take \(c = 3, n_0 = 1\)), hence \(\Theta(n^2)\).</p>
+<div class="callout note"><div class="callout-title">ℹ️ How people actually use the words</div>
+  <p>In everyday engineering "O(n²)" is usually said where Θ(n²) is meant: "it grows like n²". Being O(n²) technically also allows faster growth below the bound. Be precise when it matters (a contract, a design review). Otherwise follow the convention.</p>
+</div>
+
+<h3 id="cases">Worst, best and average case</h3>
+<p>One algorithm can have different costs on different inputs of the same size. Linear search finds the target in 1 step if it's first (best case), needs n steps if it's missing (worst case), and about n/2 on average if it's present at a random position. All three are O(n) here, but they aren't always the same class: quicksort is O(n log n) on average and O(n²) in its worst case (chapter F7).</p>
+<p><strong>For services, the worst case is usually the one that matters.</strong> Your p99 latency and SLA are made of worst cases, and an attacker can <em>choose</em> worst-case inputs. The deep dive shows that taken to the extreme.</p>
+
+<h3 id="amortised">Amortised cost: why <code>Vec::push</code> is O(1)</h3>
+<p>A <code>Vec</code> keeps spare capacity. When it's full, <code>push</code> allocates a bigger buffer and copies every element across, which costs O(n). So how can the docs promise that <code>push</code> takes "amortized O(1) time"?</p>
+<p><dfn data-term="amortised cost" data-def="The average cost per operation over a long sequence, even if a few individual operations are expensive, e.g. Vec::push is amortised O(1).">Amortised</dfn> means <em>averaged over a long sequence of operations</em>. If capacity doubles each time it fills, the copies happen at sizes 4, 8, 16, …, up to the largest power of two below n, and their total is less than 2n:</p>
+$$ \underbrace{4 + 8 + 16 + \dots + 2^{k}}_{\text{elements copied while growing}} \;&lt;\; 2^{k+1} \;\le\; 2n \quad\Longrightarrow\quad \frac{\text{total copies}}{n} &lt; 2 = O(1) $$
+<p>Measured in the lab: pushing one million values into a <code>Vec&lt;u64&gt;</code> went through capacities 4, 8, 16, …, 1,048,576 and copied 1,048,572 elements in total, which is <strong>1.05 copies per push</strong>. Two caveats from the official docs: the growth factor is <em>not</em> guaranteed ("<code>Vec</code> does not guarantee any particular growth strategy"), but amortised O(1) <code>push</code> <em>is</em>. And an individual push can still be slow (a 1-million-element copy), which matters for latency-sensitive code. Use <code>Vec::with_capacity(n)</code> when you know the size up front.</p>
+
+<h3 id="expected">Expected cost, and the standard collections</h3>
+<p>Hash tables (chapter F4) are O(1) <dfn data-term="expected cost" data-def="The average cost assuming inputs (or hashes) behave randomly; e.g. HashMap lookups are expected O(1) but can degrade on adversarial inputs.">expected</dfn>: fast <em>if</em> the hash function spreads keys evenly, which is true with overwhelming probability, but not guaranteed. The Rust standard library documents its collection costs. Here is its table, in its own notation:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Collection</th><th>get(i)</th><th>insert(i)</th><th>remove(i)</th><th>append</th><th>range</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec</code></td><td>O(1)</td><td>O(n−i)*</td><td>O(n−i)</td><td>O(m)*</td><td>N/A</td></tr>
+    <tr><td><code>VecDeque</code></td><td>O(1)</td><td>O(min(i, n−i))*</td><td>O(min(i, n−i))</td><td>O(m)*</td><td>N/A</td></tr>
+    <tr><td><code>LinkedList</code></td><td>O(min(i, n−i))</td><td>O(min(i, n−i))</td><td>O(min(i, n−i))</td><td>O(1)</td><td>N/A</td></tr>
+    <tr><td><code>HashMap</code></td><td>O(1)~</td><td>O(1)~*</td><td>O(1)~</td><td>N/A</td><td>N/A</td></tr>
+    <tr><td><code>BTreeMap</code></td><td>O(log n)</td><td>O(log n)</td><td>O(log n)</td><td>O(n+m)</td><td>O(log n)</td></tr>
+  </tbody>
+  <caption>From <code>std::collections</code>: * = amortised, ~ = expected, m = size of the second collection. The same page's headline advice: "you should probably just use <code>Vec</code> or <code>HashMap</code>". Chapters F3–F5 explain each row.</caption>
+</table></div>
+
+<h3 id="constants">Constants and caches still matter</h3>
+<p>Big-O describes behaviour <em>as n grows large</em>. At small n, a "worse" algorithm with tiny constants can win. Here are three ways to answer "does this list contain a duplicate?", measured on the lab Mac (release build, distinct values so there's no early exit):</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · measured: three duplicate detectors</span>
+  <div class="chart-box"><canvas id="dup-chart" aria-label="Log-log chart of running time for pairwise, sort-based and hash-based duplicate detection from n=10 to n=100,000"></canvas></div>
+  <figcaption><strong>Figure 3.</strong> Compare every pair, O(n²); sort then check neighbours, O(n log n); remember seen values in a <code>HashSet</code>, O(n) expected. At <strong>n = 10</strong> the "worst" algorithm is fastest (0.3 µs vs 2.0 µs for hashing: no allocation, everything in L1). From about n = 100 it's slowest, and at <strong>n = 100,000</strong> it takes <strong>1.48 s</strong> versus about 1 ms. Sorting and hashing stay neck and neck throughout: hashing's better class is offset by worse memory locality.</figcaption>
+</figure>
+<div class="callout tip"><div class="callout-title">✅ The practical rule</div>
+  <p>Use complexity to rule out designs that <em>can't</em> scale. Then use measurement (chapter 6.1) to choose among those that can. Production sorting routines commonly switch to a simple O(n²) method (insertion sort) for tiny inputs, for exactly the reason Figure 3 shows. Chapter F7 looks at this.</p>
+</div>
+
+<details class="deep-dive"><summary>Deep dive: exponential time in the wild — catastrophic regex backtracking</summary><div class="body">
+  <p>Most regular-expression engines, including .NET's default engine, <em>backtrack</em>: when a partial match fails, they go back and try another way of splitting the input among the pattern's parts. For patterns with nested repetition such as <code>(a+)+b</code>, a string of n <code>a</code>'s with no <code>b</code> can be split in about \(2^{n}\) ways, and the engine tries them all before giving up. That is exponential time from a one-line pattern. Microsoft's documentation warns about precisely this ("In a worst-case scenario, execution time can double for each additional character in the input string").</p>
+  <p>Measured on the lab Mac, .NET 10, <code>Regex.IsMatch</code> on <code>"aaa…a&gt;"</code>:</p>
+  <figure class="visual" style="box-shadow:none">
+    <span class="visual-tag">Chart · measured: exponential vs linear regex engines</span>
+    <div class="chart-box"><canvas id="regex-chart" aria-label="Chart of regex matching time for input lengths 16 to 26 for .NET backtracking and NonBacktracking engines"></canvas></div>
+    <figcaption><strong>Figure 4.</strong> .NET default (backtracking) engine: 7.5 ms at n=16, 31 ms at 18, 122 ms at 20, 491 ms at 22, 2.0 s at 24, <strong>10.2 s at 26</strong>, quadrupling every two characters. The same pattern with <code>RegexOptions.NonBacktracking</code> (.NET 7+) stays below 0.02 ms. Rust's <code>regex</code> crate: about 1.3 ms for a <strong>1,000,000</strong>-character input, growing linearly (10× the input, about 10× the time).</figcaption>
+  </figure>
+<pre data-title="app.cs (.NET 10 file-based app: dotnet run -c Release app.cs)"><code class="language-csharp">using System.Diagnostics;
+using System.Text.RegularExpressions;
+
+// A classic "catastrophic backtracking" pattern (Microsoft docs use the similar (a+)+$).
+var backtracking = new Regex(@"(a+)+b");
+var linear = new Regex(@"(a+)+b", RegexOptions.NonBacktracking);
+
+linear.IsMatch("warm-up"); backtracking.IsMatch("warm-up");
+foreach (var n in new[] { 16, 18, 20, 22, 24, 26 })
+{
+    var input = new string('a', n) + "&gt;";   // almost matches, then fails
+    var sw = Stopwatch.StartNew();
+    backtracking.IsMatch(input);
+    var tBack = sw.Elapsed.TotalMilliseconds;
+    sw.Restart();
+    linear.IsMatch(input);
+    var tLin = sw.Elapsed.TotalMilliseconds;
+    Console.WriteLine($"n={n,2}  backtracking {tBack,9:F2} ms   NonBacktracking {tLin,6:F3} ms");
+}</code></pre>
+<pre class="output">n=16  backtracking      7.54 ms   NonBacktracking  0.019 ms
+n=18  backtracking     31.05 ms   NonBacktracking  0.003 ms
+n=20  backtracking    121.72 ms   NonBacktracking  0.002 ms
+n=22  backtracking    490.90 ms   NonBacktracking  0.006 ms
+n=24  backtracking   2025.82 ms   NonBacktracking  0.010 ms
+n=26  backtracking  10175.94 ms   NonBacktracking  0.004 ms</pre>
+  <p>Rust's <code>regex</code> crate never backtracks. Its documentation guarantees that "all regex searches in this crate have worst case <code>O(m * n)</code> time complexity", where m is the size of the regex and n the length of the text. In effect it tracks every possible position in the pattern at once rather than trying them one by one. The cost of that guarantee: features that need backtracking (look-around, back-references) aren't supported. <code>cargo add regex</code>, then:</p>
+<pre data-title="src/main.rs"><code class="language-rust">use regex::Regex;
+use std::time::Instant;
+
+fn main() {
+    let re = Regex::new(r"(a+)+b").unwrap();
+    for n in [1_000usize, 10_000, 100_000, 1_000_000] {
+        let input = "a".repeat(n) + "&gt;";
+        let start = Instant::now();
+        let matched = re.is_match(&amp;input);
+        println!("n={n:&gt;9}  matched={matched}  {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
+    }
+}</code></pre>
+<pre class="output">n=     1000  matched=false  0.020 ms
+n=    10000  matched=false  0.013 ms
+n=   100000  matched=false  0.134 ms
+n=  1000000  matched=false  1.264 ms</pre>
+  <p class="small muted">The middle of three runs of exactly this program (release build). The first row includes one-time warm-up. Your timings will vary. The shape (flat, then linear: 10× the input, about 10× the time) is the point. With the <code>$</code>-anchored variant <code>(a+)+$</code>, the crate answered in microseconds even at a million characters. It evidently didn't need to scan the whole input, a reminder that guarantees are worst-case bounds, not typical speeds.</p>
+  <p><strong>Why this is an architecture topic, not trivia:</strong> an attacker who can submit input to a backtracking regex can freeze a server thread for seconds per request, a <dfn data-term="ReDoS" data-def="Regular-expression denial of service: crafted input that triggers exponential backtracking in a regex engine, tying up CPU.">ReDoS</dfn> (regular-expression denial of service). Your rule engine will very likely offer a "matches pattern" operator on customer data. Choose a linear-time engine (Rust's <code>regex</code>; in .NET, <code>NonBacktracking</code> or timeouts), cap pattern and input sizes, and document the supported syntax. Note also Microsoft's caution that .NET's protections guard against expensive <em>input</em> and assume the <em>pattern</em> is trusted. Customer-authored patterns need their own limits.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab: count, then time</h2>
+<p>Create a project with several programs in <code>src/bin/</code> (as in F1) and run them with <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — count comparisons</h3>
+<pre data-playground data-title="src/bin/search.rs"><code class="language-rust">/// Returns (found, comparisons) for a front-to-back scan.
+fn linear_search(v: &amp;[u32], target: u32) -> (bool, u32) {
+    let mut comparisons = 0;
+    for &amp;x in v {
+        comparisons += 1;
+        if x == target {
+            return (true, comparisons);
+        }
+    }
+    (false, comparisons)
+}
+
+/// Returns (found, comparisons) for binary search on a sorted slice.
+fn binary_search(v: &amp;[u32], target: u32) -> (bool, u32) {
+    let (mut lo, mut hi) = (0, v.len()); // search the half-open range [lo, hi)
+    let mut comparisons = 0;
+    while lo &lt; hi {
+        let mid = lo + (hi - lo) / 2;
+        comparisons += 1;
+        if v[mid] == target {
+            return (true, comparisons);
+        } else if v[mid] &lt; target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    (false, comparisons)
+}
+
+fn main() {
+    println!("{:&gt;11} {:&gt;14} {:&gt;14}", "n", "linear (worst)", "binary (worst)");
+    for n in [16u32, 1_000, 1_000_000, 100_000_000] {
+        let v: Vec&lt;u32&gt; = (0..n).map(|i| i * 2).collect(); // sorted even numbers
+        let missing = 1; // odd, so never present: forces the worst case
+        let (_, lin) = linear_search(&amp;v, missing);
+        let (_, bin) = binary_search(&amp;v, missing);
+        println!("{n:&gt;11} {lin:&gt;14} {bin:&gt;14}");
+    }
+}</code></pre>
+<pre class="output">          n linear (worst) binary (worst)
+         16             16              5
+       1000           1000             10
+    1000000        1000000             20
+  100000000      100000000             27</pre>
+<p>Counting steps instead of timing gives exact, machine-independent numbers: Big-O made visible. The binary column grows by one each time n roughly doubles. (Searching for a missing value takes one comparison more than \(\lfloor \log_2 n \rfloor\) in the worst case, hence 5 for n = 16.) The 100-million case allocates 400 MB; reduce it if your machine is small.</p>
+
+<h3 id="lab-2">Step 2 — watch amortisation happen</h3>
+<pre data-playground data-title="src/bin/vec_growth.rs"><code class="language-rust">fn main() {
+    let mut v: Vec&lt;u64&gt; = Vec::new();
+    let mut copies = 0; // elements moved during reallocations
+    let mut last_cap = v.capacity();
+    let n = 1_000_000;
+    print!("capacities:");
+    for i in 0..n {
+        if v.len() == v.capacity() {
+            copies += v.len(); // a full Vec must move its elements to grow
+        }
+        v.push(i);
+        if v.capacity() != last_cap {
+            if v.capacity() &lt;= 2048 { print!(" {}", v.capacity()); }
+            last_cap = v.capacity();
+        }
+    }
+    println!(" ...");
+    println!("pushed {n} values; final capacity {}; elements copied while growing: {copies}", v.capacity());
+    println!("copies per push: {:.3}", copies as f64 / n as f64);
+}</code></pre>
+<pre class="output">capacities: 4 8 16 32 64 128 256 512 1024 2048 ...
+pushed 1000000 values; final capacity 1048576; elements copied while growing: 1048572
+copies per push: 1.049</pre>
+<p class="small muted">This counts the copies a reallocation <em>must</em> perform. The allocator can sometimes extend a block in place, so real copying may be lower, never higher. The capacities shown are today's behaviour, not a documented promise.</p>
+
+<h3 id="lab-3">Step 3 — three algorithms, one question</h3>
+<pre data-title="src/bin/duplicates.rs"><code class="language-rust">use std::collections::HashSet;
+use std::hint::black_box;
+use std::time::Instant;
+
+/// O(n²): compare every pair.
+fn has_dup_pairs(v: &amp;[u64]) -> bool {
+    for i in 0..v.len() {
+        for j in (i + 1)..v.len() {
+            if v[i] == v[j] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// O(n log n): sort a copy, then duplicates must be neighbours.
+fn has_dup_sort(v: &amp;[u64]) -> bool {
+    let mut sorted = v.to_vec();
+    sorted.sort_unstable();
+    sorted.windows(2).any(|w| w[0] == w[1])
+}
+
+/// O(n) expected: remember what we've seen in a hash set.
+fn has_dup_hash(v: &amp;[u64]) -> bool {
+    let mut seen = HashSet::with_capacity(v.len());
+    for x in v {
+        if !seen.insert(*x) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Average time of `f` over enough runs to be measurable, in microseconds.
+fn time_us(f: impl Fn() -> bool) -> f64 {
+    let runs = 5;
+    let start = Instant::now();
+    for _ in 0..runs {
+        black_box(f());
+    }
+    start.elapsed().as_secs_f64() * 1e6 / runs as f64
+}
+
+fn main() {
+    println!("{:&gt;7} {:&gt;12} {:&gt;12} {:&gt;12}", "n", "pairs O(n²)", "sort", "hash");
+    for n in [10, 100, 1_000, 10_000, 100_000] {
+        // Distinct values in scrambled order: the worst case (no duplicate to stop early).
+        let v: Vec&lt;u64&gt; = (0..n as u64).map(|i| i.wrapping_mul(2_654_435_761) % 1_000_000_007).collect();
+        let v = black_box(v);
+        let pairs = if n &lt;= 100_000 { time_us(|| has_dup_pairs(&amp;v)) } else { f64::NAN };
+        println!("{:&gt;7} {:&gt;10.1}µs {:&gt;10.1}µs {:&gt;10.1}µs", n, pairs, time_us(|| has_dup_sort(&amp;v)), time_us(|| has_dup_hash(&amp;v)));
+    }
+}</code></pre>
+<pre class="output">      n  pairs O(n²)         sort         hash
+     10        0.3µs        0.6µs        2.0µs
+    100        4.0µs        1.7µs        2.8µs
+   1000      291.6µs       19.9µs       25.9µs
+  10000    20065.6µs      125.9µs       90.6µs
+ 100000  1484006.8µs     1013.3µs     1030.9µs</pre>
+<p>Check the O(n²) column against the theory: each 10× increase in n should make it about 100× slower. From 1,000 to 10,000 it went 292 µs → 20 ms (69×), and from 10,000 to 100,000, 20 ms → 1.48 s (74×). That's close to 100×, and short of it because the early sizes fit in cache (chapter F1). The program takes a few seconds, almost all of it in that last O(n²) row.</p>
+<p class="small muted">New syntax you can treat as a black box for now: <code>impl Fn() -&gt; bool</code> means "any function taking no arguments and returning a bool" (chapter 2.10), and <code>|| has_dup_pairs(&amp;v)</code> is such a function written inline (a closure, like a C# lambda).</p>
+
+<h2 id="exercises">Exercises</h2>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — classify the code <span class="difficulty">★☆☆</span></div>
+  <p>Give the time complexity of each, in terms of n = <code>v.len()</code> (and m = <code>w.len()</code> where present):</p>
+<pre><code class="language-rust">// (a)
+let first = v[0];
+// (b)
+let total: u64 = v.iter().sum();
+// (c)
+for x in &amp;v { if w.contains(x) { /* ... */ } }
+// (d)
+let mut i = v.len();
+while i &gt; 1 { i /= 2; }
+// (e)
+for x in &amp;v { for y in &amp;v { if x &lt; y { /* ... */ } } }
+// (f)
+v.sort(); let found = v.binary_search(&amp;42).is_ok();</code></pre>
+  <details class="solution"><summary>Show solution</summary>
+    <ul>
+      <li>(a) <strong>O(1)</strong>: indexing a <code>Vec</code> is constant time.</li>
+      <li>(b) <strong>O(n)</strong>: visits every element once.</li>
+      <li>(c) <strong>O(n·m)</strong>: <code>contains</code> on a <code>Vec</code> is a hidden O(m) loop. If n ≈ m, that's quadratic.</li>
+      <li>(d) <strong>O(log n)</strong>: halving.</li>
+      <li>(e) <strong>O(n²)</strong>: nested loops over the same data.</li>
+      <li>(f) <strong>O(n log n)</strong>: the sort dominates the O(log n) search. Sorting first only pays off if you then search many times.</li>
+    </ul>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — fix the month-end report <span class="difficulty">★★☆ consultant skill</span></div>
+  <p>Two systems each export 50,000 customer IDs, half of them shared. A report counts the shared IDs with <code>a.iter().filter(|x| b.contains(x)).count()</code>. Rewrite it to be O(n + m), then measure both versions.</p>
+  <p class="small muted">Hint: <code>use std::collections::HashSet;</code> then <code>let in_b: HashSet&lt;u64&gt; = b.iter().copied().collect();</code> builds the set once.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground data-title="src/bin/common.rs"><code class="language-rust">use std::collections::HashSet;
+use std::time::Instant;
+
+/// O(n·m): for every id in `a`, scan all of `b`.
+fn common_nested(a: &amp;[u64], b: &amp;[u64]) -> usize {
+    a.iter().filter(|x| b.contains(x)).count()
+}
+
+/// O(n + m) expected: put `b` in a hash set once, then each lookup is O(1).
+fn common_hashed(a: &amp;[u64], b: &amp;[u64]) -> usize {
+    let in_b: HashSet&lt;u64&gt; = b.iter().copied().collect();
+    a.iter().filter(|x| in_b.contains(x)).count()
+}
+
+fn main() {
+    // Two systems' customer ids: 50,000 each, half of them shared.
+    let a: Vec&lt;u64&gt; = (0..50_000).collect();
+    let b: Vec&lt;u64&gt; = (25_000..75_000).collect();
+
+    let start = Instant::now();
+    let n1 = common_nested(&amp;a, &amp;b);
+    let t1 = start.elapsed();
+
+    let start = Instant::now();
+    let n2 = common_hashed(&amp;a, &amp;b);
+    let t2 = start.elapsed();
+
+    assert_eq!(n1, n2);
+    println!("common ids: {n1}");
+    println!("nested: {:&gt;8.1} ms", t1.as_secs_f64() * 1000.0);
+    println!("hashed: {:&gt;8.1} ms", t2.as_secs_f64() * 1000.0);
+}</code></pre>
+<pre class="output">common ids: 25000
+nested:    161.1 ms
+hashed:      1.1 ms</pre>
+  <p>About 150× faster at this size, and the gap widens as data grows: double both lists and the nested version takes about 4× longer, the hashed one about 2×. The same fix applies in C#: build a <code>HashSet&lt;T&gt;</code> from <code>b</code> once, then test membership.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — why doubling? <span class="difficulty">★★☆</span></div>
+  <p>Suppose a growable array added a fixed 100 slots whenever it was full, instead of doubling. How many element copies would 1,000,000 pushes cost? What's the amortised cost per push, and its complexity class?</p>
+  <details class="solution"><summary>Show solution</summary>
+    <p>Reallocations happen at sizes 100, 200, …, 999,900, copying \(100 \cdot (1 + 2 + \dots + 9999) = 100 \cdot \tfrac{9999 \cdot 10000}{2} = 4{,}999{,}500{,}000\) elements, about <strong>5,000 copies per push</strong>. The total grows as n²/200, so it's O(n²) total and <strong>O(n) amortised per push</strong>. Doubling gives about 1 copy per push, O(1). A simulation agrees exactly:</p>
+<pre data-playground><code class="language-rust">/// Count element copies needed to push `n` items when a full buffer grows by `grow(cap)`.
+fn copies(n: u64, grow: impl Fn(u64) -> u64) -> u64 {
+    let (mut len, mut cap, mut copied) = (0u64, 0u64, 0u64);
+    while len &lt; n {
+        if len == cap {
+            copied += len; // move everything into the bigger buffer
+            cap = grow(cap);
+        }
+        len += 1;
+    }
+    copied
+}
+
+fn main() {
+    let n = 1_000_000;
+    let doubling = copies(n, |c| if c == 0 { 4 } else { c * 2 });
+    let plus_100 = copies(n, |c| c + 100);
+    println!("doubling: {doubling:&gt;13} copies ({:.2} per push)", doubling as f64 / n as f64);
+    println!("+100:     {plus_100:&gt;13} copies ({:.0} per push)", plus_100 as f64 / n as f64);
+}</code></pre>
+<pre class="output">doubling:       1048572 copies (1.05 per push)
++100:        4999500000 copies (5000 per push)</pre>
+  <p>Notice the doubling simulation reproduces the real <code>Vec</code> measurement from Step 2 exactly (1,048,572). The key insight: any <em>constant factor</em> of growth (×1.5, ×2) gives amortised O(1); any <em>constant amount</em> of growth (+100) gives O(n).</p>
+  </details>
+</div>
+
+<h2 id="decision">Decision table: what complexity can you afford?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Expected n (worst case, not average)</th><th>Acceptable per-request complexity</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Tiny and bounded (≤ 100)</td><td>Anything sensible, even O(n²). Prefer the simplest code</td><td>Validating a form's fields</td></tr>
+    <tr><td>Thousands</td><td>O(n log n) comfortably; O(n²) only off the hot path</td><td>Sorting a page of results</td></tr>
+    <tr><td>Millions</td><td>O(n) or O(n log n) per batch job; O(log n) or O(1) per request</td><td>Fact store in the rule engine</td></tr>
+    <tr><td>Unbounded, or controlled by users or attackers</td><td>Must have a proven worst case; cap input sizes</td><td>Customer-supplied rules, regexes, JSON</td></tr>
+    <tr><td>Anything</td><td>Never exponential on untrusted input</td><td>Backtracking regex, naive recursive search</td></tr>
+  </tbody>
+  <caption>A rough guide. At about 10⁹ simple steps per second, an O(n²) loop over 1 million items is about 10¹² steps, roughly 17 minutes.</caption>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "O(1) means fast."</div>
+  <p>It means <em>doesn't grow</em>. A hash lookup is O(1) expected but costs more than scanning a 4-element array. Figure 3 shows the O(n²) method winning at n = 10.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Average case is what matters."</div>
+  <p>For a service, the tail matters: p99 latency, SLAs and adversarial inputs. Know the worst case of every algorithm on your request path.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Hidden loops in one-liners</div>
+  <p><code>List.Contains</code>, <code>vec.contains</code>, <code>Vec::insert(0, x)</code> (O(n): shifts everything) and string concatenation in a loop each hide an O(n) inside an innocent-looking call.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Amortised O(1) means every call is fast."</div>
+  <p>Individual calls can be O(n): the push that triggers a million-element copy. For hard latency bounds, pre-size with <code>with_capacity</code>, or use structures without big reallocations.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Testing with small data proves it scales."</div>
+  <p>The O(n²) report in Exercise 2 takes 0.3 µs at n = 10 and looks perfect in every unit test. Always test with production-sized, and worst-case-shaped, data.</p></div>
+
+<h2 id="real-world">Real-world view: complexity decisions in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine matching.</strong> The naive approach re-checks every rule against every fact whenever anything changes: O(rules × facts) per change. With 1,000 rules and 1,000,000 facts that's 10⁹ checks per update. The Rete algorithm (chapter 9.4) exists to make the cost proportional to <em>what changed</em> instead.</li>
+    <li><strong>Workflow timers.</strong> Scanning all pending timers every tick is O(n) per tick. A priority queue (chapter F5) finds the next due timer in O(1) and inserts in O(log n), so a million timers cost about 20 steps per insert.</li>
+    <li><strong>Customer-supplied expressions.</strong> Anything customers write (rule conditions, regexes, JSON paths) needs a provable worst case and size limits. The deep dive's 10-second regex is a production outage waiting to happen.</li>
+    <li><strong>The N+1 query problem</strong> is a complexity bug across a network: O(n) round trips, each costing milliseconds, where O(1) batched query would do. The same analysis applies to I/O as to CPU steps.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F2">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">An algorithm takes 2 seconds on 1 million items and is O(n²). Roughly how long on 2 million items?</div>
+    <ol class="options">
+      <li data-key="a">2 seconds</li><li data-key="b">4 seconds</li><li data-key="c">8 seconds</li><li data-key="d">4 million seconds</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That would be O(1).</p>
+      <p data-for="b">That would be O(n).</p>
+      <p data-for="c">Correct. Doubling n multiplies n² by 4, so 2 s × 4 = 8 s.</p>
+      <p data-for="d">That confuses n² with the time itself.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">About how many comparisons does binary search need, at most, for 1 billion sorted items?</div>
+    <ol class="options">
+      <li data-key="a">1,000</li><li data-key="b">About 30</li><li data-key="c">500 million</li><li data-key="d">1</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Far too many: that would be closer to √n.</p>
+      <p data-for="b">Correct. \(2^{30} \approx 1.07 \times 10^9\), so about 30 halvings.</p>
+      <p data-for="c">That's the average for <em>linear</em> search.</p>
+      <p data-for="d">Only in the lucky best case.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which statement about <code>Vec::push</code> matches the official documentation?</div>
+    <ol class="options">
+      <li data-key="a">Every push is O(1)</li>
+      <li data-key="b">The capacity always doubles</li>
+      <li data-key="c">Push is O(n) because it may copy</li>
+      <li data-key="d">Push is amortised O(1); the growth strategy itself is not guaranteed</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">A push that triggers reallocation is O(capacity).</p>
+      <p data-for="b">The docs explicitly say no particular growth strategy is guaranteed.</p>
+      <p data-for="c">That's the cost of an individual unlucky push, not the amortised cost.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A rule-engine customer wants to write conditions like <code>email matches "&lt;pattern&gt;"</code> against untrusted input data. What do you recommend?</div>
+    <ol class="options">
+      <li data-key="a">Use a linear-time regex engine (Rust's <code>regex</code> crate), cap pattern and input sizes, and document the supported syntax</li>
+      <li data-key="b">Use any backtracking engine; regexes are always fast</li>
+      <li data-key="c">Forbid regexes entirely</li>
+      <li data-key="d">Run each match on its own thread so slow ones don't matter</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. It bounds the worst case to O(m·n), and size limits bound m and n.</p>
+      <p data-for="b">Figure 4: 10 seconds for 26 characters.</p>
+      <p data-for="c">Often unnecessary. Safe engines exist.</p>
+      <p data-for="d">That only spreads the CPU exhaustion across more threads.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What is the complexity of <code>for x in &amp;a { if b.contains(x) { … } }</code> where both are <code>Vec</code>s of length n?</div>
+    <ol class="options">
+      <li data-key="a">O(n)</li><li data-key="b">O(n log n)</li><li data-key="c">O(n²)</li><li data-key="d">O(1)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It ignores that <code>contains</code> scans <code>b</code>.</p>
+      <p data-for="b">That would need sorting and binary search.</p>
+      <p data-for="c">Correct. n iterations × an O(n) hidden loop.</p>
+      <p data-for="d">Nothing here is constant.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In Figure 3, why does the O(n²) pairwise check win at n = 10?</div>
+    <ol class="options">
+      <li data-key="a">Big-O is wrong for small inputs</li>
+      <li data-key="b">Big-O ignores constant factors: at tiny n, the hash set's allocation and hashing overhead outweigh 45 comparisons on data already in cache</li>
+      <li data-key="c">The measurement was faulty</li>
+      <li data-key="d">Hash sets are O(n²)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Big-O is a statement about large n, so it isn't wrong. It just doesn't speak to small n.</p>
+      <p data-for="b">Correct.</p>
+      <p data-for="c">The crossover is expected, and repeatable.</p>
+      <p data-for="d">Hash-set operations are expected O(1).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">\(f(n) = 5n + 20\). Which statement is true?</div>
+    <ol class="options">
+      <li data-key="a">f is Θ(n): it's both O(n) and Ω(n)</li>
+      <li data-key="b">f is O(1) because 20 is a constant</li>
+      <li data-key="c">f is Θ(n²)</li>
+      <li data-key="d">f is O(n) but not Ω(n)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. E.g. \(5n \le f(n) \le 6n\) for \(n \ge 20\).</p>
+      <p data-for="b">The 5n term grows; constants only drop out of the <em>coefficients</em>.</p>
+      <p data-for="c">f is O(n²) (a loose upper bound), but not Ω(n²), so not Θ(n²).</p>
+      <p data-for="d">It's bounded below by 5n, so it is Ω(n).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your workflow engine checks every pending timer every second to see which are due. At 2 million timers, CPU is pegged. What's the root cause, in complexity terms, and the fix?</div>
+    <ol class="options">
+      <li data-key="a">The tick interval is too short; tick every minute instead</li>
+      <li data-key="b">Rewrite the scan with SIMD</li>
+      <li data-key="c">Add more cores</li>
+      <li data-key="d">Each tick is O(n) in pending timers. Use a structure ordered by due time (a priority queue, chapter F5) so finding due timers is O(1) to peek and O(log n) per insert or remove</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That reduces the frequency but keeps O(n) per tick, and makes timers late.</p>
+      <p data-for="b">A constant-factor speed-up of an algorithm with the wrong complexity.</p>
+      <p data-for="c">Throwing hardware at an O(n)-per-tick design only postpones the problem.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Complexity describes how cost <em>grows</em> with input size n. Big-O is an upper bound, Ω a lower bound, Θ a tight bound, ignoring constants and smaller terms.</li>
+  <li>The common classes, from best to worst: O(1), O(log n), O(n), O(n log n), O(n²), O(2ⁿ). Halving gives logs, nesting multiplies, and library calls have costs too (<code>contains</code> is a loop).</li>
+  <li>Amortised cost averages over a sequence: <code>Vec::push</code> is amortised O(1) because capacity grows by a <em>factor</em> (measured: 1.05 copies per push). Expected cost (<code>HashMap</code>) assumes well-behaved hashing.</li>
+  <li>Constants and caches decide small-n performance: the O(n²) method won at n = 10, and lost by about 1,500× at n = 100,000. Use complexity to eliminate designs, and measurement to choose among the rest.</li>
+  <li>Exponential behaviour hides in innocent code. A backtracking regex took 10 s on 26 characters. On untrusted input, require a proven worst case (Rust's <code>regex</code> guarantees O(m·n)).</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">algorithm</li><li class="chip">time complexity</li><li class="chip">space complexity</li><li class="chip">Big-O</li><li class="chip">Big-Omega</li>
+  <li class="chip">Big-Theta</li><li class="chip">logarithm</li><li class="chip">amortised cost</li><li class="chip">expected cost</li><li class="chip">binary search</li><li class="chip">ReDoS</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/index.html"><code>std::collections</code> — Performance</a><span class="why">The official cost table reproduced above, plus guidance on choosing a collection.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/vec/struct.Vec.html"><code>Vec</code> — Guarantees</a> and <a href="https://doc.rust-lang.org/std/primitive.slice.html#method.binary_search"><code>slice::binary_search</code></a><span class="why">The growth-strategy caveat and the standard binary search.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://docs.rs/regex/latest/regex/">The <code>regex</code> crate documentation</a><span class="why">The O(m·n) guarantee and its handling of untrusted input.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/standard/base-types/backtracking-in-regular-expressions">Microsoft Learn — Backtracking in regular expressions</a> and <a href="https://learn.microsoft.com/dotnet/standard/base-types/regular-expression-options">Regular expression options (NonBacktracking)</a><span class="why">.NET's own explanation of catastrophic backtracking and its mitigations.</span></li>
+  <li><span class="ref-type paper">Article</span><a href="https://swtch.com/~rsc/regexp/regexp1.html">Russ Cox — “Regular Expression Matching Can Be Simple And Fast” (2007)</a><span class="why">The classic explanation of why backtracking explodes, and of the automaton approach that linear-time engines build on.</span></li>
+  <li><span class="ref-type book">Book</span><a href="https://algs4.cs.princeton.edu/14analysis/">Sedgewick &amp; Wayne, <em>Algorithms</em>, 4th ed. — §1.4 Analysis of Algorithms (book site)</a><span class="why">An accessible treatment that, like this chapter, mixes mathematical models with experiments.</span></li>
+  <li><span class="ref-type book">Book</span>Cormen, Leiserson, Rivest &amp; Stein — <em>Introduction to Algorithms</em>, 4th ed. (MIT Press, 2022)<span class="why">The standard reference for the formal definitions (chapter 3). ⚠ Publisher page blocks automated link checks, so it is cited without a link.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/">MIT 6.006 Introduction to Algorithms (Spring 2020), OpenCourseWare</a><span class="why">A complete free university course; it will also serve chapters F3–F7.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=ZA-tUyM_y7s">“1. Algorithms and Computation” — MIT OpenCourseWare (YouTube)</a><span class="why">Lecture 1 of 6.006. Watch for how it defines the model of computation and asymptotic notation, a rigorous complement to this chapter.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---- binary search cells ----
+  var vals = [3,7,11,14,19,23,28,31,37,42,46,51,57,62,68,75];
+  var g = document.getElementById("bs-cells");
+  var NS = "http://www.w3.org/2000/svg";
+  vals.forEach(function (v, i) {
+    var x = 16 + i * 42;
+    var r = document.createElementNS(NS, "rect");
+    r.setAttribute("x", x + 1); r.setAttribute("y", 58); r.setAttribute("width", 38); r.setAttribute("height", 48); r.setAttribute("rx", 5);
+    r.setAttribute("class", "svg-box-strong"); g.appendChild(r);
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", x + 20); t.setAttribute("y", 82); t.setAttribute("text-anchor", "middle"); t.setAttribute("class", "svg-mono"); t.textContent = v; g.appendChild(t);
+    var idx = document.createElementNS(NS, "text");
+    idx.setAttribute("x", x + 20); idx.setAttribute("y", 120); idx.setAttribute("text-anchor", "middle"); idx.setAttribute("class", "svg-text-sm"); idx.textContent = i; g.appendChild(idx);
+  });
+
+  // ---- growth explorer ----
+  var classes = [
+    { name: "O(1)", f: function () { return 1; } },
+    { name: "O(log n)", f: function (n) { return Math.max(1, Math.log2(n)); } },
+    { name: "O(n)", f: function (n) { return n; } },
+    { name: "O(n log n)", f: function (n) { return n * Math.max(1, Math.log2(n)); } },
+    { name: "O(n²)", f: function (n) { return n * n; } },
+    { name: "O(2ⁿ)", f: function (n) { return Math.pow(2, n); } }
+  ];
+  function fmtNum(x) {
+    if (!isFinite(x) || x > 1e300) return "≫ 10³⁰⁰";
+    if (x < 1e6) return Math.round(x).toLocaleString("en");
+    var e = Math.floor(Math.log10(x)); return (x / Math.pow(10, e)).toFixed(1) + " × 10<sup>" + e + "</sup>";
+  }
+  function fmtTime(ns) {
+    if (!isFinite(ns) || ns > 1e300) return "longer than the age of the universe";
+    var s = ns / 1e9;
+    if (s > 4.35e17) return "longer than the age of the universe";
+    if (ns < 1e3) return ns.toFixed(0) + " ns";
+    if (ns < 1e6) return (ns / 1e3).toFixed(1) + " µs";
+    if (ns < 1e9) return (ns / 1e6).toFixed(1) + " ms";
+    if (s < 60) return s.toFixed(1) + " s";
+    if (s < 3600) return (s / 60).toFixed(1) + " min";
+    if (s < 86400) return (s / 3600).toFixed(1) + " h";
+    if (s < 3.156e7) return (s / 86400).toFixed(1) + " days";
+    return fmtNum(s / 3.156e7) + " years";
+  }
+  var slider = document.getElementById("n-slider"), label = document.getElementById("n-label"), body = document.getElementById("growth-body");
+  var chartHandle = null;
+  function currentN() { return Math.max(1, Math.round(Math.pow(10, +slider.value))); }
+  function series(n) {
+    var pts = [], steps = 24;
+    for (var k = 0; k <= steps; k++) { var x = Math.max(1, Math.round(Math.pow(n, k / steps))); if (!pts.length || pts[pts.length - 1] !== x) pts.push(x); }
+    return pts;
+  }
+  function update() {
+    var n = currentN();
+    label.textContent = n.toLocaleString("en");
+    body.innerHTML = "";
+    classes.forEach(function (c) {
+      var ops = c.f(n), ok = ops <= 1e9;
+      var tr = document.createElement("tr"); tr.className = ok ? "ok" : "too-slow";
+      tr.innerHTML = "<td>" + c.name + "</td><td>" + fmtNum(ops) + "</td><td>" + fmtTime(ops) + "</td><td>" + (ok ? "yes" : "no") + "</td>";
+      body.appendChild(tr);
+    });
+    if (chartHandle && chartHandle.get()) {
+      var ch = chartHandle.get(), xs = series(n);
+      ch.data.labels = xs;
+      ch.data.datasets.forEach(function (ds, i) { ds.data = xs.map(function (x) { return Math.min(classes[i].f(x), 1e300); }); });
+      ch.update("none");
+    }
+  }
+  slider.addEventListener("input", update);
+  Course.chart("growth-chart", function (c) {
+    var xs = series(currentN());
+    return {
+      type: "line",
+      data: { labels: xs, datasets: classes.map(function (cl, i) {
+        return { label: cl.name, data: xs.map(function (x) { return Math.min(cl.f(x), 1e300); }), borderColor: c.series[i], backgroundColor: c.series[i], pointRadius: 0, tension: 0.2 };
+      }) },
+      options: {
+        animation: false,
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { type: "logarithmic", title: { display: true, text: "n (log scale)" } },
+          y: { type: "logarithmic", min: 1, max: 1e18, title: { display: true, text: "steps (log scale, clipped at 10¹⁸)" } }
+        }
+      }
+    };
+  }).then(function (h) { chartHandle = h; update(); });
+  update();
+
+  // ---- measured duplicate detection ----
+  Course.chart("dup-chart", function (c) {
+    var ns = [10, 100, 1000, 10000, 100000];
+    function ds(label, data, colour, dash) { return { label: label, data: data, borderColor: colour, backgroundColor: colour, borderDash: dash || [], tension: 0.2 }; }
+    return {
+      type: "line",
+      data: { labels: ns, datasets: [
+        ds("pairs O(n²)", [0.3, 4.0, 291.6, 20065.6, 1484006.8], c.red),
+        ds("sort O(n log n)", [0.6, 1.7, 19.9, 125.9, 1013.3], c.blue),
+        ds("hash O(n) expected", [2.0, 2.8, 25.9, 90.6, 1030.9], c.teal, [6, 4])
+      ] },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y.toLocaleString("en") + " µs"; } } } },
+        scales: {
+          x: { type: "logarithmic", title: { display: true, text: "n (log scale)" } },
+          y: { type: "logarithmic", title: { display: true, text: "microseconds (log scale)" } }
+        }
+      }
+    };
+  });
+
+  // ---- measured regex engines ----
+  Course.chart("regex-chart", function (c) {
+    return {
+      type: "line",
+      data: { labels: [16, 18, 20, 22, 24, 26], datasets: [
+        { label: ".NET default (backtracking)", data: [7.54, 31.05, 121.72, 490.90, 2025.82, 10175.94], borderColor: c.red, backgroundColor: c.red, tension: 0.2 },
+        { label: ".NET NonBacktracking", data: [0.019, 0.003, 0.002, 0.006, 0.010, 0.004], borderColor: c.teal, backgroundColor: c.teal, tension: 0.2 }
+      ] },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: {
+          x: { title: { display: true, text: "input length n (characters)" } },
+          y: { type: "logarithmic", min: 0.001, title: { display: true, text: "milliseconds (log scale)" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

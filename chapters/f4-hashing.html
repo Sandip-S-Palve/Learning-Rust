@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F4 Hashing and maps</title>
+<meta name="description" content="Hash functions, collisions, probing, load factor, SwissTable and HashDoS — with a measured attack — and how Rust's HashMap and .NET's Dictionary compare.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="F4">
+<article class="content">
+<h1>Hashing and maps</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Explain how a hash table turns a key into a slot, and why that gives expected O(1) lookups</li>
+      <li>Describe collisions and the two families of fixes (chaining, open addressing), including why deletions leave <em>tombstones</em></li>
+      <li>Explain load factor and resizing, and read the capacity steps of a real <code>HashMap</code></li>
+      <li>Describe how SwissTable, the design behind Rust's <code>HashMap</code>, uses one metadata byte per slot and checks 16 slots at once</li>
+      <li>Explain HashDoS, reproduce it, and choose a hasher deliberately (safe default vs fast)</li>
+      <li>Apply the Eq/Hash contract correctly, and choose between <code>HashMap</code>, <code>BTreeMap</code> and a plain <code>Vec</code></li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Hash maps are the workhorse of almost every service you've built: caches, lookups by ID, deduplication, grouping. In your products they're everywhere. The rule engine indexes facts by attribute value so a rule can find matching facts without scanning everything. The workflow engine looks up running workflows by ID and remembers which messages it has already processed (<em>idempotency</em>).</p>
+  <p>They also hide a security trap. In this chapter you'll measure an attacker turning 32,000 innocent-looking keys into <strong>1.4 seconds of CPU instead of 1.7 ms</strong>, and see exactly which design choice in Rust's standard library prevents it.</p>
+</div>
+
+<h2 id="intuition">Intuition first: the cloakroom</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>A theatre cloakroom has 100 numbered hooks. Instead of searching every hook for your coat, the attendant uses a rule to turn your <em>name</em> into a hook number, say "add up the letters, keep the last two digits". To fetch your coat they apply the same rule and walk straight to that hook. That rule is a <strong>hash function</strong>; the row of hooks is a <strong>hash table</strong>.</p>
+  <p>Two people will sometimes get the same hook number: a <strong>collision</strong>. The cloakroom needs a policy for that, such as "use the next free hook". And if a prankster learns the rule, they can send a hundred friends whose names all add up to the same number, jamming one hook while the attendant searches the whole corridor every time. That is the <strong>HashDoS</strong> attack.</p>
+</div>
+<figure class="visual">
+  <span class="visual-tag">Diagram · from key to slot</span>
+  <svg viewBox="0 0 720 230" role="img" aria-label="Keys passing through a hash function to slot numbers in a table">
+    <defs>
+      <marker id="hk-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+    </defs>
+    <g>
+      <rect x="20" y="40" width="120" height="34" rx="6" class="svg-teal"/><text x="80" y="57" class="svg-mono" text-anchor="middle">"apple"</text>
+      <rect x="20" y="96" width="120" height="34" rx="6" class="svg-teal"/><text x="80" y="113" class="svg-mono" text-anchor="middle">"cherry"</text>
+      <rect x="20" y="152" width="120" height="34" rx="6" class="svg-teal"/><text x="80" y="169" class="svg-mono" text-anchor="middle">"fig"</text>
+    </g>
+    <rect x="200" y="70" width="150" height="90" rx="10" class="svg-accent"/>
+    <text x="275" y="105" class="svg-title" text-anchor="middle">hash(key)</text>
+    <text x="275" y="127" class="svg-text-sm" text-anchor="middle">→ 64-bit number</text>
+    <line x1="140" y1="57" x2="196" y2="98" class="svg-line" marker-end="url(#hk-a)"/>
+    <line x1="140" y1="113" x2="196" y2="114" class="svg-line" marker-end="url(#hk-a)"/>
+    <line x1="140" y1="169" x2="196" y2="130" class="svg-line" marker-end="url(#hk-a)"/>
+    <text x="400" y="80" class="svg-text-sm">slot = hash % capacity</text>
+    <!-- table -->
+    <g>
+      <rect x="430" y="96" width="34" height="40" rx="3" class="svg-box"/><rect x="464" y="96" width="34" height="40" rx="3" class="svg-teal"/>
+      <rect x="498" y="96" width="34" height="40" rx="3" class="svg-box"/><rect x="532" y="96" width="34" height="40" rx="3" class="svg-box"/>
+      <rect x="566" y="96" width="34" height="40" rx="3" class="svg-teal"/><rect x="600" y="96" width="34" height="40" rx="3" class="svg-box"/>
+      <rect x="634" y="96" width="34" height="40" rx="3" class="svg-teal"/><rect x="668" y="96" width="34" height="40" rx="3" class="svg-box"/>
+      <text x="447" y="152" class="svg-text-sm" text-anchor="middle">0</text><text x="481" y="152" class="svg-text-sm" text-anchor="middle">1</text>
+      <text x="515" y="152" class="svg-text-sm" text-anchor="middle">2</text><text x="549" y="152" class="svg-text-sm" text-anchor="middle">3</text>
+      <text x="583" y="152" class="svg-text-sm" text-anchor="middle">4</text><text x="617" y="152" class="svg-text-sm" text-anchor="middle">5</text>
+      <text x="651" y="152" class="svg-text-sm" text-anchor="middle">6</text><text x="685" y="152" class="svg-text-sm" text-anchor="middle">7</text>
+    </g>
+    <line x1="350" y1="104" x2="460" y2="108" class="svg-line" marker-end="url(#hk-a)"/>
+    <line x1="350" y1="115" x2="562" y2="118" class="svg-line" marker-end="url(#hk-a)"/>
+    <line x1="350" y1="126" x2="630" y2="124" class="svg-line" marker-end="url(#hk-a)"/>
+    <text x="566" y="190" class="svg-text-sm" text-anchor="middle">no searching: compute the slot, go straight there</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> A hash table turns "find the key" into "compute where the key must be". As long as keys spread evenly across slots, that's O(1) expected time, independent of how many entries there are.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="maps-sets">Maps and sets</h3>
+<p>A <dfn data-term="map" data-def="An abstract data type storing key → value pairs with fast lookup, insertion and removal by key. Rust HashMap/BTreeMap; C# Dictionary.">map</dfn> (also called a dictionary or associative array) stores key → value pairs and answers "what is the value for this key?". A <dfn data-term="set" data-def="An abstract data type storing unique keys and answering membership questions. Rust HashSet/BTreeSet; C# HashSet&lt;T&gt;.">set</dfn> stores just keys and answers "is this key present?". Both are abstract data types (chapter F3). The <dfn data-term="hash table" data-def="A data structure implementing maps and sets: a hash function maps each key to a slot in an array, giving expected O(1) operations.">hash table</dfn> is the most common data structure behind them. In Rust that's <code>HashMap&lt;K, V&gt;</code> and <code>HashSet&lt;T&gt;</code>; in .NET, <code>Dictionary&lt;TKey, TValue&gt;</code> and <code>HashSet&lt;T&gt;</code>.</p>
+
+<h3 id="hash-functions">Hash functions</h3>
+<p>A <dfn data-term="hash function" data-def="A function that turns a key of any size into a fixed-size number (the hash), deterministically and spreading different keys evenly.">hash function</dfn> turns a key of any size into a fixed-size number. A good one for hash tables is:</p>
+<ol>
+  <li><strong>Deterministic</strong> within a run: the same key always gives the same hash, otherwise you'd never find anything again.</li>
+  <li><strong>Uniform:</strong> it spreads different keys evenly, so similar keys ("order-1", "order-2") land far apart.</li>
+  <li><strong>Fast</strong>, because it runs on every insert and lookup.</li>
+  <li>For tables exposed to untrusted input, <strong>unpredictable to outsiders</strong>. That's the HashDoS story below.</li>
+</ol>
+<p>The table then reduces the hash to a slot index. When the capacity is a power of two, <code>hash % capacity</code> is a single bitwise AND, which is one reason tables grow by doubling.</p>
+
+<h3 id="collisions">Collisions are inevitable</h3>
+<p>There are vastly more possible keys than slots, so different keys <em>must</em> sometimes share a slot: a <dfn data-term="collision" data-def="Two different keys mapping to the same slot (or the same hash). Unavoidable; tables must handle it.">collision</dfn>. They happen sooner than intuition suggests. This is the <dfn data-term="birthday paradox" data-def="With m equally likely slots, a collision becomes likely after only about √m keys (≈1.18√m for 50%), far fewer than m.">birthday paradox</dfn>: with 23 people, there's a better-than-even chance two share a birthday. For n keys spread uniformly over m slots:</p>
+$$ P(\text{at least one collision}) \approx 1 - e^{-n^2 / (2m)}, \qquad \text{which reaches } 50\% \text{ at } n \approx 1.18\sqrt{m} $$
+<p>A table with a million slots should expect its first collision after only about 1,200 keys. So every hash table needs a <em>collision-resolution</em> strategy. There are two families:</p>
+<ul>
+  <li><dfn data-term="separate chaining" data-def="Collision resolution where each slot holds a small list (chain) of all entries that hashed there.">Separate chaining</dfn>: each slot holds a small list of every entry that hashed there. Simple, but every chain is more pointer-chasing (chapter F3).</li>
+  <li><dfn data-term="open addressing" data-def="Collision resolution where all entries live in the slot array itself; on a collision, a probe sequence finds another free slot.">Open addressing</dfn>: all entries live in the slot array itself. On a collision, follow a fixed <em>probe sequence</em> to the next candidate slot. The simplest is <dfn data-term="linear probing" data-def="Open addressing that tries slot h, h+1, h+2, … until a free slot (insert) or the key/an empty slot (lookup) is found.">linear probing</dfn>: try the next slot, then the next. Contiguous, so cache-friendly. Rust's <code>HashMap</code> uses open addressing.</li>
+</ul>
+<p>Step through linear probing, including the subtle part, deletion:</p>
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · linear probing in an 8-slot table</span>
+  <svg viewBox="0 0 720 220" role="img" aria-label="Linear probing: inserting, colliding, probing, deleting with a tombstone and looking up">
+    <defs>
+      <marker id="lp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <g>
+      <rect x="32" y="70" width="76" height="56" rx="6" class="svg-box-strong"/><rect x="114" y="70" width="76" height="56" rx="6" class="svg-box-strong"/>
+      <rect x="196" y="70" width="76" height="56" rx="6" class="svg-box-strong"/><rect x="278" y="70" width="76" height="56" rx="6" class="svg-box-strong"/>
+      <rect x="360" y="70" width="76" height="56" rx="6" class="svg-box-strong"/><rect x="442" y="70" width="76" height="56" rx="6" class="svg-box-strong"/>
+      <rect x="524" y="70" width="76" height="56" rx="6" class="svg-box-strong"/><rect x="606" y="70" width="76" height="56" rx="6" class="svg-box-strong"/>
+      <text x="70" y="144" class="svg-text-sm" text-anchor="middle">0</text><text x="152" y="144" class="svg-text-sm" text-anchor="middle">1</text>
+      <text x="234" y="144" class="svg-text-sm" text-anchor="middle">2</text><text x="316" y="144" class="svg-text-sm" text-anchor="middle">3</text>
+      <text x="398" y="144" class="svg-text-sm" text-anchor="middle">4</text><text x="480" y="144" class="svg-text-sm" text-anchor="middle">5</text>
+      <text x="562" y="144" class="svg-text-sm" text-anchor="middle">6</text><text x="644" y="144" class="svg-text-sm" text-anchor="middle">7</text>
+    </g>
+    <!-- contents -->
+    <g data-show="2-" data-hl="2"><rect x="278" y="70" width="76" height="56" rx="6" class="svg-teal"/><text x="316" y="98" class="svg-mono" text-anchor="middle">ada</text></g>
+    <g data-show="3-" data-hl="3"><rect x="442" y="70" width="76" height="56" rx="6" class="svg-teal"/><text x="480" y="98" class="svg-mono" text-anchor="middle">bob</text></g>
+    <g data-show="4-5" data-hl="4"><rect x="360" y="70" width="76" height="56" rx="6" class="svg-amber"/><text x="398" y="98" class="svg-mono" text-anchor="middle">cy</text></g>
+    <g data-show="6-" data-hl="6"><rect x="360" y="70" width="76" height="56" rx="6" class="svg-box" stroke-dasharray="5 4"/><text x="398" y="98" class="svg-mono" text-anchor="middle">✝</text></g>
+    <g data-show="5-" data-hl="5"><rect x="524" y="70" width="76" height="56" rx="6" class="svg-amber"/><text x="562" y="98" class="svg-mono" text-anchor="middle">dee</text></g>
+    <!-- probe arrows -->
+    <path d="M316 64 C 330 40, 380 40, 394 64" class="svg-line-accent" marker-end="url(#lp-a)" data-show="=4"/>
+    <path d="M398 64 C 412 40, 462 40, 476 64" class="svg-line-accent" marker-end="url(#lp-a)" data-show="=5"/>
+    <path d="M480 64 C 494 40, 544 40, 558 64" class="svg-line-accent" marker-end="url(#lp-a)" data-show="=5"/>
+    <path d="M398 64 C 412 40, 462 40, 476 64" class="svg-line-accent" marker-end="url(#lp-a)" data-show="=7"/>
+    <path d="M480 64 C 494 40, 544 40, 558 64" class="svg-line-accent" marker-end="url(#lp-a)" data-show="=7"/>
+    <!-- captions in svg -->
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=1">empty table, 8 slots</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=2">insert ada: hash % 8 = 3</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=3">insert bob: hash % 8 = 5</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=4">insert cy: hash % 8 = 3, taken, so probe to 4</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=5">insert dee: hash % 8 = 4, then 5, then 6</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=6">delete cy: leave a tombstone ✝, not "empty"</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle" data-show="=7">find dee: 4 (✝, keep going), 5, 6 ✓</text>
+    <text x="360" y="190" class="svg-text-sm" text-anchor="middle">lookups stop at a truly empty slot: that's how they know a key is absent</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>An empty table of 8 slots. To insert, compute <code>hash(key) % 8</code> and use that slot if it's free.</li>
+    <li><code>ada</code> hashes to 3: slot 3 is free.</li>
+    <li><code>bob</code> hashes to 5: free.</li>
+    <li><code>cy</code> also hashes to 3: a collision. Linear probing tries the next slot, 4, which is free.</li>
+    <li><code>dee</code> hashes to 4, which <code>cy</code> took. Try 5 (<code>bob</code>), then 6: free. A collision at one slot has started to push other keys along: a <em>cluster</em>.</li>
+    <li>Delete <code>cy</code>. We can't simply mark slot 4 empty, because a lookup for <code>dee</code> would stop there and wrongly report "not found". Instead we leave a <dfn data-term="tombstone" data-def="A marker left in a deleted slot of an open-addressing table so that probe sequences continue past it; reused by later inserts.">tombstone</dfn> (✝): "something was here, keep probing".</li>
+    <li>Looking up <code>dee</code>: start at 4, see the tombstone and keep going, pass <code>bob</code> at 5, and find <code>dee</code> at 6. Lookups stop only at a truly empty slot. Tombstones are reused by later inserts and cleared when the table is rebuilt.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> Open addressing keeps everything in one contiguous array. Collisions cost extra probes, which stay short as long as the table isn't too full and the hash spreads keys well.</figcaption>
+</figure>
+
+<h3 id="load-factor">Load factor and resizing</h3>
+<p>The <dfn data-term="load factor" data-def="Entries ÷ slots in a hash table. Higher means less memory overhead but longer probe sequences; tables resize when it exceeds a maximum.">load factor</dfn> is entries ÷ slots. As it approaches 1, probe sequences grow long, so tables <em>resize</em> before they're full: allocate a bigger slot array and re-insert every entry, because each key's slot depends on the capacity. Like <code>Vec</code> growth (chapter F2), that's O(n) occasionally and amortised O(1) per insert. You can watch it happen:</p>
+<pre class="output">len -> capacity:  1->3  4->7  8->14  15->28  29->56  57->112  113->224  225->448  449->896  897->1792</pre>
+<p>That's real output from Lab step 2 (Rust 1.99.0). <code>capacity()</code> reports how many entries fit <em>before</em> the next resize. From 14 onwards each value is exactly 7/8 of a power of two (14 = 16 × 7/8, 28 = 32 × 7/8, …), so the table keeps at least 1/8 of its slots free. The two smallest steps (3, 7) are one less than a power of two. These numbers are observed behaviour of today's implementation, not a documented guarantee.</p>
+
+<h3 id="contract">The Eq/Hash contract</h3>
+<p>A map must be able to tell when two keys are "the same". So key types implement two traits (Rust's interfaces, chapter 2.9): <code>Eq</code> (equality) and <code>Hash</code>. The Rust docs state the rule that must hold:</p>
+<pre><code class="language-text">k1 == k2  →  hash(k1) == hash(k2)</code></pre>
+<p>Equal keys <em>must</em> produce equal hashes; otherwise an equal key is looked for in the wrong slot and never found. (The reverse needn't hold: different keys may collide.) Usually you don't write these by hand: <code>#[derive(PartialEq, Eq, Hash)]</code> generates both from your struct's fields, consistently.</p>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>It's the same contract as overriding <code>Equals</code> and <code>GetHashCode</code> together, and the same bug if you override only one. Two differences:</p>
+  <ul>
+    <li>Rust won't let a type be a <code>HashMap</code> key unless it implements <code>Eq</code> and <code>Hash</code>, checked at compile time. Notably <code>f64</code> implements neither (NaN isn't equal to itself), so <code>HashMap&lt;f64, _&gt;</code> is rejected, where C# accepts <code>Dictionary&lt;double, …&gt;</code>. Real compiler output from this chapter's lab:</li>
+  </ul>
+<pre class="output error">error[E0599]: the method `insert` exists for struct `HashMap&lt;f64, &amp;str&gt;`, but its trait bounds were not satisfied
+ --&gt; src/bin/floatkey.rs:5:12
+  |
+5 |     prices.insert(9.99, "basic");
+  |            ^^^^^^
+  |
+  = note: the following trait bounds were not satisfied:
+          `f64: Eq`
+          `f64: Hash`</pre>
+  <ul>
+    <li>Mutating a key while it's inside the map is a "logic error" in Rust's docs (as it is in .NET), but Rust's ownership rules make it hard to do by accident. You can't get a mutable reference to a key inside a map.</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="swisstable">SwissTable: how Rust's HashMap is built</h3>
+<p>Rust's docs say: "The hash table implementation is a Rust port of Google's SwissTable." Abseil's design notes describe the key ideas:</p>
+<ul>
+  <li>The 64-bit hash is split in two: <strong>H1</strong> (57 bits) picks where to start looking, and <strong>H2</strong> (the remaining 7 bits) is a small fingerprint.</li>
+  <li>Alongside the slot array is a <strong>metadata array with one byte per slot</strong>: "a single control bit and the 7 bit H2 hash". The control bit marks the slot as empty, deleted (a tombstone) or full.</li>
+  <li>Lookups load <strong>16 metadata bytes at once</strong> into a SIMD register and compare all 16 against the wanted H2 in a few instructions. Only the slots whose fingerprint matches, usually one or none, need a real key comparison. In the notes' words: "we can winnow 16 candidates down to only those with a matching H2 hash in only a few instructions".</li>
+  <li>As in the animation, "a deleted element does not cease probing, though an empty element would."</li>
+</ul>
+<figure class="visual">
+  <span class="visual-tag">Diagram · one SwissTable probe</span>
+  <svg viewBox="0 0 720 400" role="img" aria-label="SwissTable metadata group of 16 bytes compared in parallel against a 7-bit fingerprint">
+    <text x="20" y="22" class="svg-title">hash(key) → H1 (57 bits: where to start) + H2 (7 bits: fingerprint 5A)</text>
+    <text x="20" y="54" class="svg-text">metadata group: 16 bytes, one per slot</text>
+    <g id="ctrl"></g>
+    <text x="20" y="228" class="svg-text">one SIMD compare against 5A, all 16 at once</text>
+    <g id="mask"></g>
+    <text x="360" y="388" class="svg-text" text-anchor="middle">only 2 of 16 slots need a full key comparison</text>
+  </svg>
+  <figcaption><strong>Figure 3.</strong> Grey = empty, dashed = deleted (tombstone), teal = full with that 7-bit fingerprint. A random non-matching slot shares the fingerprint only 1 time in 128, so almost every probe compares at most one real key. The metadata is tiny and contiguous, so it's cache-friendly too. Illustrative values.</figcaption>
+</figure>
+
+<h3 id="hashdos">HashDoS: when collisions are chosen by an attacker</h3>
+<p>Hash tables are O(1) <em>expected</em> (chapter F2), assuming keys spread evenly. If an attacker can compute your hash function, they can craft thousands of keys that all land in the same place. Every insert then probes past every earlier one: O(n) per insert, O(n²) in total. Crosby and Wallach showed this in 2003 against hash tables in Perl, the Squid proxy and the Bro intrusion-detection system, using low-bandwidth crafted input. The pattern still matters: anywhere you put user-supplied strings (JSON object keys, HTTP headers, query parameters, rule-fact attributes) into a hash map, an attacker chooses the keys.</p>
+<p>The lab reproduces it with a deliberately weak hash (the sum of the key's bytes) and keys built to share the same sum:</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · measured HashDoS</span>
+  <div class="chart-box"><canvas id="dos-chart" aria-label="Chart comparing insert time for colliding keys with a weak hash versus the default SipHash"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Inserting n attacker-chosen keys. Weak hash: 2.8 ms → 9.6 → 29 → 88 → 347 → <strong>1,435 ms</strong>, about 4× per doubling, which is quadratic. Rust's default hasher on the <em>same keys</em>: 0.11 ms → <strong>1.7 ms</strong>, linear. Release build, lab machine. Log scale.</figcaption>
+</figure>
+<p><strong>The defence is a keyed, randomised hash.</strong> Rust's documentation: "By default, HashMap uses a hashing algorithm selected to provide resistance against HashDoS attacks. The algorithm is randomly seeded… The default hashing algorithm is currently SipHash 1-3, though this is subject to change." <dfn data-term="SipHash" data-def="A fast keyed hash function (a pseudorandom function) designed by Aumasson and Bernstein (2012) for hash tables; with a secret random key, attackers can't predict collisions.">SipHash</dfn> (Aumasson and Bernstein, 2012) is a <em>pseudorandom function</em>: with a secret random key chosen when the map is created, outsiders can't predict which keys collide. A visible side effect is that iteration order changes from run to run (Lab step 1).</p>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>.NET makes the same trade-off for strings. Microsoft's docs say string hash codes "can differ across .NET implementations, across .NET versions… This implies that two subsequent runs of the same program may return different hash codes", and <code>System.HashCode</code> "uses a statically initialized random seed". Measured on the lab machine with .NET 10: <code>"apple".GetHashCode()</code> returned 2043132168 in one run and 1156942587 in the next. Never persist a hash code, in either platform.</p>
+</div>
+
+<h3 id="choosing-hasher">Choosing a hasher deliberately</h3>
+<p>The protection has a cost. Rust's own docs say SipHash's "performance is very competitive for medium sized keys", but "other hashing algorithms will outperform it for small keys such as integers… though those algorithms will typically <em>not</em> protect against attacks such as HashDoS." Measured: 1 million inserts plus 1 million lookups of <code>u64</code> keys took a median of <strong>36 ms</strong> with the default (range 34–48 ms over 7 runs) and <strong>22 ms</strong> with FNV-1a (range 20–29 ms), a simple non-keyed hash. About 1.6× faster.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Hasher</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Keys come from outside: users, tenants, network, files</td><td class="yes">Default (keyed SipHash)</td><td>HashDoS resistance. Not negotiable</td></tr>
+    <tr><td>Keys are internal and trusted (your own integer IDs, interned symbols) and profiling shows hashing is hot</td><td class="partial">A fast non-keyed hasher (via <code>HashMap::with_hasher</code>)</td><td>Measured ~1.6× here. Document why it's safe</td></tr>
+    <tr><td>You need the same iteration order every run (tests, reproducible output)</td><td>Neither: use <code>BTreeMap</code>, or sort the keys</td><td>Randomised seeds make order vary by design</td></tr>
+  </tbody>
+</table></div>
+
+<details class="deep-dive"><summary>Deep dive: why "expected O(1)" really is expected — and what keyed hashing buys you</summary><div class="body">
+  <p>If n keys are spread uniformly at random over m slots, the average number of keys per slot is the load factor \(\alpha = n/m\). For linear probing, Knuth's classic analysis gives an expected number of probes for an unsuccessful search of about</p>
+  $$ \tfrac{1}{2}\left(1 + \tfrac{1}{(1-\alpha)^2}\right) $$
+  <p>That's about 2.5 at \(\alpha = 0.5\), and 32.5 at \(\alpha = 0.875\) for plain linear probing. That steep climb is why tables cap their load factor, and why SwissTable's 16-wide fingerprint filtering matters: it makes each <em>group</em> probe almost as cheap as a single slot, so it can run fuller than a textbook linear-probing table.</p>
+  <p>All of that assumes the uniform-random spread, which is true only if the keys don't depend on the hash function. A <em>fixed</em> public hash function can be inverted by an adversary, and Figure 4 shows the result. A <em>keyed</em> pseudorandom function restores the assumption: without the secret key, the attacker's crafted keys are no better than random ones. That's precisely the guarantee SipHash was designed to provide (Aumasson and Bernstein's paper is titled "SipHash: a fast short-input PRF"). Randomised seeding per map also means an attacker can't use one map's iteration order to learn about another's.</p>
+  <p class="small muted">The probe formula is the standard textbook result for linear probing under uniform hashing. It's shown to explain the shape of the curve, not to predict SwissTable's exact numbers.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>Create a project with these programs in <code>src/bin/</code>. Run them with <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — lookups, and arbitrary order</h3>
+<pre data-playground data-title="src/bin/order.rs"><code class="language-rust">use std::collections::HashMap;
+
+fn main() {
+    let mut stock: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+    for (sku, qty) in [("apple", 3), ("banana", 7), ("cherry", 1), ("damson", 4), ("elder", 9)] {
+        stock.insert(sku, qty);
+    }
+    // Lookups by key are what a map is for:
+    println!("cherry -&gt; {:?}, fig -&gt; {:?}", stock.get("cherry"), stock.get("fig"));
+    // Iteration order is "arbitrary": run the program twice and compare.
+    let keys: Vec&lt;&amp;str&gt; = stock.keys().copied().collect();
+    println!("iteration order: {keys:?}");
+}</code></pre>
+<pre class="output">$ cargo run -q --release --bin order   (three separate runs)
+cherry -&gt; Some(1), fig -&gt; None
+iteration order: ["elder", "damson", "banana", "cherry", "apple"]
+cherry -&gt; Some(1), fig -&gt; None
+iteration order: ["elder", "damson", "banana", "cherry", "apple"]
+cherry -&gt; Some(1), fig -&gt; None
+iteration order: ["banana", "apple", "elder", "damson", "cherry"]</pre>
+<p><code>get</code> returns <code>Some(value)</code> or <code>None</code>. Rust has no null; "maybe a value" is the type <code>Option</code> (chapter 2.5). The third run's order differs: each map gets a fresh random seed. Lookups are unaffected; only iteration order changes.</p>
+
+<h3 id="lab-2">Step 2 — watch it resize</h3>
+<pre data-playground data-title="src/bin/capacity.rs"><code class="language-rust">use std::collections::HashMap;
+
+fn main() {
+    let mut m: HashMap&lt;u64, u64&gt; = HashMap::new();
+    let mut last = m.capacity();
+    print!("len -&gt; capacity:");
+    for i in 0..1000 {
+        m.insert(i, i);
+        if m.capacity() != last {
+            print!("  {}-&gt;{}", m.len(), m.capacity());
+            last = m.capacity();
+        }
+    }
+    println!();
+}</code></pre>
+<pre class="output">len -&gt; capacity:  1-&gt;3  4-&gt;7  8-&gt;14  15-&gt;28  29-&gt;56  57-&gt;112  113-&gt;224  225-&gt;448  449-&gt;896  897-&gt;1792</pre>
+<p>If you know roughly how many entries are coming, <code>HashMap::with_capacity(n)</code> skips every intermediate rebuild, exactly as <code>Vec::with_capacity</code> does.</p>
+
+<h3 id="lab-3">Step 3 — mount a HashDoS attack (on yourself)</h3>
+<pre data-title="src/bin/hashdos.rs"><code class="language-rust">use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::time::Instant;
+
+/// A deliberately weak hasher: the hash is just the sum of the bytes.
+#[derive(Default)]
+struct SumHasher(u64);
+
+impl Hasher for SumHasher {
+    fn write(&amp;mut self, bytes: &amp;[u8]) {
+        for b in bytes {
+            self.0 += *b as u64;
+        }
+    }
+    fn finish(&amp;self) -&gt; u64 {
+        self.0
+    }
+}
+
+/// `n` distinct keys whose bytes all add up to the same total: an attacker's dream.
+/// Each key is 4 letters plus their "mirror" (z - letter), so every key sums alike.
+fn colliding_keys(n: usize) -&gt; Vec&lt;String&gt; {
+    (0..n)
+        .map(|mut i| {
+            let mut s = String::new();
+            let mut mirror = String::new();
+            for _ in 0..4 {
+                let d = (i % 26) as u8;
+                i /= 26;
+                s.push((b'a' + d) as char);
+                mirror.push((b'z' - d) as char);
+            }
+            s + &amp;mirror
+        })
+        .collect()
+}
+
+fn main() {
+    println!("{:&gt;7} {:&gt;16} {:&gt;18}", "keys", "weak hash (ms)", "default SipHash (ms)");
+    for n in [1_000, 2_000, 4_000, 8_000, 16_000, 32_000] {
+        let keys = colliding_keys(n);
+
+        let start = Instant::now();
+        let mut weak: HashMap&lt;&amp;str, u32, BuildHasherDefault&lt;SumHasher&gt;&gt; = HashMap::default();
+        for k in &amp;keys {
+            weak.insert(k.as_str(), 1);
+        }
+        let t_weak = start.elapsed();
+
+        let start = Instant::now();
+        let mut safe: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+        for k in &amp;keys {
+            safe.insert(k.as_str(), 1);
+        }
+        let t_safe = start.elapsed();
+
+        assert_eq!(weak.len(), n);
+        assert_eq!(safe.len(), n);
+        println!("{:&gt;7} {:&gt;16.2} {:&gt;18.3}", n, t_weak.as_secs_f64() * 1e3, t_safe.as_secs_f64() * 1e3);
+    }
+}</code></pre>
+<pre class="output">   keys   weak hash (ms) default SipHash (ms)
+   1000             2.79              0.114
+   2000             9.56              0.179
+   4000            28.75              0.273
+   8000            87.79              0.399
+  16000           346.88              0.932
+  32000          1435.29              1.665</pre>
+<p>The third type parameter of <code>HashMap</code> chooses the hasher. Swapping it is one line, which is why this decision belongs in code review. <code>impl Hasher for SumHasher</code> means "SumHasher fulfils the Hasher interface" (chapter 2.9). Each key like <code>"abcd"+"zyxw"</code> has a constant byte total, since every letter is paired with its mirror.</p>
+
+<h3 id="lab-4">Step 4 — the price of safety</h3>
+<pre data-title="src/bin/hasher_speed.rs"><code class="language-rust">use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::hint::black_box;
+use std::time::Instant;
+
+/// FNV-1a: a classic, very simple, fast non-cryptographic hash. NOT HashDoS-resistant.
+struct Fnv1a(u64);
+
+impl Default for Fnv1a {
+    fn default() -&gt; Self {
+        Fnv1a(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for Fnv1a {
+    fn write(&amp;mut self, bytes: &amp;[u8]) {
+        for b in bytes {
+            self.0 ^= *b as u64;
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    fn finish(&amp;self) -&gt; u64 {
+        self.0
+    }
+}
+
+const N: u64 = 1_000_000;
+
+fn main() {
+    // Default (SipHash 1-3, randomly keyed)
+    let start = Instant::now();
+    let mut a: HashMap&lt;u64, u64&gt; = HashMap::with_capacity(N as usize);
+    for i in 0..N { a.insert(i, i); }
+    let mut hits = 0;
+    for i in 0..N { if a.contains_key(&amp;black_box(i)) { hits += 1; } }
+    let t_sip = start.elapsed();
+
+    // Same work with FNV-1a
+    let start = Instant::now();
+    let mut b: HashMap&lt;u64, u64, BuildHasherDefault&lt;Fnv1a&gt;&gt; = HashMap::with_capacity_and_hasher(N as usize, Default::default());
+    for i in 0..N { b.insert(i, i); }
+    for i in 0..N { if b.contains_key(&amp;black_box(i)) { hits += 1; } }
+    let t_fnv = start.elapsed();
+
+    assert_eq!(hits, 2 * N);
+    println!("1M inserts + 1M lookups of u64 keys:");
+    println!("  SipHash 1-3 (default): {:&gt;6.1} ms", t_sip.as_secs_f64() * 1e3);
+    println!("  FNV-1a:                {:&gt;6.1} ms", t_fnv.as_secs_f64() * 1e3);
+}</code></pre>
+<pre class="output">1M inserts + 1M lookups of u64 keys:
+  SipHash 1-3 (default):   36.3 ms
+  FNV-1a:                  19.9 ms</pre>
+<p class="small muted">One representative run of 7 (the medians were 36 ms and 22 ms). The first run of a session was slower (48 / 29 ms), a reminder to repeat measurements. FNV-1a is used here because it fits in a few lines. In production you would pick a well-reviewed hasher crate rather than hand-rolling one.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as unit tests (3 passed) and are Clippy-clean. They preview syntax from Module 2; the comments explain each line.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — word counts <span class="difficulty">★☆☆</span></div>
+  <p>Write <code>word_counts(text: &amp;str) -&gt; HashMap&lt;String, usize&gt;</code>, counting each whitespace-separated word case-insensitively. For <code>"Rule fires rule FIRES rule"</code>: rule → 3, fires → 2.</p>
+  <p class="small muted">Hint: <code>map.entry(key).or_insert(0)</code> gives you a mutable reference to the count, inserting 0 first if the key is missing. One hash lookup instead of two.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::HashMap;
+
+/// Count how often each word appears (case-insensitive).
+pub fn word_counts(text: &amp;str) -&gt; HashMap&lt;String, usize&gt; {
+    let mut counts: HashMap&lt;String, usize&gt; = HashMap::new();
+    for word in text.split_whitespace() {
+        let key = word.to_lowercase();
+        *counts.entry(key).or_insert(0) += 1; // insert 0 if missing, then add 1
+    }
+    counts
+}
+
+fn main() {
+    let c = word_counts("Rule fires rule FIRES rule");
+    println!("rule={} fires={}", c["rule"], c["fires"]); // rule=3 fires=2
+}</code></pre>
+  <p>The <em>Entry API</em> is the idiomatic way to "update or insert". The C# equivalent needs <code>TryGetValue</code> then an assignment, or <code>CollectionsMarshal.GetValueRefOrAddDefault</code>.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — bounded idempotency window <span class="difficulty">★★☆ product skill</span></div>
+  <p>A workflow engine receives messages that may be delivered more than once. Build a <code>Dedup</code> that remembers the last <code>capacity</code> message IDs and has <code>first_time(id) -&gt; bool</code>, which is true the first time an ID is seen and false for a duplicate inside the window. Memory must stay bounded.</p>
+  <p class="small muted">Hint: combine a <code>HashSet</code> (fast "seen?") with a <code>VecDeque</code> from chapter F3 (remembers arrival order, so you know what to forget).</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::{HashSet, VecDeque};
+
+/// Remembers the last `capacity` message ids and reports duplicates.
+pub struct Dedup {
+    seen: HashSet&lt;u64&gt;,   // O(1) "have I seen this?"
+    order: VecDeque&lt;u64&gt;, // remembers arrival order, to forget the oldest
+    capacity: usize,
+}
+
+impl Dedup {
+    pub fn new(capacity: usize) -&gt; Dedup {
+        Dedup { seen: HashSet::new(), order: VecDeque::new(), capacity }
+    }
+
+    /// Returns true the first time an id is seen (process it), false for a duplicate.
+    pub fn first_time(&amp;mut self, id: u64) -&gt; bool {
+        if self.seen.contains(&amp;id) {
+            return false;
+        }
+        self.seen.insert(id);
+        self.order.push_back(id);
+        if self.order.len() &gt; self.capacity {
+            let oldest = self.order.pop_front().unwrap();
+            self.seen.remove(&amp;oldest); // keep memory bounded
+        }
+        true
+    }
+}
+
+fn main() {
+    let mut d = Dedup::new(2);
+    for id in [1, 1, 2, 3, 1] {
+        println!("message {id}: {}", if d.first_time(id) { "process" } else { "duplicate, skip" });
+    }
+}</code></pre>
+<pre class="output">message 1: process
+message 1: duplicate, skip
+message 2: process
+message 3: process
+message 1: process</pre>
+  <p>The last line is the important design point: a <em>bounded</em> window means very late duplicates get through. Choose the window from your delivery guarantees, or make the processing itself idempotent. Chapter 10.1 covers both.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — case-insensitive keys <span class="difficulty">★★☆</span></div>
+  <p>Customers are looked up by e-mail, and <code>"Ada@Example.com "</code> and <code>"ada@example.COM"</code> must find the same customer. Why does <code>HashMap&lt;String, Customer&gt;</code> fail at this out of the box, and what's the simplest correct fix?</p>
+  <details class="solution"><summary>Show solution</summary>
+    <p><code>String</code>'s <code>Eq</code> and <code>Hash</code> compare exact bytes, so the two spellings are different keys with (almost certainly) different hashes. The fix must keep the Eq/Hash contract: normalise the key the same way on every insert <em>and</em> every lookup.</p>
+<pre data-playground><code class="language-rust">use std::collections::HashMap;
+
+/// Customers keyed by e-mail, treating addresses case-insensitively.
+pub fn normalise_email(email: &amp;str) -&gt; String {
+    email.trim().to_lowercase()
+}
+
+fn main() {
+    let mut customers: HashMap&lt;String, &amp;str&gt; = HashMap::new();
+    customers.insert(normalise_email("Ada@Example.com "), "Ada");
+    println!("{:?}", customers.get(&amp;normalise_email("ada@example.COM"))); // Some("Ada")
+}</code></pre>
+    <p>A sturdier version wraps the key in its own type (a <em>newtype</em>, chapter 3.2) whose constructor normalises, so un-normalised keys can't be used by mistake. In C# you'd pass <code>StringComparer.OrdinalIgnoreCase</code> to the <code>Dictionary</code> constructor, a comparer object that implements both equality and hashing consistently. That's the same contract.</p>
+  </details>
+</div>
+
+<h2 id="comparison">Comparison: which map?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th></th><th><code>HashMap</code></th><th><code>BTreeMap</code> (chapter F5)</th><th><code>Vec</code> of pairs</th></tr></thead>
+  <tbody>
+    <tr><td>Lookup / insert</td><td>O(1) expected</td><td>O(log n) guaranteed</td><td>O(n) scan (O(log n) if kept sorted)</td></tr>
+    <tr><td>Iteration order</td><td>Arbitrary, varies by run</td><td>Sorted by key</td><td>Insertion order (or sorted)</td></tr>
+    <tr><td>Range queries ("keys between A and F")</td><td class="no">No</td><td class="yes">Yes</td><td class="partial">If sorted</td></tr>
+    <tr><td>Key requirements</td><td><code>Eq + Hash</code></td><td><code>Ord</code> (total ordering)</td><td><code>PartialEq</code></td></tr>
+    <tr><td>Worst case under attack</td><td>Safe with the default hasher</td><td class="yes">Not hash-based, so no HashDoS</td><td>—</td></tr>
+    <tr><td>Best for</td><td>Large lookup tables, caches, dedup</td><td>Ordered data, ranges, deterministic output</td><td>Tiny maps (a handful of entries)</td></tr>
+    <tr><td>.NET equivalent</td><td><code>Dictionary&lt;K,V&gt;</code></td><td><code>SortedDictionary&lt;K,V&gt;</code></td><td><code>List&lt;KeyValuePair&lt;K,V&gt;&gt;</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Depending on iteration order</div>
+  <p>Tests that compare <code>format!("{map:?}")</code> pass on your machine and fail in CI. Output that should be stable (reports, JSON written to disk, generated code) must come from a <code>BTreeMap</code> or sorted keys.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Persisting or sharing hash values</div>
+  <p>Hash values are seeded per process (Rust) or per run (.NET strings). Storing them in a database or cache, or comparing them across services, breaks silently. For stable fingerprints use a named algorithm with a fixed specification (e.g. SHA-256 for content addressing).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Swapping in a "faster hasher" everywhere</div>
+  <p>It's a real speed-up (about 1.6× measured) and a real vulnerability if any key can be influenced from outside. Restrict fast hashers to trusted internal keys, and record the reasoning in code.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Implementing <code>PartialEq</code> by hand but deriving <code>Hash</code></div>
+  <p>If equality ignores a field but the hash includes it, equal keys can hash differently, and lookups fail intermittently. Derive both, or hand-write both from the same fields.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Hash tables are always O(1)."</div>
+  <p>Expected O(1), with a good hash and a sane load factor. Rebuilds are O(n) (pre-size with <code>with_capacity</code>), and adversarial or very poor hashing makes them O(n) per operation (Figure 4).</p></div>
+
+<h2 id="real-world">Real-world view: hashing in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine fact indexes.</strong> A rule like "order.customer_id == customer.id" is a <em>join</em>. Indexing facts in a hash map by join key turns "scan all customers for each order" (O(n·m)) into one lookup per order (O(n)). This is the hash join used by databases, and chapter 9.4's Rete memories use the same idea.</li>
+    <li><strong>Tenant-supplied keys.</strong> Fact attributes, tag names and JSON fields come from customers. Keep the default hasher for anything they can influence, or one malicious tenant can degrade the engine for everyone.</li>
+    <li><strong>Idempotency in the workflow engine.</strong> "Have I already applied event X?" is a set membership question. In memory that's Exercise 2's bounded window. Durably it's a unique index in the database (chapter 10.4).</li>
+    <li><strong>Deterministic replay.</strong> Workflow code must make the same decisions when re-run (chapter 10.7). Iterating a <code>HashMap</code> to decide <em>what to do next</em> breaks that, because order changes per process. Use <code>BTreeMap</code> or sorted keys in workflow logic. This is an easy-to-miss rule worth putting in the SDK guidelines.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F4">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which property must <code>Eq</code> and <code>Hash</code> satisfy for a key type?</div>
+    <ol class="options">
+      <li data-key="a">hash(k1) == hash(k2) implies k1 == k2</li>
+      <li data-key="b">k1 == k2 implies hash(k1) == hash(k2)</li>
+      <li data-key="c">Every key has a unique hash</li>
+      <li data-key="d">Hashes must be stable across program runs</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Wrong direction. Different keys may collide; that's allowed.</p>
+      <p data-for="b">Correct, as stated in the <code>HashMap</code> docs.</p>
+      <p data-for="c">Impossible: there are more keys than hash values.</p>
+      <p data-for="d">The opposite: Rust's default is randomly seeded per map.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In an open-addressing table, why does deleting an entry leave a tombstone instead of marking the slot empty?</div>
+    <ol class="options">
+      <li data-key="a">To save memory</li>
+      <li data-key="b">So iteration order is preserved</li>
+      <li data-key="c">Because memory can't be freed</li>
+      <li data-key="d">Lookups stop at an empty slot. Emptying it could cut a probe chain and make later keys unfindable</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Tombstones save nothing; they're a correctness device.</p>
+      <p data-for="b">Iteration order isn't preserved anyway.</p>
+      <p data-for="c">It's about probing, not freeing.</p>
+      <p data-for="d">Correct. That's step 6–7 of Figure 2.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A public API parses JSON bodies into a <code>HashMap&lt;String, Value&gt;</code>. A teammate proposes switching the whole codebase to a fast non-keyed hasher for a 1.6× speed-up. Your response?</div>
+    <ol class="options">
+      <li data-key="a">Not for maps whose keys come from requests: that reopens HashDoS. Consider it only for profiled, internal, trusted-key maps, with the reasoning documented</li>
+      <li data-key="b">Approve: faster is always better</li>
+      <li data-key="c">Approve, as long as the JSON is validated first</li>
+      <li data-key="d">Reject all hash maps; use only <code>Vec</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's the decision table in this chapter.</p>
+      <p data-for="b">Figure 4: 32,000 crafted keys cost about 1.4 s.</p>
+      <p data-for="c">Validation checks shape, not hash collisions. Valid JSON can still carry crafted keys.</p>
+      <p data-for="d">That's O(n) lookups, a different problem.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">With a well-spread hash and 1,000,000 slots, after roughly how many keys does a collision become more likely than not?</div>
+    <ol class="options">
+      <li data-key="a">500,000</li><li data-key="b">100,000</li><li data-key="c">About 1,200</li><li data-key="d">Never: a good hash avoids collisions</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Far too late. Intuition underestimates collisions.</p>
+      <p data-for="b">Still far too late.</p>
+      <p data-for="c">Correct. About 1.18 × √1,000,000 ≈ 1,180 (the birthday paradox).</p>
+      <p data-for="d">Collisions are unavoidable; tables are designed to handle them.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does SwissTable store in its one-byte-per-slot metadata?</div>
+    <ol class="options">
+      <li data-key="a">The full key</li>
+      <li data-key="b">A control bit plus a 7-bit fragment (H2) of the hash, enough to rule out almost all non-matching slots without touching them</li>
+      <li data-key="c">A pointer to the next slot</li>
+      <li data-key="d">The insertion timestamp</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Keys live in the slot array; one byte can't hold them.</p>
+      <p data-for="b">Correct, per Abseil's design notes. 16 of these bytes are compared at once with SIMD.</p>
+      <p data-for="c">That would be chaining; SwissTable uses open addressing.</p>
+      <p data-for="d">No timestamps are stored.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A workflow's "decide next step" code loops over a <code>HashMap</code> of pending tasks and starts the first eligible one. Replays of the same history sometimes choose different tasks. Why, and what's the fix?</div>
+    <ol class="options">
+      <li data-key="a">A bug in <code>HashMap</code>; file an issue</li>
+      <li data-key="b">The map needs more capacity</li>
+      <li data-key="c">Use a faster hasher</li>
+      <li data-key="d">Iteration order depends on a per-process random seed. Use <code>BTreeMap</code> (or sort the keys) so the choice is deterministic</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It's documented behaviour: "arbitrary order".</p>
+      <p data-for="b">Capacity doesn't fix order variation.</p>
+      <p data-for="c">Order would still be unspecified.</p>
+      <p data-for="d">Correct. Deterministic replay needs deterministic iteration (chapter 10.7).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does Rust reject <code>HashMap&lt;f64, &amp;str&gt;</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>f64</code> doesn't implement <code>Eq</code> or <code>Hash</code>, because NaN isn't equal to itself, so floats can't satisfy the map's equality contract</li>
+      <li data-key="b">Floats are too big to hash</li>
+      <li data-key="c">HashMap only accepts strings</li>
+      <li data-key="d">It's a temporary limitation of Rust 1.99</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. The compiler error lists exactly <code>f64: Eq</code> and <code>f64: Hash</code>.</p>
+      <p data-for="b">Size has nothing to do with it.</p>
+      <p data-for="c">Any type with <code>Eq + Hash</code> works.</p>
+      <p data-for="d">It's a deliberate design choice.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In Lab step 2, capacities went 14 → 28 → 56. What explains the 7/8 pattern?</div>
+    <ol class="options">
+      <li data-key="a">Rust reserves 1/8 for metadata</li>
+      <li data-key="b">It's random</li>
+      <li data-key="c">The table keeps part of its slots free (here at most 7/8 full), because probe lengths explode as tables fill</li>
+      <li data-key="d">The docs guarantee a load factor of exactly 0.875</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Metadata is a separate byte array, not slots.</p>
+      <p data-for="b">The pattern is exact and repeatable.</p>
+      <p data-for="c">Correct. See the deep dive's probe-count formula.</p>
+      <p data-for="d">It's observed behaviour, not a documented guarantee, as the chapter notes.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>A hash table computes a key's slot from its hash, giving expected O(1) lookups. Collisions are unavoidable (birthday paradox: about √m keys) and are resolved by chaining or open addressing.</li>
+  <li>Open addressing keeps entries in one array, probes on collision, and needs tombstones for deletion. Tables resize before filling up: observed capacities of 7/8 of a power of two.</li>
+  <li>Rust's <code>HashMap</code> is a SwissTable port: one metadata byte per slot (control bit + 7-bit fingerprint), compared 16 at a time with SIMD.</li>
+  <li>HashDoS turns O(1) into O(n) per insert with attacker-chosen keys (measured: 1,435 ms vs 1.7 ms). The defence is a keyed, randomly seeded hash: SipHash 1-3 by default in Rust. A fast hasher is only acceptable for trusted keys.</li>
+  <li>Equal keys must hash equally. Iteration order is arbitrary and varies per run: never persist hashes or depend on order. Use <code>BTreeMap</code> for ordered or deterministic needs.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">map</li><li class="chip">set</li><li class="chip">hash table</li><li class="chip">hash function</li><li class="chip">collision</li>
+  <li class="chip">birthday paradox</li><li class="chip">separate chaining</li><li class="chip">open addressing</li><li class="chip">linear probing</li>
+  <li class="chip">tombstone</li><li class="chip">load factor</li><li class="chip">SwissTable</li><li class="chip">HashDoS</li><li class="chip">SipHash</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/struct.HashMap.html"><code>std::collections::HashMap</code></a><span class="why">The source of every quoted guarantee: SipHash 1-3, random seeding, SwissTable, Eq/Hash, arbitrary order.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/hash/trait.Hash.html"><code>Hash</code></a> and <a href="https://doc.rust-lang.org/std/hash/trait.BuildHasher.html"><code>BuildHasher</code></a><span class="why">How hashing is plugged in; you used both in the lab.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://abseil.io/about/design/swisstables">Abseil — Swiss Tables Design Notes</a> and <a href="https://abseil.io/blog/20180927-swisstables">the announcement post</a><span class="why">The original design that Rust's map ports.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://github.com/rust-lang/hashbrown">hashbrown</a><span class="why">The Rust SwissTable implementation, maintained by the Rust project, also usable as a standalone crate.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/api/system.string.gethashcode">Microsoft Learn — <code>String.GetHashCode</code></a> and <a href="https://learn.microsoft.com/dotnet/api/system.hashcode"><code>System.HashCode</code></a><span class="why">.NET's equivalent guidance on unstable, randomly seeded hash codes.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://www.usenix.org/conference/12th-usenix-security-symposium/denial-service-algorithmic-complexity-attacks">S. A. Crosby, D. S. Wallach — “Denial of Service via Algorithmic Complexity Attacks”, USENIX Security 2003</a><span class="why">The paper that put hash-collision attacks on the map.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1007/978-3-642-34931-7_28">J.-P. Aumasson, D. J. Bernstein — “SipHash: A Fast Short-Input PRF”, INDOCRYPT 2012 (LNCS)</a><span class="why">The design of the keyed hash behind Rust's HashDoS resistance.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function">Fowler–Noll–Vo hash function (Wikipedia)</a><span class="why">The FNV-1a constants used in Lab step 4.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=ncHmEUmJZf4">“Designing a Fast, Efficient, Cache-friendly Hash Table, Step by Step” — Matt Kulukundis, CppCon 2017 (YouTube)</a><span class="why">The SwissTable design explained by one of its authors. Watch for the metadata-byte and SIMD-group sections, which match Figure 3.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---- SwissTable group diagram ----
+  var NS = "http://www.w3.org/2000/svg";
+  var ctrl = ["5A","--","13","7F","del","--","5A","22","--","41","del","08","--","66","3C","--"];
+  var gC = document.getElementById("ctrl"), gM = document.getElementById("mask");
+  function el(tag, attrs, text) { var n = document.createElementNS(NS, tag); for (var k in attrs) n.setAttribute(k, attrs[k]); if (text) n.textContent = text; return n; }
+  ctrl.forEach(function (b, i) {
+    var col = i % 8, row = Math.floor(i / 8);
+    var x = 20 + col * 86, y = 68 + row * 70;
+    var cls = b === "--" || b === "del" ? "svg-box" : "svg-teal";
+    var r = el("rect", { x: x, y: y, width: 80, height: 56, rx: 6, "class": cls });
+    if (b === "del") r.setAttribute("stroke-dasharray", "5 4");
+    gC.appendChild(r);
+    gC.appendChild(el("text", { x: x + 40, y: y + 28, "text-anchor": "middle", "class": b === "--" ? "svg-text-sm" : "svg-mono" }, b === "--" ? "empty" : b === "del" ? "✝" : b));
+    var hit = b === "5A";
+    var my = 242 + row * 66;
+    gM.appendChild(el("rect", { x: x, y: my, width: 80, height: 50, rx: 6, "class": hit ? "svg-accent" : "svg-box" }));
+    gM.appendChild(el("text", { x: x + 40, y: my + 25, "text-anchor": "middle", "class": "svg-mono" }, hit ? "match" : "0"));
+  });
+
+  // ---- HashDoS chart (measured) ----
+  Course.chart("dos-chart", function (c) {
+    return {
+      type: "line",
+      data: {
+        labels: [1000, 2000, 4000, 8000, 16000, 32000],
+        datasets: [
+          { label: "weak hash (sum of bytes)", data: [2.79, 9.56, 28.75, 87.79, 346.88, 1435.29], borderColor: c.red, backgroundColor: c.red, tension: 0.2 },
+          { label: "default (SipHash 1-3, keyed)", data: [0.114, 0.179, 0.273, 0.399, 0.932, 1.665], borderColor: c.teal, backgroundColor: c.teal, tension: 0.2 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: {
+          x: { type: "logarithmic", title: { display: true, text: "attacker-chosen keys inserted (log scale)" } },
+          y: { type: "logarithmic", title: { display: true, text: "milliseconds (log scale)" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

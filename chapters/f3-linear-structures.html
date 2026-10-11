@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F3 Linear data structures</title>
+<meta name="description" content="Arrays, dynamic arrays, linked lists, stacks, queues, deques and ring buffers — what each costs, measured, and which Rust and .NET types implement them.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="F3">
+<article class="content">
+<h1>Linear data structures</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Distinguish an <em>abstract data type</em> (what operations you get) from a <em>data structure</em> (how it's stored)</li>
+      <li>Explain arrays, dynamic arrays, linked lists, stacks, queues, deques and ring buffers, and the cost of each operation</li>
+      <li>Predict, then measure, why contiguous structures usually beat linked ones on modern hardware</li>
+      <li>Pick the right Rust type (<code>[T; N]</code>, <code>Vec</code>, <code>VecDeque</code>, <code>LinkedList</code>) and know its .NET counterpart</li>
+      <li>Use a stack, a queue and a ring buffer to solve real problems (bracket matching, task queues, sliding windows)</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Your workflow engine is, at its heart, a set of <strong>queues</strong>: tasks waiting for workers, events waiting to be applied. Your rule engine's expression parser needs a <strong>stack</strong> (chapter 9.2), and its time-window rules ("more than 5 failed logins in the last 10 events") need a <strong>ring buffer</strong>. Pick the wrong structure and you get the result measured in this chapter: draining a 100,000-item queue takes <strong>750 ms instead of 0.2 ms</strong>, from changing one type.</p>
+  <p>These are also the structures Rust's ownership rules interact with most visibly. Knowing why a linked list is awkward in Rust prepares you for Module 2.</p>
+</div>
+
+<h2 id="intuition">Intuition first: seats on a train vs a treasure hunt</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li>An <strong>array</strong> is a train: carriages coupled in a row, seats numbered. To reach seat 37 you compute where it is and walk straight there. To add a carriage in the middle you have to uncouple and shift everything behind it.</li>
+    <li>A <strong>linked list</strong> is a treasure hunt: each clue tells you where the next one is hidden. Inserting a new clue is easy if you're standing at the right spot: rewrite one note. But to reach clue 37 you must follow 36 clues, and each one might be across town.</li>
+  </ul>
+</div>
+<figure class="visual">
+  <span class="visual-tag">Diagram · contiguous vs linked</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="An array stored contiguously compared with a linked list whose nodes are scattered and connected by pointers">
+    <defs>
+      <marker id="ll-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="20" y="26" class="svg-title">Array / Vec: one block, element i at address base + i × size</text>
+    <g>
+      <rect x="20" y="40" width="80" height="44" rx="4" class="svg-teal"/><text x="60" y="62" class="svg-mono" text-anchor="middle">10</text>
+      <rect x="100" y="40" width="80" height="44" rx="4" class="svg-teal"/><text x="140" y="62" class="svg-mono" text-anchor="middle">20</text>
+      <rect x="180" y="40" width="80" height="44" rx="4" class="svg-teal"/><text x="220" y="62" class="svg-mono" text-anchor="middle">30</text>
+      <rect x="260" y="40" width="80" height="44" rx="4" class="svg-teal"/><text x="300" y="62" class="svg-mono" text-anchor="middle">40</text>
+      <rect x="340" y="40" width="80" height="44" rx="4" class="svg-box" stroke-dasharray="4 3"/><text x="380" y="62" class="svg-text-sm" text-anchor="middle">spare</text>
+      <text x="60" y="100" class="svg-text-sm" text-anchor="middle">[0]</text><text x="140" y="100" class="svg-text-sm" text-anchor="middle">[1]</text>
+      <text x="220" y="100" class="svg-text-sm" text-anchor="middle">[2]</text><text x="300" y="100" class="svg-text-sm" text-anchor="middle">[3]</text>
+      <text x="440" y="62" class="svg-text-sm">← one cache line covers several elements</text>
+    </g>
+    <text x="20" y="148" class="svg-title">Linked list: nodes anywhere on the heap, each pointing to the next</text>
+    <g>
+      <rect x="30" y="170" width="110" height="44" rx="6" class="svg-accent"/><text x="62" y="192" class="svg-mono" text-anchor="middle">10</text><text x="112" y="192" class="svg-mono" text-anchor="middle">●</text>
+      <rect x="420" y="240" width="110" height="44" rx="6" class="svg-accent"/><text x="452" y="262" class="svg-mono" text-anchor="middle">20</text><text x="502" y="262" class="svg-mono" text-anchor="middle">●</text>
+      <rect x="230" y="236" width="110" height="44" rx="6" class="svg-accent"/><text x="262" y="258" class="svg-mono" text-anchor="middle">30</text><text x="312" y="258" class="svg-mono" text-anchor="middle">●</text>
+      <rect x="580" y="166" width="110" height="44" rx="6" class="svg-accent"/><text x="612" y="188" class="svg-mono" text-anchor="middle">40</text><text x="662" y="188" class="svg-text-sm" text-anchor="middle">end</text>
+      <path d="M112 196 C 200 210, 330 250, 416 260" class="svg-line-accent" marker-end="url(#ll-a)"/>
+      <path d="M502 266 C 480 300, 380 300, 344 268" class="svg-line-accent" marker-end="url(#ll-a)"/>
+      <path d="M312 240 C 360 180, 520 180, 576 186" class="svg-line-accent" marker-end="url(#ll-a)"/>
+    </g>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Same four values. The array's position <em>is</em> its index, so reading <code>[2]</code> is one calculation, and neighbours share cache lines (chapter F1). The list's position is wherever the allocator put each node. Reaching the third value means following two pointers, each a potential cache miss.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="adt">Interface vs implementation</h3>
+<p>Computer science separates two ideas that you already separate in .NET as <em>interface</em> vs <em>class</em>:</p>
+<ul>
+  <li>An <dfn data-term="abstract data type" data-def="A description of a collection by its operations and their behaviour (e.g. a stack: push, pop, peek), independent of how it is stored.">abstract data type</dfn> (ADT) says <em>which operations</em> exist and how they behave. Example: a <em>stack</em> offers push, pop and peek, last-in-first-out.</li>
+  <li>A <dfn data-term="data structure" data-def="A concrete way of arranging data in memory (e.g. dynamic array, linked list) that can implement one or more abstract data types.">data structure</dfn> says <em>how the data is laid out in memory</em>. Example: a dynamic array or a linked list.</li>
+</ul>
+<p>One ADT can be implemented by several structures with very different costs. That's exactly the choice this chapter teaches you to make.</p>
+
+<h3 id="arrays">Arrays</h3>
+<p>An <dfn data-term="array" data-def="A fixed number of same-typed elements stored contiguously, so element i is at base address + i × element size: O(1) indexing.">array</dfn> is a fixed number of same-sized elements stored back to back. Because they're contiguous, the address of element i is pure arithmetic:</p>
+$$ \text{address}(i) = \text{base} + i \times \text{size\_of}(T) $$
+<p>So indexing is O(1) whatever the length, and scanning in order is as cache-friendly as it gets. In Rust, <code>[u64; 4]</code> is an array of exactly four <code>u64</code>s. Its length is part of its type, fixed at compile time, so it can live directly on the stack or inside a struct.</p>
+
+<h3 id="vec">Dynamic arrays: <code>Vec&lt;T&gt;</code></h3>
+<p>A <dfn data-term="dynamic array" data-def="An array that grows: a heap buffer plus length and capacity; when full it allocates a larger buffer (by a constant factor) and copies. Rust Vec, C# List&lt;T&gt;.">dynamic array</dfn> is an array that can grow. You met its layout in F1 (a pointer, a length and a capacity on the stack; the elements on the heap) and its amortised O(1) push in F2. Here is what happens when it fills up:</p>
+<figure class="visual stepper" data-interval="2400">
+  <span class="visual-tag">Animation · a Vec growing</span>
+  <svg viewBox="0 0 720 270" role="img" aria-label="A full Vec of capacity 4 reallocating into a buffer of capacity 8">
+    <defs>
+      <marker id="vg-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="20" y="26" class="svg-mono" data-show="-3">v: ptr → A,  len 4,  cap 4</text>
+    <text x="20" y="26" class="svg-mono" data-show="4">v: ptr → B,  len 5,  cap 8</text>
+    <text x="20" y="26" class="svg-mono" data-show="5">v: ptr → B,  len 8,  cap 8</text>
+    <!-- buffer A -->
+    <text x="20" y="66" class="svg-text-sm">buffer A</text>
+    <g data-show="-3" data-hl="1">
+      <rect x="90" y="46" width="70" height="40" rx="4" class="svg-teal"/><text x="125" y="66" class="svg-mono" text-anchor="middle">10</text>
+      <rect x="160" y="46" width="70" height="40" rx="4" class="svg-teal"/><text x="195" y="66" class="svg-mono" text-anchor="middle">20</text>
+      <rect x="230" y="46" width="70" height="40" rx="4" class="svg-teal"/><text x="265" y="66" class="svg-mono" text-anchor="middle">30</text>
+      <rect x="300" y="46" width="70" height="40" rx="4" class="svg-teal"/><text x="335" y="66" class="svg-mono" text-anchor="middle">40</text>
+    </g>
+    <g data-show="4-"><rect x="90" y="46" width="280" height="40" rx="4" class="svg-box" stroke-dasharray="5 4"/><text x="230" y="66" class="svg-text-sm" text-anchor="middle">freed</text></g>
+    <text x="390" y="66" class="svg-text" data-show="=2">push(50): no room!</text>
+    <!-- buffer B -->
+    <text x="20" y="166" class="svg-text-sm" data-show="2-">buffer B</text>
+    <g data-show="2-" data-hl="2">
+      <rect x="90" y="146" width="560" height="40" rx="4" class="svg-box"/>
+    </g>
+    <g data-show="3-" data-hl="3">
+      <rect x="90" y="146" width="70" height="40" rx="4" class="svg-teal"/><text x="125" y="166" class="svg-mono" text-anchor="middle">10</text>
+      <rect x="160" y="146" width="70" height="40" rx="4" class="svg-teal"/><text x="195" y="166" class="svg-mono" text-anchor="middle">20</text>
+      <rect x="230" y="146" width="70" height="40" rx="4" class="svg-teal"/><text x="265" y="166" class="svg-mono" text-anchor="middle">30</text>
+      <rect x="300" y="146" width="70" height="40" rx="4" class="svg-teal"/><text x="335" y="166" class="svg-mono" text-anchor="middle">40</text>
+    </g>
+    <path d="M230 90 L230 140" class="svg-line-accent" marker-end="url(#vg-a)" data-show="=3"/>
+    <text x="240" y="118" class="svg-text-sm" data-show="=3">copy 4 elements: O(n)</text>
+    <g data-show="4-" data-hl="4"><rect x="370" y="146" width="70" height="40" rx="4" class="svg-accent"/><text x="405" y="166" class="svg-mono" text-anchor="middle">50</text></g>
+    <g data-show="5" data-hl="5">
+      <rect x="440" y="146" width="70" height="40" rx="4" class="svg-accent"/><text x="475" y="166" class="svg-mono" text-anchor="middle">60</text>
+      <rect x="510" y="146" width="70" height="40" rx="4" class="svg-accent"/><text x="545" y="166" class="svg-mono" text-anchor="middle">70</text>
+      <rect x="580" y="146" width="70" height="40" rx="4" class="svg-accent"/><text x="615" y="166" class="svg-mono" text-anchor="middle">80</text>
+    </g>
+    <text x="360" y="230" class="svg-text-sm" text-anchor="middle">one expensive push is paid for by the cheap pushes it makes room for (amortised O(1), chapter F2)</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>A <code>Vec</code> holding 4 values with capacity 4: completely full. The <code>v</code> on the stack points at buffer A.</li>
+    <li><code>v.push(50)</code> finds no room, so it asks the allocator for a bigger buffer B. Today's <code>Vec</code> doubles (capacity 8), but the growth factor isn't guaranteed.</li>
+    <li>Every existing element is copied from A to B. That's the O(n) part.</li>
+    <li>50 goes into B, buffer A is freed, and <code>v</code> now points at B: len 5, cap 8.</li>
+    <li>The next three pushes (60, 70, 80) just write into spare capacity: O(1) each. When B fills, the cycle repeats with 16.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> Reallocation moves the elements. In Rust that's why you can't keep a reference into a <code>Vec</code> while pushing to it, the E0502 error from chapter 0.1. The compiler is protecting you from pointing into freed buffer A.</figcaption>
+</figure>
+<p>Inserting or removing anywhere except the end means shifting every later element by one: O(n − i). Removing the <em>first</em> element of a <code>Vec</code> is therefore O(n). Remember this; it's the queue pitfall measured below.</p>
+
+<h3 id="linked">Linked lists</h3>
+<p>A <dfn data-term="linked list" data-def="A sequence of separately allocated nodes, each holding a value and a pointer to the next (and, if doubly linked, the previous) node.">linked list</dfn> stores each element in its own <dfn data-term="node" data-def="One element of a linked structure: a value plus pointer(s) to related nodes.">node</dfn>: the value plus a pointer to the next node, and in a <em>doubly</em> linked list also one to the previous node. Rust's <code>std::collections::LinkedList</code> is doubly linked, so each node holds a value and two 8-byte pointers, each node is a separate heap allocation.</p>
+<ul>
+  <li><strong>Strength:</strong> once you hold a pointer to a node, inserting or removing next to it is O(1): rewire two pointers, move nothing. Joining two lists is O(1).</li>
+  <li><strong>Weakness:</strong> reaching the i-th element means following i pointers, O(n). Every hop may be a cache miss. Every node carries pointer overhead and its own allocation.</li>
+</ul>
+<p>Rust's own documentation is unusually blunt about it:</p>
+<blockquote class="callout note"><p>"NOTE: It is almost always better to use <code>Vec</code> or <code>VecDeque</code> because array-based containers are generally faster, more memory efficient, and make better use of CPU cache."<br><span class="small muted">— <code>std::collections::LinkedList</code> documentation</span></p></blockquote>
+
+<h3 id="stack-adt">Stacks (LIFO)</h3>
+<p>A stack ADT gives you <code>push</code> (add on top), <code>pop</code> (remove from top) and <code>peek</code> (look at the top): <dfn data-term="LIFO" data-def="Last in, first out: the most recently added item is removed first. The behaviour of a stack.">last in, first out</dfn>. The call stack from F1 is one; so is an undo history. In Rust <strong>a <code>Vec</code> is the stack</strong>: <code>push</code> and <code>pop</code> work at the end, amortised O(1), and <code>last()</code> peeks. In .NET, <code>Stack&lt;T&gt;</code> "is implemented as an array", the same design.</p>
+<p>Stacks are the natural tool whenever something must be <em>closed in the reverse order it was opened</em>: nested brackets in an expression, nested function calls, nested XML or JSON. Exercise 1 checks brackets in a rule expression with one.</p>
+
+<h3 id="queue-adt">Queues (FIFO) and deques</h3>
+<p>A queue ADT gives you <em>enqueue</em> at the back and <em>dequeue</em> at the front: <dfn data-term="FIFO" data-def="First in, first out: items leave in the order they arrived. The behaviour of a queue.">first in, first out</dfn>, like a checkout line. Task queues, message buffers and breadth-first search (chapter F6) all use one. A <dfn data-term="deque" data-def="Double-ended queue: push and pop efficiently at both the front and the back. Rust VecDeque.">deque</dfn> (double-ended queue, said "deck") allows push and pop at both ends.</p>
+<p>The obvious implementation, a <code>Vec</code> where you push at the end and remove index 0, is a trap: every dequeue shifts everything, O(n). The right one is a ring buffer.</p>
+
+<h3 id="ring">Ring buffers</h3>
+<p>A <dfn data-term="ring buffer" data-def="A fixed-size array used circularly: head and tail indices wrap around with modulo arithmetic, giving O(1) operations at both ends without shifting. Also called a circular buffer.">ring buffer</dfn> (circular buffer) is an array whose ends are joined logically: it keeps the index of the <em>head</em> (the oldest element) and a length, and wraps indices around with the remainder operator, <code>(head + i) % capacity</code>. Dequeuing just advances the head, and nothing moves.</p>
+<figure class="visual stepper" data-interval="2400">
+  <span class="visual-tag">Animation · a ring buffer of capacity 6</span>
+  <svg viewBox="0 0 720 230" role="img" aria-label="Ring buffer with six slots showing head and tail moving and wrapping around">
+    <defs>
+      <marker id="rb-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+      <marker id="rb-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+    </defs>
+    <!-- slots -->
+    <g>
+      <rect x="45" y="70" width="96" height="60" rx="6" class="svg-box-strong"/><rect x="150" y="70" width="96" height="60" rx="6" class="svg-box-strong"/>
+      <rect x="255" y="70" width="96" height="60" rx="6" class="svg-box-strong"/><rect x="360" y="70" width="96" height="60" rx="6" class="svg-box-strong"/>
+      <rect x="465" y="70" width="96" height="60" rx="6" class="svg-box-strong"/><rect x="570" y="70" width="96" height="60" rx="6" class="svg-box-strong"/>
+      <text x="93" y="150" class="svg-text-sm" text-anchor="middle">slot 0</text><text x="198" y="150" class="svg-text-sm" text-anchor="middle">slot 1</text>
+      <text x="303" y="150" class="svg-text-sm" text-anchor="middle">slot 2</text><text x="408" y="150" class="svg-text-sm" text-anchor="middle">slot 3</text>
+      <text x="513" y="150" class="svg-text-sm" text-anchor="middle">slot 4</text><text x="618" y="150" class="svg-text-sm" text-anchor="middle">slot 5</text>
+      <path d="M666 100 C 700 100, 705 190, 360 190 C 20 190, 20 100, 41 100" class="svg-line-dash" marker-end="url(#rb-t)"/>
+      <text x="360" y="210" class="svg-text-sm" text-anchor="middle">after slot 5 comes slot 0 again: index % 6</text>
+    </g>
+    <!-- contents -->
+    <text x="93" y="104" class="svg-title" text-anchor="middle" data-show="=2">A</text>
+    <text x="93" y="104" class="svg-text-sm" text-anchor="middle" data-show="3-4">(A gone)</text>
+    <text x="93" y="104" class="svg-title" text-anchor="middle" data-show="5-" data-hl="5">G</text>
+    <text x="198" y="104" class="svg-title" text-anchor="middle" data-show="=2">B</text>
+    <text x="198" y="104" class="svg-text-sm" text-anchor="middle" data-show="3-4">(B gone)</text>
+    <text x="198" y="104" class="svg-title" text-anchor="middle" data-show="5-" data-hl="5">H</text>
+    <text x="303" y="104" class="svg-title" text-anchor="middle" data-show="2-5">C</text>
+    <text x="303" y="104" class="svg-title" text-anchor="middle" data-show="6" data-hl="6">I</text>
+    <text x="408" y="104" class="svg-title" text-anchor="middle" data-show="2-">D</text>
+    <text x="513" y="104" class="svg-title" text-anchor="middle" data-show="4-" data-hl="4">E</text>
+    <text x="618" y="104" class="svg-title" text-anchor="middle" data-show="4-" data-hl="4">F</text>
+    <!-- head marker -->
+    <g data-show="-2"><text x="93" y="40" class="svg-text" text-anchor="middle">head</text><line x1="93" y1="46" x2="93" y2="66" class="svg-line-accent" marker-end="url(#rb-a)"/></g>
+    <g data-show="3-5"><text x="303" y="40" class="svg-text" text-anchor="middle">head</text><line x1="303" y1="46" x2="303" y2="66" class="svg-line-accent" marker-end="url(#rb-a)"/></g>
+    <g data-show="6"><text x="408" y="40" class="svg-text" text-anchor="middle">head</text><line x1="408" y1="46" x2="408" y2="66" class="svg-line-accent" marker-end="url(#rb-a)"/></g>
+    <!-- status -->
+    <text x="700" y="30" class="svg-mono" text-anchor="end" data-show="=1">len 0</text>
+    <text x="700" y="30" class="svg-mono" text-anchor="end" data-show="=2">len 4</text>
+    <text x="700" y="30" class="svg-mono" text-anchor="end" data-show="=3">len 2</text>
+    <text x="700" y="30" class="svg-mono" text-anchor="end" data-show="=4">len 4</text>
+    <text x="700" y="30" class="svg-mono" text-anchor="end" data-show="5-">len 6 (full)</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>An empty ring of 6 slots: <code>head = 0</code>, <code>len = 0</code>. The next value goes into slot <code>(head + len) % 6</code>.</li>
+    <li>Push A, B, C, D: they fill slots 0–3. <code>len = 4</code>.</li>
+    <li>Pop twice: A and B leave. Nothing is shifted; <code>head</code> just moves to slot 2 and <code>len</code> drops to 2. That is the difference from <code>Vec::remove(0)</code>.</li>
+    <li>Push E, F into slots 4 and 5.</li>
+    <li>Push G, H: the index wraps, <code>(2 + 4) % 6 = 0</code>, so they reuse slots 0 and 1. The ring is now full, and the oldest item, C, sits in slot 2.</li>
+    <li>Pushing I into a full ring needs a policy. Overwrite the oldest (here C, then head moves on: Exercise 2), refuse, or grow. Rust's <code>VecDeque</code> grows; a fixed telemetry buffer overwrites.</li>
+  </ol>
+  <figcaption><strong>Figure 3.</strong> Every operation is a little index arithmetic: O(1) at both ends, no shifting. One consequence: the elements may wrap around the end of the array, so the storage is <em>not</em> always one contiguous slice.</figcaption>
+</figure>
+<p>Rust's <code>VecDeque</code> is exactly this: "a double-ended queue implemented with a growable ring buffer". Its docs give the default queue usage as <code>push_back</code> to enqueue and <code>pop_front</code> to dequeue. .NET's <code>Queue&lt;T&gt;</code> is the same idea ("implements a generic queue as a circular array").</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET — the type map</div>
+  <div class="table-wrap" style="margin:.4em 0 0"><table>
+    <thead><tr><th>Need</th><th>Rust</th><th>.NET</th></tr></thead>
+    <tbody>
+      <tr><td>Fixed-size array</td><td><code>[T; N]</code> (stack or inline)</td><td><code>T[]</code> (heap; length fixed at creation), or an inline array</td></tr>
+      <tr><td>Growable list / stack</td><td><code>Vec&lt;T&gt;</code></td><td><code>List&lt;T&gt;</code> / <code>Stack&lt;T&gt;</code></td></tr>
+      <tr><td>Queue / deque</td><td><code>VecDeque&lt;T&gt;</code></td><td><code>Queue&lt;T&gt;</code> (one end in, the other out; Microsoft's "choose a collection" guide lists no double-ended queue type)</td></tr>
+      <tr><td>Linked list</td><td><code>LinkedList&lt;T&gt;</code> (rarely the right choice)</td><td><code>LinkedList&lt;T&gt;</code></td></tr>
+      <tr><td>A view of part of an array</td><td><code>&amp;[T]</code> slice (chapter 2.4)</td><td><code>Span&lt;T&gt;</code> / <code>ArraySegment&lt;T&gt;</code></td></tr>
+    </tbody>
+  </table></div>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="costs">The cost table</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Operation</th><th>Array / <code>Vec</code></th><th>Ring buffer / <code>VecDeque</code></th><th>Linked list</th></tr></thead>
+  <tbody>
+    <tr><td>Read element i</td><td class="yes">O(1)</td><td class="yes">O(1)</td><td class="no">O(min(i, n−i))</td></tr>
+    <tr><td>Push / pop at the back</td><td class="yes">O(1) amortised</td><td class="yes">O(1) amortised</td><td class="yes">O(1)</td></tr>
+    <tr><td>Push / pop at the front</td><td class="no">O(n)</td><td class="yes">O(1) amortised</td><td class="yes">O(1)</td></tr>
+    <tr><td>Insert / remove at position i</td><td class="partial">O(n − i)</td><td class="partial">O(min(i, n−i))</td><td class="partial">O(min(i, n−i)) to reach it, then O(1)</td></tr>
+    <tr><td>Insert / remove next to a node you already hold</td><td>—</td><td>—</td><td class="yes">O(1)</td></tr>
+    <tr><td>Join two sequences</td><td class="partial">O(m)</td><td class="partial">O(m)</td><td class="yes">O(1)</td></tr>
+    <tr><td>Memory per u64 element</td><td>8 bytes (+ spare capacity)</td><td>8 bytes (+ spare capacity)</td><td>8 + 16 pointer bytes, plus a separate allocation</td></tr>
+    <tr><td>Cache behaviour</td><td class="yes">excellent</td><td class="yes">excellent</td><td class="no">poor unless nodes happen to be adjacent</td></tr>
+  </tbody>
+  <caption>Big-O figures from the <code>std::collections</code> performance table (chapter F2). The linked list's O(1) insertion only applies once you are <em>at</em> the node, and getting there is the expensive part.</caption>
+</table></div>
+
+<h3 id="measured">Measured: how much does contiguity matter?</h3>
+<p>Three experiments from the lab below, run on the lab Mac (Apple M2 Pro, Rust 1.99.0, release build, median of 3 runs):</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · measured on the lab machine</span>
+  <div class="chart-box"><canvas id="ds-chart" aria-label="Bar chart comparing traversal and queue timings for Vec, LinkedList and VecDeque"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> <em>Summing 1,000,000 values:</em> <code>Vec</code> 0.11 ms, <code>LinkedList</code> about 0.9 ms (about 8× slower even when its nodes happened to sit together). <em>Following 1,000,000 links</em> in a list stored in one array: 0.51 ms when the links follow memory order, about <strong>27 ms when they jump around</strong> (about 50×). <em>Draining a 100,000-item queue:</em> <code>Vec::remove(0)</code> about <strong>750 ms</strong>, <code>VecDeque::pop_front</code> about <strong>0.18 ms</strong>. Log scale.</figcaption>
+</figure>
+<div class="callout note"><div class="callout-title">ℹ️ An honest note about the linked-list measurement</div>
+  <p>I tried to make <code>std::LinkedList</code>'s nodes scattered by allocating and freeing other blocks in random order first. On this macOS allocator it made no difference: the nodes still landed close together (about 1 ms either way). So the "scattered" figure comes from a list stored in one array whose <em>links</em> are randomised (Lab step 2), which isolates the effect exactly. In long-running services node placement depends on the allocator and on history. The point stands either way: following pointers costs, from 8× to 50×, and a <code>Vec</code> is never worse.</p>
+</div>
+
+<h3 id="rust-lists">Why linked lists are awkward in Rust</h3>
+<p>In a doubly linked list, every middle node is pointed to by <em>two</em> other nodes (its predecessor and its successor). Rust's ownership rule (chapter 2.2) says every value has exactly <em>one</em> owner. So a doubly linked list can't be built from plain owning pointers. It needs shared ownership with reference counting (<code>Rc</code>/<code>Weak</code>, chapter 2.12), or carefully reviewed <code>unsafe</code> code, which is what <code>std::LinkedList</code> uses internally behind a safe interface. That's not a flaw: the compiler is pointing out that the ownership of a linked structure is genuinely complicated. The idiomatic alternatives:</p>
+<ul>
+  <li>Use <code>Vec</code> or <code>VecDeque</code>. Usually faster anyway.</li>
+  <li>Store nodes in a <code>Vec</code> and use <strong>indices</strong> as links, as Lab step 2 does. You get linked-list flexibility, one allocation, and no ownership puzzles. You'll use this <dfn data-term="arena" data-def="A collection (typically a Vec) that owns many nodes; links between nodes are indices into it instead of pointers. One allocation, no ownership puzzles.">arena</dfn> pattern for graphs (F6, chapter 2.12) and for the Rete network (chapter 9.4).</li>
+</ul>
+
+<details class="deep-dive"><summary>Deep dive: "Are lists evil?" — reading a famous benchmark critically</summary><div class="body">
+  <p>Bjarne Stroustrup (creator of C++) popularised a thought experiment in his FAQ: insert random integers into a <em>sorted</em> sequence, then remove them from random positions. Vector or list? Intuition says list, because insertion and removal are O(1). His answer is that vectors win by a wide margin. To insert into a sorted sequence you first have to <em>find</em> the position. On a list that's a pointer-chasing O(n) walk; on a vector it's a cache-friendly scan (or a binary search). Shifting elements with a memory copy is very fast on contiguous data. His conclusions, quoted from the FAQ: "don't store data unnecessarily, keep data compact, and access memory in a predictable manner".</p>
+  <p>A fair critique (the GitHub project <em>random_insert</em>) points out that the benchmark mostly measures <em>searching</em>, the list's weak spot, rather than insertion, its strength. Both views are right. For architecture reviews, the lesson is:</p>
+  <ul>
+    <li>A linked list pays off only when you <strong>already hold a pointer to where the change happens</strong>, and you make many changes there. Examples: an LRU cache that moves an entry to the front on every hit (a hash map gives you the node directly), kernel or allocator free-lists, or splicing large lists in O(1).</li>
+    <li>If you must <em>search</em> to find the position, a contiguous structure almost always wins.</li>
+    <li>Always ask what a benchmark is <em>really</em> measuring before generalising from it, including the ones in this course.</li>
+  </ul>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>Create a project with three programs in <code>src/bin/</code>, and run each with <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — <code>Vec</code> vs <code>LinkedList</code></h3>
+<pre data-title="src/bin/traverse.rs"><code class="language-rust">use std::collections::LinkedList;
+use std::hint::black_box;
+use std::time::Instant;
+
+const N: u64 = 1_000_000;
+
+/// Tiny deterministic random-number generator (xorshift), so we need no crates.
+fn next_rand(state: &amp;mut u64) -> u64 {
+    *state ^= *state &lt;&lt; 13;
+    *state ^= *state &gt;&gt; 7;
+    *state ^= *state &lt;&lt; 17;
+    *state
+}
+
+/// Average time of `f` over 10 runs, in milliseconds.
+fn time_ms(f: impl Fn() -> u64) -> f64 {
+    let start = Instant::now();
+    for _ in 0..10 {
+        black_box(f());
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / 10.0
+}
+
+fn main() {
+    // 1. A Vec: one contiguous block.
+    let vec: Vec&lt;u64&gt; = (0..N).collect();
+
+    // 2. A LinkedList built in one go on a quiet heap: its nodes are allocated
+    //    back to back, so they happen to sit next to each other in memory.
+    let fresh: LinkedList&lt;u64&gt; = (0..N).collect();
+
+    // 3. A LinkedList built on a "used" heap, as in a long-running service:
+    //    allocate blocks the same size as a list node (value + 2 pointers = 24 bytes),
+    //    free them in random order, then build the list. The allocator hands the
+    //    freed slots back in that scrambled order, so consecutive nodes are far apart.
+    let mut blocks: Vec&lt;Box&lt;[u64; 3]&gt;&gt; = (0..N).map(|i| Box::new([i; 3])).collect();
+    let mut seed = 42;
+    for i in (1..blocks.len()).rev() {
+        let j = (next_rand(&amp;mut seed) % (i as u64 + 1)) as usize;
+        blocks.swap(i, j); // shuffle (Fisher–Yates)
+    }
+    drop(blocks); // frees every block, in shuffled order
+    let aged: LinkedList&lt;u64&gt; = (0..N).collect();
+
+    println!("sum over 1,000,000 u64 values (average of 10 runs):");
+    println!("  Vec:                 {:&gt;6.2} ms", time_ms(|| vec.iter().sum()));
+    println!("  LinkedList (fresh):  {:&gt;6.2} ms", time_ms(|| fresh.iter().sum()));
+    println!("  LinkedList (aged):   {:&gt;6.2} ms", time_ms(|| aged.iter().sum()));
+}</code></pre>
+<pre class="output">sum over 1,000,000 u64 values (average of 10 runs):
+  Vec:                   0.11 ms
+  LinkedList (fresh):    0.84 ms
+  LinkedList (aged):     0.86 ms</pre>
+<p>The comment in step 3 states the <em>intent</em>. As the note above explains, on this machine the allocator didn't actually scatter the nodes, which is why "aged" matches "fresh". Try it on Linux or Windows: allocator behaviour differs by platform, and so may your result.</p>
+
+<h3 id="lab-2">Step 2 — isolate the cost of scattering</h3>
+<pre data-title="src/bin/scatter.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+const N: usize = 1_000_000;
+
+/// Tiny deterministic random-number generator (xorshift).
+fn next_rand(state: &amp;mut u64) -> u64 {
+    *state ^= *state &lt;&lt; 13;
+    *state ^= *state &gt;&gt; 7;
+    *state ^= *state &lt;&lt; 17;
+    *state
+}
+
+/// A singly linked list stored in one Vec: node i holds a value and the
+/// index of the next node (usize::MAX marks the end).
+struct Node {
+    value: u64,
+    next: usize,
+}
+
+/// Follow the links from `head`, adding up values.
+fn sum_list(nodes: &amp;[Node], head: usize) -> u64 {
+    let (mut total, mut i) = (0, head);
+    while i != usize::MAX {
+        total += nodes[i].value;
+        i = nodes[i].next;
+    }
+    total
+}
+
+/// Build a list whose visiting order is `order` (a permutation of 0..N).
+fn build(order: &amp;[usize]) -> Vec&lt;Node&gt; {
+    let mut nodes: Vec&lt;Node&gt; = (0..N).map(|i| Node { value: i as u64, next: usize::MAX }).collect();
+    for w in order.windows(2) {
+        nodes[w[0]].next = w[1];
+    }
+    nodes
+}
+
+fn time_ms(nodes: &amp;[Node], head: usize) -> f64 {
+    let start = Instant::now();
+    for _ in 0..10 {
+        black_box(sum_list(black_box(nodes), head));
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / 10.0
+}
+
+fn main() {
+    // Links follow memory order: node 0 -&gt; 1 -&gt; 2 ... (like a lucky, fresh list)
+    let in_order: Vec&lt;usize&gt; = (0..N).collect();
+    // Links jump around memory at random (like a list on a fragmented heap)
+    let mut shuffled = in_order.clone();
+    let mut seed = 42;
+    for i in (1..N).rev() {
+        let j = (next_rand(&amp;mut seed) % (i as u64 + 1)) as usize;
+        shuffled.swap(i, j);
+    }
+    let a = build(&amp;in_order);
+    let b = build(&amp;shuffled);
+    println!("following 1,000,000 links (average of 10 runs):");
+    println!("  neighbours in memory:  {:&gt;7.2} ms", time_ms(&amp;a, in_order[0]));
+    println!("  scattered in memory:   {:&gt;7.2} ms", time_ms(&amp;b, shuffled[0]));
+}</code></pre>
+<pre class="output">following 1,000,000 links (average of 10 runs):
+  neighbours in memory:     0.51 ms
+  scattered in memory:     26.72 ms</pre>
+<p>Same nodes, same number of steps, same O(n): about 50× apart purely because of where the next node lives. That's chapter F1's latency ladder in action. This index-linked list is also your first <em>arena</em>.</p>
+
+<h3 id="lab-3">Step 3 — the queue trap</h3>
+<pre data-playground data-title="src/bin/queues.rs"><code class="language-rust">use std::collections::VecDeque;
+use std::hint::black_box;
+use std::time::Instant;
+
+const N: usize = 100_000;
+
+fn main() {
+    // A queue: add at the back, take from the front, N times.
+
+    // Vec used as a queue: remove(0) shifts every remaining element left.
+    let start = Instant::now();
+    let mut v: Vec&lt;usize&gt; = (0..N).collect();
+    let mut total = 0;
+    while !v.is_empty() {
+        total += v.remove(0);
+    }
+    let t_vec = start.elapsed();
+    black_box(total);
+
+    // VecDeque (a ring buffer): pop_front just moves the head index.
+    let start = Instant::now();
+    let mut q: VecDeque&lt;usize&gt; = (0..N).collect();
+    let mut total = 0;
+    while let Some(x) = q.pop_front() {
+        total += x;
+    }
+    let t_deque = start.elapsed();
+    black_box(total);
+
+    println!("draining a {N}-element queue from the front:");
+    println!("  Vec::remove(0):         {:&gt;9.3} ms", t_vec.as_secs_f64() * 1000.0);
+    println!("  VecDeque::pop_front():  {:&gt;9.3} ms", t_deque.as_secs_f64() * 1000.0);
+}</code></pre>
+<pre class="output">draining a 100000-element queue from the front:
+  Vec::remove(0):           753.273 ms
+  VecDeque::pop_front():      0.174 ms</pre>
+<p>Draining with <code>remove(0)</code> shifts n−1, then n−2, … elements: about n²/2 = 5 billion element moves, O(n²) in total. The ring buffer does O(1) per dequeue, about 4,000× faster here. <code>while let Some(x) = q.pop_front()</code> means "keep going while there's something to take" (chapter 2.5).</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">The solutions use a few constructs Module 2 teaches properly (<code>match</code>, <code>struct</code>/<code>impl</code>, <code>Option</code>). Read them as previews; the comments explain each line. All three were run as unit tests (<code>cargo test</code>: 3 passed).</p>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — balanced brackets in a rule expression <span class="difficulty">★☆☆</span></div>
+  <p>Write <code>balanced(expr: &amp;str) -&gt; bool</code>, which checks that <code>()</code>, <code>[]</code> and <code>{}</code> are balanced and correctly nested, ignoring other characters. <code>"(price &gt; 10) &amp;&amp; [a, {b}]"</code> is balanced; <code>"(a]"</code>, <code>"((a)"</code> and <code>"a)"</code> are not.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Are all brackets in `expr` balanced and correctly nested?
+pub fn balanced(expr: &amp;str) -> bool {
+    let mut stack: Vec&lt;char&gt; = Vec::new();
+    for c in expr.chars() {
+        match c {
+            '(' | '[' | '{' =&gt; stack.push(c),
+            ')' | ']' | '}' =&gt; {
+                let expected = match c {
+                    ')' =&gt; '(',
+                    ']' =&gt; '[',
+                    _ =&gt; '{',
+                };
+                if stack.pop() != Some(expected) {
+                    return false; // wrong kind of opener, or nothing open at all
+                }
+            }
+            _ =&gt; {} // ignore everything else
+        }
+    }
+    stack.is_empty() // anything still open means unbalanced
+}
+
+fn main() {
+    for e in ["(price &gt; 10) &amp;&amp; [a, {b}]", "", "(a]", "((a)", "a)"] {
+        println!("{e:?} balanced: {}", balanced(e));
+    }
+}</code></pre>
+  <p>Each opener is pushed. Each closer must match the most recent unclosed opener, which is exactly LIFO. O(n) time, O(depth) space. Chapter 9.2's parser uses the same idea at a larger scale.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — a fixed-capacity ring buffer <span class="difficulty">★★☆</span></div>
+  <p>Implement a ring buffer of <code>i64</code> with a fixed capacity, whose <code>push</code> overwrites the <em>oldest</em> value when full (like a "last N events" telemetry buffer), and a <code>to_vec</code> returning values oldest-first. After pushing 1…5 into capacity 3, <code>to_vec()</code> must be <code>[3, 4, 5]</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// A fixed-capacity ring buffer that overwrites the oldest value when full.
+pub struct Ring {
+    slots: Vec&lt;i64&gt;, // storage, allocated once
+    head: usize,     // index of the oldest value
+    len: usize,      // how many slots are in use
+}
+
+impl Ring {
+    pub fn new(capacity: usize) -> Ring {
+        Ring { slots: vec![0; capacity], head: 0, len: 0 }
+    }
+
+    /// Add a value; if full, the oldest value is overwritten.
+    pub fn push(&amp;mut self, value: i64) {
+        let cap = self.slots.len();
+        let tail = (self.head + self.len) % cap; // first free slot, wrapping around
+        self.slots[tail] = value;
+        if self.len == cap {
+            self.head = (self.head + 1) % cap; // the oldest value was overwritten
+        } else {
+            self.len += 1;
+        }
+    }
+
+    /// The values from oldest to newest.
+    pub fn to_vec(&amp;self) -> Vec&lt;i64&gt; {
+        let cap = self.slots.len();
+        (0..self.len).map(|i| self.slots[(self.head + i) % cap]).collect()
+    }
+}
+
+fn main() {
+    let mut r = Ring::new(3);
+    for v in 1..=5 {
+        r.push(v);
+    }
+    println!("{:?}", r.to_vec()); // [3, 4, 5]
+}</code></pre>
+  <p>When full, the tail slot <em>is</em> the head slot, so writing there overwrites the oldest value, and the head moves on. One allocation for the buffer's whole life, O(1) per push. Ideal for "keep the last N" with bounded memory.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — a sliding-window rule <span class="difficulty">★★☆ product skill</span></div>
+  <p>A rule needs "the average of the last <code>k</code> readings" after every new reading. Write <code>moving_average(values: &amp;[f64], k: usize) -&gt; Vec&lt;f64&gt;</code> in O(n) total. Recomputing the sum of <code>k</code> values each time would be O(n·k). For <code>[10, 20, 30, 40]</code> and <code>k = 2</code> the answer is <code>[10, 15, 25, 35]</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::VecDeque;
+
+/// Moving average of the last `k` values, for each new value.
+pub fn moving_average(values: &amp;[f64], k: usize) -> Vec&lt;f64&gt; {
+    let mut window: VecDeque&lt;f64&gt; = VecDeque::with_capacity(k);
+    let mut sum = 0.0;
+    let mut out = Vec::with_capacity(values.len());
+    for &amp;v in values {
+        window.push_back(v);
+        sum += v;
+        if window.len() &gt; k {
+            sum -= window.pop_front().unwrap(); // drop the oldest: O(1)
+        }
+        out.push(sum / window.len() as f64);
+    }
+    out
+}
+
+fn main() {
+    println!("{:?}", moving_average(&amp;[10.0, 20.0, 30.0, 40.0], 2)); // [10.0, 15.0, 25.0, 35.0]
+}</code></pre>
+  <p>Keep a running sum: add the newcomer, subtract whoever falls out of the window. The deque gives O(1) at both ends. This is the core of every windowed aggregate in a rule or stream engine. <code>.unwrap()</code> says "I know this is present". It's safe here because we just checked the length (chapter 2.6 covers it).</p>
+  </details>
+</div>
+
+<h2 id="decision">Decision guide</h2>
+<figure class="visual">
+  <span class="visual-tag">Diagram · choosing a linear structure</span>
+  <div class="mermaid">
+flowchart TD
+  A([Ordered sequence needed]) --> B([Size fixed at compile time?])
+  B -- yes --> ARR[array]
+  B -- no --> C([Add or remove at the front?])
+  C -- no --> VEC[Vec]
+  C -- yes --> D([Need a hard memory cap?])
+  D -- no --> VDQ[VecDeque]
+  D -- yes --> RING[fixed ring buffer]
+  VEC -.-> E[Many middle edits at known nodes? Measure, then consider an arena]
+  </div>
+  <figcaption><strong>Figure 5.</strong> Start from <code>Vec</code>, and move only when a specific operation forces you to. The standard library docs give the same advice. "Fixed size" means known at compile time (<code>[T; N]</code>). A <code>LinkedList</code> is a last resort, chosen only after measuring.</figcaption>
+</figure>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Using a <code>Vec</code> (or C# <code>List&lt;T&gt;</code>) as a queue</div>
+  <p><code>remove(0)</code> / <code>RemoveAt(0)</code> is O(n). Lab step 3: about 750 ms vs 0.17 ms. Use <code>VecDeque</code> / <code>Queue&lt;T&gt;</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Linked lists have O(1) insertion, so they're faster for inserts."</div>
+  <p>Only at a node you already hold. Finding the spot is O(n) pointer-chasing. See the deep dive.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Assuming a <code>VecDeque</code> is one contiguous slice</div>
+  <p>It may wrap around (Figure 3). Use <code>as_slices()</code> to get the two parts, or <code>make_contiguous()</code> (which, per its docs, "does not allocate") when you need one slice, for example to sort it.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Unbounded queues</div>
+  <p>A queue that producers can fill faster than consumers drain grows until the process runs out of memory. Production queues need a bound and a policy when full: block the producer, reject, or drop the oldest. That's called <dfn data-term="backpressure" data-def="Slowing or rejecting producers when consumers can't keep up, so queues stay bounded instead of growing without limit.">backpressure</dfn>, and chapter 4.7 builds it with Tokio.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Forgetting <code>with_capacity</code></div>
+  <p>If you know roughly how many items are coming, <code>Vec::with_capacity(n)</code> / <code>VecDeque::with_capacity(n)</code> avoids every intermediate reallocation and copy (Figure 2).</p></div>
+
+<h2 id="real-world">Real-world view: these structures in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Workflow engine task dispatch:</strong> each worker pool pulls from a FIFO queue. In memory that's a <code>VecDeque</code>, bounded for backpressure. Across machines it's a durable queue in the database (chapter 10.5). Same ADT, very different data structure.</li>
+    <li><strong>Rule engine parsing:</strong> operator-precedence parsing and bracket validation use stacks (chapter 9.2).</li>
+    <li><strong>Windowed rules and metrics:</strong> "count failures in the last 100 events" or "average latency over the last minute" are ring buffers with running aggregates (Exercise 3), O(1) per event and fixed memory.</li>
+    <li><strong>Audit and debugging:</strong> keep the last N decisions per tenant in a fixed ring buffer. That bounds memory however busy a tenant gets, which matters when one noisy customer shouldn't starve the others.</li>
+    <li><strong>Undo/redo in a rule-authoring UI:</strong> two stacks. Undo pops from one and pushes onto the other.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F3">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why is reading element i of an array O(1)?</div>
+    <ol class="options">
+      <li data-key="a">The CPU caches the whole array</li>
+      <li data-key="b">Elements are contiguous and equal-sized, so the address is base + i × size: one calculation</li>
+      <li data-key="c">Arrays are always small</li>
+      <li data-key="d">The compiler pre-computes every element</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Caching makes it fast in practice, but the O(1) comes from the address arithmetic.</p>
+      <p data-for="b">Correct.</p>
+      <p data-for="c">Arrays can be huge; indexing is still O(1).</p>
+      <p data-for="d">Values are only known at runtime.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A worker service keeps pending jobs in a <code>Vec</code>, adds with <code>push</code>, and takes the next job with <code>remove(0)</code>. Under load, CPU climbs disproportionately as the backlog grows. What's the fix?</div>
+    <ol class="options">
+      <li data-key="a">Use a <code>LinkedList</code></li>
+      <li data-key="b">Sort the <code>Vec</code> first</li>
+      <li data-key="c">Call <code>shrink_to_fit</code> after each removal</li>
+      <li data-key="d">Use a <code>VecDeque</code> with <code>push_back</code>/<code>pop_front</code>: O(1) per job instead of O(backlog)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It works (O(1) at both ends), but it is slower and heavier than <code>VecDeque</code> for this.</p>
+      <p data-for="b">Sorting doesn't change the cost of removing from the front.</p>
+      <p data-for="c">That makes things worse: more reallocation.</p>
+      <p data-for="d">Correct. Lab step 3 measured about 4,000× on 100,000 items.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which problem is a natural fit for a <em>stack</em>?</div>
+    <ol class="options">
+      <li data-key="a">Checking that brackets in an expression are correctly nested</li>
+      <li data-key="b">Serving customers in arrival order</li>
+      <li data-key="c">Keeping the last 100 log lines</li>
+      <li data-key="d">Looking up a customer by ID</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. The most recently opened bracket must close first: LIFO.</p>
+      <p data-for="b">That's a queue (FIFO).</p>
+      <p data-for="c">That's a ring buffer.</p>
+      <p data-for="d">That's a map (chapter F4).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">A ring buffer has capacity 8, <code>head = 6</code> and <code>len = 4</code>. In which slot is the next value written?</div>
+    <ol class="options">
+      <li data-key="a">10</li><li data-key="b">4</li><li data-key="c">2</li><li data-key="d">It's full</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Slot 10 doesn't exist; indices wrap.</p>
+      <p data-for="b">That's <code>len</code>, not the position.</p>
+      <p data-for="c">Correct. (6 + 4) % 8 = 2. The occupied slots are 6, 7, 0, 1.</p>
+      <p data-for="d">4 of 8 slots are used.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why can't you keep a reference to <code>v[0]</code> while calling <code>v.push(x)</code> in Rust?</div>
+    <ol class="options">
+      <li data-key="a"><code>push</code> deletes the first element</li>
+      <li data-key="b"><code>push</code> may reallocate and move every element to a new buffer, which would leave the reference pointing at freed memory</li>
+      <li data-key="c">References to vectors are never allowed</li>
+      <li data-key="d">It would be slow</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It adds at the end.</p>
+      <p data-for="b">Correct. That's Figure 2's step 3–4, and the E0502 error from chapter 0.1.</p>
+      <p data-for="c">References are fine, just not while mutating.</p>
+      <p data-for="d">This is about correctness, not speed.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In Lab step 2, both lists perform exactly 1,000,000 steps, yet one is about 50× slower. Why?</div>
+    <ol class="options">
+      <li data-key="a">The shuffled list has more nodes</li>
+      <li data-key="b">Shuffling changes the Big-O class</li>
+      <li data-key="c">The optimiser skipped the in-order loop</li>
+      <li data-key="d">Random links defeat spatial locality and prefetching, so almost every step is a cache miss to RAM</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Same number of nodes.</p>
+      <p data-for="b">Both are O(n); only the constant changes, by a factor of 50.</p>
+      <p data-for="c"><code>black_box</code> prevents that, and both loops do the same work.</p>
+      <p data-for="d">Correct. That's chapter F1's latency ladder.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You're designing an LRU cache: on every hit, the entry moves to the "most recent" end, and when full, the least recent entry is evicted. Which statement is accurate?</div>
+    <ol class="options">
+      <li data-key="a">This is one of the genuine use cases for a linked order: a hash map finds the entry's node directly, and the list moves it in O(1). In Rust you'd typically link nodes by index in an arena, or use a well-tested crate</li>
+      <li data-key="b">A <code>Vec</code> is always best, even here</li>
+      <li data-key="c">A stack is the right structure</li>
+      <li data-key="d">Linked lists are forbidden in Rust</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. You already hold the node, so the linked list's strength applies.</p>
+      <p data-for="b">Moving an entry to the end of a <code>Vec</code> is O(n) per hit.</p>
+      <p data-for="c">A stack can't remove arbitrary entries.</p>
+      <p data-for="d"><code>std::LinkedList</code> exists; it's just rarely the best choice.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which pairing of Rust and .NET types is correct?</div>
+    <ol class="options">
+      <li data-key="a"><code>VecDeque&lt;T&gt;</code> ↔ <code>LinkedList&lt;T&gt;</code></li>
+      <li data-key="b"><code>[T; N]</code> ↔ <code>List&lt;T&gt;</code></li>
+      <li data-key="c"><code>Vec&lt;T&gt;</code> ↔ <code>List&lt;T&gt;</code>, and <code>VecDeque&lt;T&gt;</code> ↔ <code>Queue&lt;T&gt;</code> (both circular arrays)</li>
+      <li data-key="d"><code>Vec&lt;T&gt;</code> ↔ <code>LinkedList&lt;T&gt;</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>VecDeque</code> is array-based, not linked.</p>
+      <p data-for="b"><code>[T; N]</code> has a fixed size; <code>List&lt;T&gt;</code> grows.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d"><code>Vec</code> is contiguous.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>An abstract data type (stack, queue, deque) says <em>what</em> operations you get; a data structure (array, dynamic array, linked list, ring buffer) says <em>how</em> it's stored and therefore what each operation costs.</li>
+  <li>Arrays and <code>Vec</code> give O(1) indexing and the best cache behaviour; inserting or removing at the front is O(n). <code>Vec</code> is Rust's list <em>and</em> its stack.</li>
+  <li>Ring buffers (<code>VecDeque</code>, .NET <code>Queue&lt;T&gt;</code>) give O(1) at both ends by wrapping indices. Never use <code>Vec::remove(0)</code> as a queue (about 750 ms vs 0.17 ms measured).</li>
+  <li>Linked lists give O(1) changes only at nodes you already hold, and pay for every pointer hop: 8× to 50× slower traversals measured. In Rust, prefer <code>Vec</code>/<code>VecDeque</code> or an index-linked arena.</li>
+  <li>Production queues must be bounded (backpressure). Ring buffers with running aggregates power windowed rules in O(1) per event.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">abstract data type</li><li class="chip">data structure</li><li class="chip">array</li><li class="chip">dynamic array</li><li class="chip">linked list</li>
+  <li class="chip">node</li><li class="chip">LIFO</li><li class="chip">FIFO</li><li class="chip">deque</li><li class="chip">ring buffer</li><li class="chip">backpressure</li><li class="chip">arena</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/struct.VecDeque.html"><code>VecDeque</code></a>, <a href="https://doc.rust-lang.org/std/collections/struct.LinkedList.html"><code>LinkedList</code></a>, <a href="https://doc.rust-lang.org/std/vec/struct.Vec.html"><code>Vec</code></a><span class="why">The official descriptions quoted in this chapter, with every method.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.queue-1">Microsoft Learn — <code>Queue&lt;T&gt;</code></a> and <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.stack-1"><code>Stack&lt;T&gt;</code></a><span class="why">Source for "circular array" and "implemented as an array".</span></li>
+  <li><span class="ref-type book">Book</span><a href="https://rust-unofficial.github.io/too-many-lists/"><em>Learning Rust With Entirely Too Many Linked Lists</em></a><span class="why">A famous, funny tour of why linked lists are hard in Rust. Read it after chapter 2.12, when the ownership vocabulary makes sense.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://www.stroustrup.com/bs_faq.html">Bjarne Stroustrup's FAQ — "Are lists evil?"</a> and the counterpoint <a href="https://github.com/det/random_insert"><em>random_insert</em></a><span class="why">Both sides of the benchmark discussed in the deep dive.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.wikipedia.org/wiki/Circular_buffer">Circular buffer (Wikipedia)</a><span class="why">Variants: the "full vs empty" ambiguity, and overwrite policies.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=CHhwJjR0mZA">“2. Data Structures and Dynamic Arrays” — MIT OpenCourseWare (YouTube)</a><span class="why">MIT 6.006 lecture 2 (Erik Demaine). Watch for the sequence interface vs its implementations, and the amortisation argument for dynamic arrays: the same ideas, more formally.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  Course.chart("ds-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["Sum 1M values", "Follow 1M links", "Drain 100k queue"],
+        datasets: [
+          { label: "Vec / in-order / VecDeque (contiguous)", data: [0.11, 0.51, 0.174], backgroundColor: c.teal, borderRadius: 6 },
+          { label: "LinkedList / scattered / Vec::remove(0)", data: [0.90, 26.72, 753.27], backgroundColor: c.red, borderRadius: 6 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label.split(" (")[0] + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: { y: { type: "logarithmic", min: 0.05, title: { display: true, text: "milliseconds (log scale, lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

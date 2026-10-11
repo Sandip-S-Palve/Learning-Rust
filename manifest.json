@@ -1,0 +1,425 @@
+{
+  "course": "Rust for the .NET Architect",
+  "accurate_as_of": "2026-10-11",
+  "rust_version": "1.99.0",
+  "edition": "2024",
+  "phase": {
+    "current": 3,
+    "status": "in-progress",
+    "history": [
+      {
+        "phase": 1,
+        "status": "approved",
+        "date": "2026-10-11",
+        "file": "phase1-curriculum-map.md"
+      },
+      {
+        "phase": 2,
+        "status": "done",
+        "date": "2026-10-11",
+        "files": [
+          "assets/style.css",
+          "assets/app.js",
+          "assets/course-data.js",
+          "styleguide.html",
+          "index.html",
+          "tools/build_search_index.py"
+        ]
+      }
+    ]
+  },
+  "decisions": {
+    "scope": "approved as proposed: 12 modules, 87 chapters, ~400h",
+    "chapter_5_8_no_std": "keep as short breadth chapter (default)",
+    "workflow_storage": "Postgres only (default)",
+    "module_order": "default order; M8 fast-track noted as optional"
+  },
+  "authoring_contract": {
+    "chapter_path": "chapters/<id lowercased, dots to dashes>-<slug>.html, e.g. chapters/2-3-borrowing.html, chapters/f1-memory.html",
+    "head": "<link rel=stylesheet href=../assets/style.css> <script src=../assets/course-data.js></script> <script src=../assets/app.js></script>",
+    "body": "<body data-chapter=\"<id>\"><article class=\"content\"> \u2026 </article>",
+    "auto_generated": "breadcrumb, h1 (from data if absent), stamp, prereqs + time in [data-meta], TOC, mark-complete, pager, footer",
+    "components": "see styleguide.html: callout.(why|analogy|dotnet|pitfall|verify|tip|note|architecture), .compare, details.deep-dive>.body, .layer-label.(basic|intermediate|advanced), pre[data-playground][data-title]>code.language-*, pre.output(.error), figure.visual(.stepper with data-show/data-hl + ol.stepper-captions), .chart-box>canvas + Course.chart(), .mermaid, $$\u2026$$ / \\( \\), .table-wrap>table, dfn[data-term][data-def], .exercise + details.solution, .quiz[data-quiz]>.q[data-answer], ul.refs>li>.ref-type.(doc|paper|video|book)",
+    "on_publish": "set chapter status to \"written\" in assets/course-data.js, add glossary entries there, run python3 tools/build_search_index.py"
+  },
+  "chapters_written": [
+    {
+      "id": "0.1",
+      "file": "chapters/0-1-why-rust.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201",
+      "visuals": [
+        "svg memory strategies",
+        "stepper release train",
+        "timeline",
+        "chart memory-safety share"
+      ],
+      "quiz_questions": 7,
+      "exercises": 3
+    },
+    {
+      "id": "0.2",
+      "file": "chapters/0-2-toolchain.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc/cargo 1.99.0, rustup 1.29.1, rand 0.10.3",
+      "visuals": [
+        "svg tool map",
+        "stepper rustc pipeline",
+        "chart debug vs release (measured, M2 Pro)",
+        "dotnet-cargo mapping table"
+      ],
+      "quiz_questions": 7,
+      "exercises": 3
+    },
+    {
+      "id": "F1",
+      "file": "chapters/f1-memory.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 (all snippets compiled verbatim from the page)",
+      "visuals": [
+        "svg address space",
+        "stepper stack frames + heap",
+        "interactive struct layout explorer",
+        "chart measured latency ladder",
+        "chart measured grid traversal"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "machine": "Apple M2 Pro, 32 GB, macOS arm64",
+        "cache_line": 128,
+        "l1d_pcore": "128 KB",
+        "l2_pcore": "16 MB",
+        "page": 16384,
+        "latency_ns": {
+          "L1": 1.2,
+          "L2": "4-7",
+          "RAM": "100-120"
+        },
+        "grid_4096_ms": [
+          2.006,
+          64.585
+        ],
+        "grid_1024_ms": [
+          0.091,
+          1.296
+        ],
+        "alloc_ns": "19-24"
+      }
+    },
+    {
+      "id": "F2",
+      "file": "chapters/f2-complexity.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 + regex 1.13.x; .NET SDK 10.0.201 (all page snippets extracted verbatim and compiled)",
+      "visuals": [
+        "stepper binary search",
+        "interactive growth explorer + log-log chart",
+        "chart measured duplicate detectors",
+        "chart measured regex engines (.NET backtracking vs NonBacktracking)"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "dup_100k_us": {
+          "pairs": 1484006.8,
+          "sort": 1013.3,
+          "hash": 1030.9
+        },
+        "common_ids_50k_ms": {
+          "nested": 161.1,
+          "hashed": 1.1
+        },
+        "vec_copies_per_push": 1.049,
+        "dotnet_regex_ms_n26": 10175.94,
+        "rust_regex_1M_ms": 1.264
+      }
+    },
+    {
+      "id": "F3",
+      "file": "chapters/f3-linear-structures.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 (6 page programs extracted and run; exercise solutions pass 3 unit tests, clippy clean)",
+      "visuals": [
+        "svg contiguous vs linked",
+        "stepper Vec growth",
+        "stepper ring buffer",
+        "chart measured traversal/queue",
+        "mermaid decision flowchart"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "sum_1M_ms": {
+          "vec": 0.11,
+          "linkedlist": 0.9
+        },
+        "links_1M_ms": {
+          "in_order": 0.51,
+          "scattered": 26.72
+        },
+        "drain_100k_ms": {
+          "vec_remove0": 753.27,
+          "vecdeque": 0.174
+        }
+      }
+    },
+    {
+      "id": "F4",
+      "file": "chapters/f4-hashing.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 (7 page programs extracted and run, clippy clean; 3 exercise unit tests pass); .NET SDK 10.0.201",
+      "visuals": [
+        "svg key->hash->slot",
+        "stepper linear probing with tombstone",
+        "svg SwissTable group (JS-generated)",
+        "chart measured HashDoS"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "hashdos_32k_ms": {
+          "weak": 1435.29,
+          "siphash": 1.665
+        },
+        "hasher_1M_ms_median7": {
+          "siphash": 36.3,
+          "fnv1a": 22.3
+        },
+        "capacity_steps": "3,7,14,28,56,112,224,448,896,1792",
+        "dotnet_string_hash_two_runs": [
+          2043132168,
+          1156942587
+        ]
+      }
+    },
+    {
+      "id": "F5",
+      "file": "chapters/f5-trees-heaps.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 (7 page programs extracted and run, clippy clean; 3 exercise unit tests pass); heap animation states verified by simulation",
+      "visuals": [
+        "svg balanced vs degenerate BST",
+        "stepper B-tree split (generated)",
+        "stepper heap push/pop tree+array (generated)",
+        "chart lookups",
+        "chart timers"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "bst_20k": {
+          "random_height": 39,
+          "sorted_height": 20000,
+          "lookup_ms": [
+            2.49,
+            765.44
+          ]
+        },
+        "lookups_1M_ms": {
+          "hashmap": 23.9,
+          "sorted_vec": 27.5,
+          "btreemap": 115.8
+        },
+        "timers_fire_1000_of_1M_ms": {
+          "vec_scan": 1816.9,
+          "heap": 0.103
+        },
+        "btree_B_from_source": 6
+      }
+    },
+    {
+      "id": "F6",
+      "file": "chapters/f6-graphs.html",
+      "date": "2026-10-11",
+      "code_tested": "rustc 1.99.0 + petgraph 0.8.3 (8 page programs extracted and run, clippy clean; 3 exercise unit tests pass); interactive explorer cross-checked vs Rust for all 16 alg/start combos",
+      "visuals": [
+        "interactive BFS/DFS explorer (custom JS)",
+        "stepper Kahn layers + cycle (generated)",
+        "svg Dijkstra shortest-path tree"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "bfs_1M_V_5M_E_ms_median3": 50.5,
+        "adj_list_MB": 51,
+        "adj_matrix_bitset_GB": 125
+      }
+    },
+    {
+      "id": "F7",
+      "file": "chapters/f7-algorithms.html",
+      "date": "2026-10-12",
+      "code_tested": "rustc 1.99.0 (7 page programs extracted and run, clippy clean; 3 exercise unit tests pass); sorting visualiser verified sorts all 9 alg/input combos; DP widget ends at 3",
+      "visuals": [
+        "interactive sorting visualiser (JS)",
+        "interactive edit-distance DP table (JS)",
+        "chart measured sorts random vs sorted"
+      ],
+      "quiz_questions": 8,
+      "exercises": 3,
+      "measurements": {
+        "sorts_10k_ms": {
+          "random": {
+            "insertion": 9.37,
+            "merge": 1.17,
+            "naive_quick": 0.38,
+            "sort": 0.14,
+            "sort_unstable": 0.09
+          },
+          "sorted": {
+            "insertion": 0.0,
+            "merge": 0.64,
+            "naive_quick": 15.58,
+            "sort": 0.0,
+            "sort_unstable": 0.0
+          }
+        },
+        "fib40_ms": {
+          "naive": 283.6,
+          "memo": 0.007
+        }
+      }
+    }
+  ],
+  "glossary_count": 104,
+  "references": [
+    "https://doc.rust-lang.org/book/ch00-00-introduction.html",
+    "https://doc.rust-lang.org/book/appendix-07-nightly-rust.html",
+    "https://doc.rust-lang.org/edition-guide/editions/index.html",
+    "https://blog.rust-lang.org/2015/05/15/Rust-1.0.html",
+    "https://blog.rust-lang.org/2023/06/20/introducing-leadership-council/",
+    "https://foundation.rust-lang.org/news/2021-02-08-hello-world/",
+    "https://www.microsoft.com/en-us/msrc/blog/2019/07/a-proactive-approach-to-more-secure-code",
+    "https://www.chromium.org/Home/chromium-security/memory-safety/",
+    "https://security.googleblog.com/2024/09/eliminating-memory-safety-vulnerabilities-Android.html",
+    "https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/",
+    "https://discord.com/blog/why-discord-is-switching-from-go-to-rust",
+    "https://github.com/firecracker-microvm/firecracker",
+    "https://go.dev/ref/mem",
+    "https://ferrocene.dev/en/",
+    "https://doi.org/10.1145/3158154",
+    "https://www.technologyreview.com/2023/02/14/1067869/rust-worlds-fastest-growing-programming-language/",
+    "https://www.youtube.com/watch?v=DnT-LUQgc7s",
+    "https://www.rust-lang.org/tools/install",
+    "https://rust-lang.github.io/rustup/",
+    "https://rust-lang.github.io/rustup/overrides.html",
+    "https://doc.rust-lang.org/cargo/",
+    "https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html",
+    "https://doc.rust-lang.org/cargo/reference/profiles.html",
+    "https://doc.rust-lang.org/cargo/guide/project-layout.html",
+    "https://doc.rust-lang.org/cargo/faq.html",
+    "https://doc.rust-lang.org/clippy/",
+    "https://rust-lang.github.io/rust-clippy/",
+    "https://rust-analyzer.github.io/",
+    "https://rustc-dev-guide.rust-lang.org/overview.html",
+    "https://doc.rust-lang.org/rustdoc/",
+    "https://docs.rs/",
+    "https://doc.rust-lang.org/book/ch01-00-getting-started.html",
+    "https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer",
+    "https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb",
+    "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+    "https://doc.rust-lang.org/reference/type-layout.html",
+    "https://doc.rust-lang.org/std/mem/fn.size_of.html",
+    "https://doc.rust-lang.org/std/hint/fn.black_box.html",
+    "https://doc.rust-lang.org/std/thread/index.html",
+    "https://learn.microsoft.com/dotnet/standard/garbage-collection/fundamentals",
+    "https://learn.microsoft.com/dotnet/standard/design-guidelines/choosing-between-class-and-struct",
+    "https://people.freebsd.org/~lstewart/articles/cpumemory.pdf",
+    "https://en.wikipedia.org/wiki/Sattolo%27s_algorithm",
+    "https://www.youtube.com/watch?v=rDoqT-a6UFg",
+    "https://doc.rust-lang.org/std/collections/index.html",
+    "https://doc.rust-lang.org/std/vec/struct.Vec.html",
+    "https://doc.rust-lang.org/std/primitive.slice.html#method.binary_search",
+    "https://docs.rs/regex/latest/regex/",
+    "https://learn.microsoft.com/dotnet/standard/base-types/backtracking-in-regular-expressions",
+    "https://learn.microsoft.com/dotnet/standard/base-types/regular-expression-options",
+    "https://swtch.com/~rsc/regexp/regexp1.html",
+    "https://algs4.cs.princeton.edu/14analysis/",
+    "https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/",
+    "https://www.youtube.com/watch?v=ZA-tUyM_y7s",
+    "https://doc.rust-lang.org/std/collections/struct.VecDeque.html",
+    "https://doc.rust-lang.org/std/collections/struct.LinkedList.html",
+    "https://learn.microsoft.com/dotnet/api/system.collections.generic.queue-1",
+    "https://learn.microsoft.com/dotnet/api/system.collections.generic.stack-1",
+    "https://rust-unofficial.github.io/too-many-lists/",
+    "https://www.stroustrup.com/bs_faq.html",
+    "https://github.com/det/random_insert",
+    "https://en.wikipedia.org/wiki/Circular_buffer",
+    "https://www.youtube.com/watch?v=CHhwJjR0mZA",
+    "https://doc.rust-lang.org/std/collections/struct.HashMap.html",
+    "https://doc.rust-lang.org/std/hash/trait.Hash.html",
+    "https://doc.rust-lang.org/std/hash/trait.BuildHasher.html",
+    "https://abseil.io/about/design/swisstables",
+    "https://abseil.io/blog/20180927-swisstables",
+    "https://github.com/rust-lang/hashbrown",
+    "https://learn.microsoft.com/dotnet/api/system.string.gethashcode",
+    "https://learn.microsoft.com/dotnet/api/system.hashcode",
+    "https://www.usenix.org/conference/12th-usenix-security-symposium/denial-service-algorithmic-complexity-attacks",
+    "https://doi.org/10.1007/978-3-642-34931-7_28",
+    "https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function",
+    "https://www.youtube.com/watch?v=ncHmEUmJZf4",
+    "https://doc.rust-lang.org/std/collections/struct.BTreeMap.html",
+    "https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html",
+    "https://doc.rust-lang.org/std/cmp/struct.Reverse.html",
+    "https://learn.microsoft.com/dotnet/standard/collections/sorted-collection-types",
+    "https://learn.microsoft.com/dotnet/api/system.collections.generic.sorteddictionary-2",
+    "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2",
+    "https://www.postgresql.org/docs/current/indexes-types.html",
+    "https://doi.org/10.1007/BF00288683",
+    "https://www.youtube.com/watch?v=76dhtgZt38A",
+    "https://www.youtube.com/watch?v=Xnpo1atN-Iw",
+    "https://docs.rs/petgraph/latest/petgraph/",
+    "https://doi.org/10.1007/BF01386390",
+    "https://doi.org/10.1145/368996.369025",
+    "https://doi.org/10.1137/0201010",
+    "https://www.youtube.com/watch?v=oFVYVzlvk9c",
+    "https://www.youtube.com/watch?v=IBfWDYSffUU",
+    "https://www.youtube.com/watch?v=NSHizBK9JD8",
+    "https://doc.rust-lang.org/std/primitive.slice.html#method.sort",
+    "https://learn.microsoft.com/dotnet/api/system.array.sort",
+    "https://learn.microsoft.com/dotnet/api/system.linq.enumerable.orderby",
+    "https://github.com/Voultapher/driftsort",
+    "https://github.com/Voultapher/sort-research-rs",
+    "https://doi.org/10.1093/comjnl/5.1.10",
+    "https://en.wikipedia.org/wiki/Introsort",
+    "https://en.wikipedia.org/wiki/Levenshtein_distance",
+    "https://www.youtube.com/watch?v=oS9aPzUNG-s",
+    "https://www.youtube.com/watch?v=yndgIDO0zQQ",
+    "https://www.youtube.com/watch?v=r4-cftqTcdI"
+  ],
+  "verify_queue": [
+    "async closures / AFIT Send bounds status (4.6)",
+    "case studies primary sources (8.5)",
+    "crate major versions (per chapter)"
+  ],
+  "environment": {
+    "rust_toolchain_installed": true,
+    "rustc": "1.99.0",
+    "dotnet_sdk": "10.0.201",
+    "lab_dir": "scratchpad (session temp)"
+  },
+  "resolved": [
+    {
+      "item": "let chains stabilisation version",
+      "answer": "Rust 1.88.0 (2025-06-26), 2024 edition only",
+      "source": "rust-lang/rust RELEASES.md"
+    },
+    {
+      "item": "rustup auto-install of pinned toolchain",
+      "answer": "cargo in a folder with rust-toolchain.toml auto-installs the toolchain (rustup 1.29.1); opt out with RUSTUP_AUTO_INSTALL=0 or `rustup set auto-install disable`; `rustup show` warns and recommends `rustup install`",
+      "source": "tested locally"
+    },
+    {
+      "item": "std sort algorithms",
+      "answer": "slice::sort = driftsort-based (stable, linear on sorted/reversed); sort_unstable = ipnsort-based; select_nth_unstable = introselect on ipnsort. .NET Array.Sort/List.Sort = introsort (unstable); LINQ OrderBy stable",
+      "source": "Rust slice docs 'Current implementation'; Microsoft Learn Array.Sort & Enumerable.OrderBy"
+    }
+  ],
+  "next": "F8 Type-system concepts",
+  "design_system_changes": [
+    "2026-10-11 F3: .callout-title display:block (inline code in titles wrapped badly)",
+    "2026-10-11 F3: Mermaid scales to fit on desktop; on <=760px min-width 560px + horizontal scroll, auto-centred",
+    "2026-10-11 F4: every figure.visual > svg wrapped in .svg-scroll; <=760px min-width 580px + horizontal scroll + swipe hint (regression-tested on all 8 pages)"
+  ]
+}

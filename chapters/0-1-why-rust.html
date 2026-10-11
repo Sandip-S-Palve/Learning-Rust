@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0.1 Why Rust, and how to use this course</title>
+<meta name="description" content="What problem Rust solves, how it compares to C#, how the language evolves, and how this course works.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="0.1">
+<article class="content">
+<h1>Why Rust, and how to use this course</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Explain, in plain terms, what problem Rust solves and how its answer differs from C#'s garbage collector and from C/C++</li>
+      <li>State what safe Rust guarantees, and what it does <em>not</em> guarantee</li>
+      <li>Explain editions, the six-week release train and Rust's governance well enough to answer an enterprise client's "is this a safe bet?" questions</li>
+      <li>Cite real, sourced adoption examples and the lesson each one teaches</li>
+      <li>Know how this course is organised and how to get the most out of each chapter</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>As a consultant, the first question you'll get is rarely "how do lifetimes work?" It is <strong>"Should we use Rust for this, and is it a safe bet?"</strong>
+    To answer it credibly you need three things: what problem Rust actually solves, what it costs, and evidence from organisations that have used it.
+    This chapter gives you all three, and the rest of the course turns them into skills.</p>
+</div>
+<p>The short version: for decades, programmers had to choose between <strong>control and speed</strong> (C, C++) and <strong>safety and productivity</strong> (C#, Java, Go).
+  Rust is the first mainstream language built to offer both. It manages memory without a garbage collector, and the compiler catches the bugs that make C and C++ dangerous.
+  The price is paid up front: a stricter compiler and a steeper learning curve.</p>
+
+<h2 id="intuition">Intuition first: three ways to manage memory</h2>
+<p>Every program borrows memory from the computer and must give it back. There are three broad answers to <em>who gives it back, and when</em>.</p>
+
+<div class="callout analogy"><div class="callout-title">🧭 Analogy — returning hired equipment</div>
+  <p>Picture a construction site that hires equipment.</p>
+  <ul>
+    <li><strong>Manual (C/C++):</strong> each worker must remember to return what they hired. Forget, and you pay forever (a <em>leak</em>). Return something still in use, and someone gets hurt (a <em>use-after-free</em>).</li>
+    <li><strong>Garbage collector (C#/.NET):</strong> a site manager walks around now and then, finds equipment nobody is touching, and returns it. Safe, but the manager costs money, sometimes stops work to do the rounds, and returns things late.</li>
+    <li><strong>Ownership (Rust):</strong> every item is signed out to exactly one person, and the site rules are checked <em>before the job starts</em>. When the person signed for the item leaves, it goes back automatically, at a moment you can predict. If the plan breaks the rules, the job never starts.</li>
+  </ul>
+</div>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · memory-management strategies</span>
+  <svg viewBox="0 0 720 330" role="img" aria-label="Comparison of manual memory management, garbage collection and Rust ownership">
+    <!-- Column headers -->
+    <rect x="10" y="10" width="220" height="56" rx="8" class="svg-red"/>
+    <text x="120" y="31" class="svg-title" text-anchor="middle">Manual</text>
+    <text x="120" y="51" class="svg-text-sm" text-anchor="middle">C, C++</text>
+    <rect x="250" y="10" width="220" height="56" rx="8" class="svg-purple"/>
+    <text x="360" y="31" class="svg-title" text-anchor="middle">Garbage collector</text>
+    <text x="360" y="51" class="svg-text-sm" text-anchor="middle">C#, Java, Go</text>
+    <rect x="490" y="10" width="220" height="56" rx="8" class="svg-accent"/>
+    <text x="600" y="31" class="svg-title" text-anchor="middle">Ownership</text>
+    <text x="600" y="51" class="svg-text-sm" text-anchor="middle">Rust</text>
+    <!-- Row 1 -->
+    <g>
+      <rect x="10" y="80" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="22" y="97" class="svg-text-sm">WHO FREES MEMORY?</text>
+      <text x="22" y="120" class="svg-text">The programmer</text>
+      <text x="22" y="140" class="svg-text-sm">(free / delete)</text>
+      <rect x="250" y="80" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="262" y="97" class="svg-text-sm">WHO FREES MEMORY?</text>
+      <text x="262" y="120" class="svg-text">A runtime collector</text>
+      <text x="262" y="140" class="svg-text-sm">(runs when it decides to)</text>
+      <rect x="490" y="80" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="502" y="97" class="svg-text-sm">WHO FREES MEMORY?</text>
+      <text x="502" y="120" class="svg-text">Code the compiler inserts</text>
+      <text x="502" y="140" class="svg-text-sm">(at a known point: end of owner)</text>
+    </g>
+    <!-- Row 2 -->
+    <g>
+      <rect x="10" y="164" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="22" y="181" class="svg-text-sm">WHEN ARE MISTAKES CAUGHT?</text>
+      <text x="22" y="204" class="svg-text">Often never</text>
+      <text x="22" y="224" class="svg-text-sm">crash, corruption, exploit</text>
+      <rect x="250" y="164" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="262" y="181" class="svg-text-sm">WHEN ARE MISTAKES CAUGHT?</text>
+      <text x="262" y="204" class="svg-text">Mostly impossible</text>
+      <text x="262" y="224" class="svg-text-sm">GC keeps live objects alive</text>
+      <rect x="490" y="164" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="502" y="181" class="svg-text-sm">WHEN ARE MISTAKES CAUGHT?</text>
+      <text x="502" y="204" class="svg-text">At compile time</text>
+      <text x="502" y="224" class="svg-text-sm">the program will not build</text>
+    </g>
+    <!-- Row 3 -->
+    <g>
+      <rect x="10" y="248" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="22" y="265" class="svg-text-sm">WHAT YOU PAY</text>
+      <text x="22" y="288" class="svg-text">Security bugs</text>
+      <text x="22" y="308" class="svg-text-sm">use-after-free, double free, leaks</text>
+      <rect x="250" y="248" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="262" y="265" class="svg-text-sm">WHAT YOU PAY</text>
+      <text x="262" y="288" class="svg-text">Runtime overhead</text>
+      <text x="262" y="308" class="svg-text-sm">pauses, CPU, extra memory</text>
+      <rect x="490" y="248" width="220" height="74" rx="8" class="svg-box"/>
+      <text x="502" y="265" class="svg-text-sm">WHAT YOU PAY</text>
+      <text x="502" y="288" class="svg-text">Learning curve</text>
+      <text x="502" y="308" class="svg-text-sm">stricter rules, slower compiles</text>
+    </g>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Rust moves memory-safety checking from runtime (GC) or "never" (manual) to compile time. The cost moves too: from production incidents and runtime overhead to developer learning time.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+
+<span class="layer-label basic">Basic</span>
+<h3 id="what-is-rust">What Rust is, in five properties</h3>
+<ol>
+  <li><strong>Compiled to native machine code.</strong> No virtual machine or JIT. A Rust program is a single executable, like a .NET <em>NativeAOT</em> build, but without a garbage collector inside it.</li>
+  <li><strong>No garbage collector.</strong> Memory is freed at predictable points that the compiler works out from <dfn data-term="ownership">ownership</dfn> rules: every value has exactly one owner, and the value is cleaned up when its owner goes away. Module 2 teaches these rules in detail.</li>
+  <li><strong><dfn data-term="memory safety">Memory safety</dfn> checked at compile time.</strong> Memory safety means a program can never read or write memory it isn't entitled to: no use-after-free, no double free, no buffer overflows, no reading uninitialised memory. In C and C++ these mistakes cause <dfn data-term="undefined behaviour">undefined behaviour</dfn> — the language makes no promise at all about what happens next, which is how many security exploits start.</li>
+  <li><strong>A strong, expressive static type system.</strong> Close to C#'s, with extra features (such as enums that carry data, and no <code>null</code>) that let you encode business rules so that invalid states can't be represented.</li>
+  <li><strong><dfn data-term="zero-cost abstraction">Zero-cost abstractions</dfn>.</strong> High-level features such as iterators and generics compile down to code as fast as the low-level version you would write by hand. You don't pay at runtime for writing readable code.</li>
+</ol>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>C# is also memory-safe; it gets there with the garbage collector and runtime checks. So for a typical .NET line-of-business service, Rust's headline benefit is <em>not</em> "more safety". It is <strong>safety without the runtime</strong>: predictable latency (no GC pauses), a smaller memory footprint, small self-contained binaries, and the ability to go places a GC runtime can't easily go (OS kernels, firmware, browser plugins via WebAssembly, libraries called from any other language).
+    Rust also adds one safety guarantee C# doesn't have: <strong>no data races</strong> (explained below).</p>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="guarantees">What safe Rust guarantees — and what it doesn't</h3>
+<p>Rust code is <em>safe</em> by default. A small, explicitly marked subset called <dfn data-term="unsafe Rust">unsafe Rust</dfn> (inside <code>unsafe { … }</code> blocks) lets experts do things the compiler can't verify, such as calling C libraries. That is the same idea as C#'s <code>unsafe</code> keyword. In safe code, the compiler guarantees the following:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Problem</th><th>Safe Rust</th><th>C# (.NET)</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Use-after-free, double free, dangling pointers</td><td class="yes">Prevented at compile time</td><td class="yes">Prevented by the GC</td><td>Different mechanism, same outcome</td></tr>
+    <tr><td>Buffer overflow (reading past an array)</td><td class="yes">Prevented — bounds checks panic</td><td class="yes">Prevented — <code>IndexOutOfRangeException</code></td><td>Both check at runtime when needed</td></tr>
+    <tr><td><code>null</code> reference errors</td><td class="yes">Prevented — there is no null; absence is the type <code>Option&lt;T&gt;</code></td><td class="partial">Warnings only (nullable reference types)</td><td>Rust forces you to handle "missing"</td></tr>
+    <tr><td><dfn data-term="data race">Data races</dfn></td><td class="yes">Prevented at compile time</td><td class="no">Not prevented</td><td>Two threads touching the same memory at once, at least one writing, with no synchronisation</td></tr>
+    <tr><td>Deadlocks</td><td class="no">Not prevented</td><td class="no">Not prevented</td><td>Logic-level concurrency bugs remain your job</td></tr>
+    <tr><td>Memory leaks</td><td class="no">Not prevented (rare in practice)</td><td class="partial">Mostly prevented; event-handler leaks still happen</td><td>Leaking is considered "safe" in Rust: it can't corrupt memory</td></tr>
+    <tr><td>Logic bugs, wrong business rules</td><td class="no">Not prevented</td><td class="no">Not prevented</td><td>But richer types help you rule out more of them</td></tr>
+    <tr><td>Crashes (panics)</td><td class="no">Possible, e.g. on a failed bounds check</td><td class="no">Possible (unhandled exceptions)</td><td>A panic stops cleanly; it is not undefined behaviour</td></tr>
+  </tbody>
+  <caption>The guarantees apply to safe Rust. Inside <code>unsafe</code> blocks the programmer takes on the responsibility, just as in C#'s <code>unsafe</code> code.</caption>
+</table></div>
+
+<h3 id="editions">Versions vs editions</h3>
+<p>Rust has two separate ideas that .NET developers often mix up:</p>
+<ul>
+  <li><strong>Compiler version</strong> (e.g. <code>1.99.0</code>): a new one ships every six weeks. Upgrading must not break code that compiled before. The project calls this the <em>stability promise</em>.</li>
+  <li><strong><dfn data-term="edition">Edition</dfn></strong> (2015, 2018, 2021, 2024): an opt-in set of language changes that would otherwise break old code, such as new keywords. Each <dfn data-term="crate" data-def="A Rust compilation unit: a library or an executable. Roughly a .NET project/assembly. Chapter 2.7 defines it precisely.">crate</dfn> (roughly a .NET project) picks its edition in its build file, <code>Cargo.toml</code>.</li>
+</ul>
+<p>The rule that makes editions work, quoted from the official Edition Guide: crates in one edition <em>"must seamlessly interoperate with those compiled with other editions."</em>
+  A 2024-edition application can use a library written in 2018 Rust, and the reverse. The current compiler supports every edition.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>An edition is like <code>&lt;LangVersion&gt;</code> in a <code>.csproj</code>: each project chooses its own, and projects with different values still work together because they compile to the same intermediate form.
+    The big difference is the <strong>runtime</strong>. .NET has runtime versions with long-term support (LTS) releases. Rust has no runtime and <strong>no official LTS</strong>: only the latest stable compiler is supported, for six weeks. Teams rely on the stability promise and simply upgrade the compiler regularly. Chapter 0.2 shows how to pin a compiler version per project.</p>
+</div>
+
+<h3 id="release-train">The six-week release train</h3>
+<p>Rust ships on a fixed timetable, like a train that leaves on time whether or not a particular feature is on board. There are three <dfn data-term="release channel">release channels</dfn>:</p>
+<ul>
+  <li><strong>Nightly</strong> — built every night from the main branch. Unfinished features are available, but only if you switch them on with a <em>feature flag</em>.</li>
+  <li><strong>Beta</strong> — every six weeks a copy of nightly becomes the next beta, for six weeks of testing. Feature flags are not allowed.</li>
+  <li><strong>Stable</strong> — after its six weeks in beta, that version becomes the new stable release. Almost everyone uses stable.</li>
+</ul>
+<p>New features start as an <dfn data-term="RFC">RFC</dfn> (Request for Comments), a public design proposal that the relevant Rust team reviews. An accepted feature is built behind a flag on nightly, tested, and then <em>stabilised</em>: the flag is removed and the feature rides the next train to stable. Step through the animation:</p>
+
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · how a release travels</span>
+  <svg viewBox="0 0 720 290" role="img" aria-label="Release train: nightly, beta and stable channels over time">
+    <defs>
+      <marker id="rt-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+      <marker id="rt-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+    </defs>
+    <!-- date ticks -->
+    <g>
+      <line x1="200" y1="40" x2="200" y2="252" class="svg-line-dash"/>
+      <line x1="420" y1="40" x2="420" y2="252" class="svg-line-dash"/>
+      <line x1="640" y1="40" x2="640" y2="252" class="svg-line-dash"/>
+      <text x="200" y="26" class="svg-text-sm" text-anchor="middle">20 Aug 2026</text>
+      <text x="420" y="26" class="svg-text-sm" text-anchor="middle">1 Oct 2026</text>
+      <text x="640" y="26" class="svg-text-sm" text-anchor="middle">12 Nov 2026</text>
+    </g>
+    <!-- channel lines -->
+    <text x="12" y="70" class="svg-title">Nightly</text>
+    <text x="12" y="150" class="svg-title">Beta</text>
+    <text x="12" y="230" class="svg-title">Stable</text>
+    <line x1="110" y1="70" x2="705" y2="70" class="svg-line"/>
+    <line x1="110" y1="150" x2="705" y2="150" class="svg-line"/>
+    <line x1="110" y1="230" x2="705" y2="230" class="svg-line"/>
+    <!-- step 1: feature on nightly -->
+    <g data-show="1" data-hl="1">
+      <circle cx="150" cy="70" r="8" class="svg-teal"/>
+      <text x="150" y="52" class="svg-text-sm" text-anchor="middle">change merged</text>
+    </g>
+    <!-- step 2: beta branches -->
+    <g data-show="2" data-hl="2">
+      <line x1="200" y1="76" x2="200" y2="142" class="svg-line-accent" marker-end="url(#rt-a)"/>
+      <text x="208" y="110" class="svg-text">1.99 → beta</text>
+      <line x1="200" y1="150" x2="420" y2="150" class="svg-line-accent"/>
+    </g>
+    <!-- step 3: backport -->
+    <g data-show="3" data-hl="3">
+      <line x1="320" y1="76" x2="320" y2="142" class="svg-line-dash" marker-end="url(#rt-m)"/>
+      <text x="328" y="122" class="svg-text-sm">fix backported</text>
+    </g>
+    <!-- step 4: stable + next beta -->
+    <g data-show="4" data-hl="4">
+      <line x1="420" y1="156" x2="420" y2="222" class="svg-line-accent" marker-end="url(#rt-a)"/>
+      <text x="428" y="186" class="svg-text">1.99 stable</text>
+      <line x1="420" y1="76" x2="420" y2="142" class="svg-line-accent" marker-end="url(#rt-a)"/>
+      <text x="428" y="100" class="svg-text">1.100 → beta</text>
+      <line x1="420" y1="150" x2="640" y2="150" class="svg-line-accent"/>
+      <line x1="420" y1="230" x2="705" y2="230" class="svg-line-accent"/>
+    </g>
+    <!-- step 5: next stable -->
+    <g data-show="5" data-hl="5">
+      <line x1="640" y1="156" x2="640" y2="222" class="svg-line-dash" marker-end="url(#rt-m)"/>
+      <text x="632" y="270" class="svg-text-sm" text-anchor="end">1.100 becomes stable six weeks later</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li>A change (for example, a newly stabilised feature) is merged into the main branch and appears in that night's <strong>nightly</strong> build.</li>
+    <li>On 20 Aug 2026, the day 1.98 shipped, the main branch was copied into <strong>beta</strong> as version 1.99. Anything merged before this point is on board.</li>
+    <li>For six weeks 1.99 is tested in beta. Fixes for any regressions found are made on main and <strong>backported</strong> to beta. New features are not added.</li>
+    <li>On 1 Oct 2026, 1.99 becomes <strong>stable</strong>. The same day, the next copy of main becomes the 1.100 beta. This is the state this course is stamped with.</li>
+    <li>By the six-week rule, 1.100 is due to become stable on 12 Nov 2026. A feature that missed a train simply catches the next one.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> The release train. Because a train always leaves on time, there is no pressure to ship half-finished features. That is one reason upgrades are usually uneventful.</figcaption>
+</figure>
+
+<h3 id="governance">Who controls Rust?</h3>
+<p>Unlike .NET, which Microsoft leads, Rust has no single corporate owner. Three bodies matter:</p>
+<ul>
+  <li><strong>The Rust Project</strong> — the open-source teams (language, compiler, library, Cargo, and others) that design and build Rust. Decisions are made in public, through RFCs.</li>
+  <li><strong>The Leadership Council</strong> — the project's top governance body, created by RFC 3392 in June 2023. It replaced the earlier "core team" and is made up of representatives of the top-level teams.</li>
+  <li><strong>The Rust Foundation</strong> — an independent non-profit announced on 8 February 2021, founded by AWS, Huawei, Google, Microsoft and Mozilla. It holds the trademarks and pays for infrastructure such as <code>crates.io</code> (the package registry, Rust's NuGet). It supports the project but does not design the language.</li>
+</ul>
+
+<details class="deep-dive"><summary>Deep dive: where the guarantees actually come from</summary><div class="body">
+  <p>Rust has no runtime doing the checking, so how can it promise memory safety and freedom from data races? Through two compile-time analyses:</p>
+  <ol>
+    <li><strong>Ownership and borrowing.</strong> The compiler tracks which variable owns each value, and every <em>reference</em> (a pointer that borrows a value without owning it). The core rule is <em>aliasing XOR mutation</em>: at any moment you can have many readers <em>or</em> one writer, never both. Most memory bugs need both at once. In C++, for example, you hold a pointer into a vector while code adds to the vector, which may move its buffer. Forbid that combination and those bugs can't happen. The lab below shows this rule in action. Chapter 2.3 teaches it properly.</li>
+    <li><strong>Thread-safety marker traits.</strong> The type system records which types are safe to send to, or share with, another thread (the <code>Send</code> and <code>Sync</code> traits, chapter 4.1). Spawning a thread with a value that isn't thread-safe is a compile error. Combined with the aliasing rule, this rules out data races.</li>
+  </ol>
+  <p>These rules are conservative: the compiler rejects some programs that would actually be fine. For the small number of cases where an expert needs to go beyond them (talking to hardware, writing a fast collection), <code>unsafe</code> code is allowed, but it is expected to be wrapped in a <em>safe interface</em> that upholds the rules for its callers.</p>
+  <p>Is this sound, or just hopeful? The <strong>RustBelt</strong> project (Jung, Jourdan, Krebbers and Dreyer; POPL 2018) built a formal model of a realistic subset of Rust and machine-checked a proof that its type system is sound. The proof also covers several standard-library types that use <code>unsafe</code> internally, showing their safe interfaces really are safe. It does not cover every line of the real compiler or standard library, but it is strong evidence that the design holds together.</p>
+</div></details>
+
+<h3 id="history">A short history</h3>
+<ol class="timeline">
+  <li><time>2006</time><div><strong>Side project</strong><p>Graydon Hoare, a Mozilla programmer, starts designing Rust: a language that could produce fast code without memory bugs.</p></div></li>
+  <li><time>2009</time><div><strong>Mozilla sponsors it</strong><p>Mozilla begins paying engineers to work on Rust, for use in a new browser engine.</p></div></li>
+  <li class="key"><time>2015</time><div><strong>Rust 1.0 — 15 May</strong><p>The first stable release, and the start of the stability promise and the six-week trains.</p></div></li>
+  <li><time>2018</time><div><strong>2018 edition (Rust 1.31)</strong><p>The first edition upgrade, showing that the language can evolve without breaking old code.</p></div></li>
+  <li class="key"><time>2021</time><div><strong>Rust Foundation; 2021 edition (1.56)</strong><p>The foundation is announced in February by AWS, Huawei, Google, Microsoft and Mozilla. The 2021 edition ships in October.</p></div></li>
+  <li><time>2022</time><div><strong>Linux 6.1 (11 Dec)</strong><p>The Linux kernel adds initial support for writing parts of the kernel in Rust.</p></div></li>
+  <li><time>2023</time><div><strong>Leadership Council</strong><p>New project governance via RFC 3392, replacing the core team.</p></div></li>
+  <li class="key"><time>2025</time><div><strong>2024 edition (Rust 1.85, 20 Feb)</strong><p>The edition this course uses.</p></div></li>
+  <li><time>2026</time><div><strong>Rust 1.99 (1 Oct)</strong><p>The version this course is tested against.</p></div></li>
+</ol>
+
+<h2 id="evidence">The evidence: why industry is moving</h2>
+<p>Most of Rust's industrial momentum comes from one statistic, measured independently by several large vendors: <strong>in big C and C++ codebases, most serious security bugs are memory-safety bugs.</strong></p>
+<figure class="visual">
+  <span class="visual-tag">Chart · memory-safety share of security bugs</span>
+  <div class="chart-box"><canvas id="ms-chart" aria-label="Bar chart of the share of security vulnerabilities caused by memory-safety issues at Microsoft, Chromium and Android"></canvas></div>
+  <figcaption><strong>Figure 3.</strong> Sources: Microsoft MSRC (2019) — about 70% of the CVEs Microsoft assigns each year are memory-safety issues; Chromium security team — around 70% of high-severity bugs; Google Security Blog (Sept 2024) — Android's memory-safety share fell from 76% (2019) to 24% (2024, extrapolated for the full year) as new code moved to memory-safe languages, including Rust. These are different measures (all CVEs, high-severity bugs, all Android vulnerabilities), so compare trends, not exact numbers.</figcaption>
+</figure>
+<div class="callout pitfall"><div class="callout-title">⚠️ Use these numbers carefully</div>
+  <p>These figures describe large codebases written in C and C++. They do <strong>not</strong> mean "70% of bugs in your C# services are memory bugs". C# is already memory-safe. When advising a .NET shop, base the case for Rust on latency, footprint, cost, portability and reach, not on a security statistic that doesn't apply to their code.</p>
+</div>
+
+<h2 id="lab">Worked example: the compiler as a reviewer</h2>
+<p>You don't need to understand Rust syntax yet. The point of this lab is to <em>see</em> the difference between catching a bug at runtime and catching it at compile time.
+  You can run every Rust snippet in this course in your browser with the <strong>Run ▶</strong> button, which opens the official Rust Playground. Chapter 0.2 sets up your local tools.</p>
+
+<h3 id="lab-step-1">Step 1 — the bug in C#</h3>
+<p>A classic .NET bug: changing a list while you loop over it. It compiles fine and fails only when that line runs.</p>
+<pre data-title="app.cs (.NET 10 file-based app: dotnet run app.cs)"><code class="language-csharp">var scores = new List&lt;int&gt; { 10, 20, 30 };
+foreach (var s in scores)
+{
+    if (s == 10) scores.Add(40);   // modify while enumerating
+}
+Console.WriteLine("done");</code></pre>
+<pre class="output error runtime">Unhandled exception. System.InvalidOperationException: Collection was modified; enumeration operation may not execute.
+   at System.Collections.Generic.List`1.Enumerator.MoveNext()
+   at Program.&lt;Main&gt;$(String[] args) in app.cs:line 2</pre>
+<p>.NET protects you here with a runtime check (a version counter inside <code>List&lt;T&gt;</code>). You find out in testing, or in production.</p>
+
+<h3 id="lab-step-2">Step 2 — the same bug in Rust</h3>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">fn main() {
+    let mut scores = vec![10, 20, 30];
+    for s in &amp;scores {
+        if *s == 10 {
+            scores.push(40); // modify while iterating
+        }
+    }
+    println!("done");
+}</code></pre>
+<p>This never runs. <code>cargo build</code> refuses to produce a program (real output from Rust 1.99.0):</p>
+<pre class="output error">error[E0502]: cannot borrow `scores` as mutable because it is also borrowed as immutable
+ --&gt; src/main.rs:5:13
+  |
+3 |       for s in &amp;scores {
+  |       -        -------
+  |       |        |
+  |       |        immutable borrow occurs here
+  |  _____|        immutable borrow later used here
+  | |
+4 | |         if *s == 10 {
+5 | |             scores.push(40); // modify while iterating
+  | |             ^^^^^^^^^^^^^^^ mutable borrow occurs here
+6 | |         }
+7 | |     }
+  | |_____- this for loop borrows `scores` immutably, preventing mutation within its body
+  |
+  = help: consider using an index-based loop instead, or collecting modifications into a separate collection
+
+For more information about this error, try `rustc --explain E0502`.</pre>
+<p>How to read it: the loop is <em>reading</em> the vector (an "immutable borrow"), and <code>push</code> wants to <em>change</em> it (a "mutable borrow") while the read is still going on. That breaks the "many readers or one writer" rule from the deep dive. In C++ the same code compiles and is undefined behaviour: <code>push</code> may move the buffer, leaving the loop reading freed memory. The Rust compiler even suggests two fixes, which you'll write in Exercise 1.</p>
+
+<h3 id="lab-step-3">Step 3 — a fixed version</h3>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">fn main() {
+    let mut scores = vec![10, 20, 30];
+    // Decide first, then modify: the read finishes before the write starts.
+    let has_ten = scores.contains(&amp;10);
+    if has_ten {
+        scores.push(40);
+    }
+    println!("{scores:?}");
+}</code></pre>
+<pre class="output">[10, 20, 30, 40]</pre>
+
+<div class="callout tip"><div class="callout-title">✅ The habit to build</div>
+  <p>Read Rust compiler errors top to bottom, like a code review comment. They name the rule, point at the exact lines, and usually suggest a fix. Many Rust developers describe the compiler as a strict but helpful pair programmer.</p>
+</div>
+
+<h2 id="exercises">Exercises</h2>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — apply the compiler's suggestions <span class="difficulty">★☆☆</span></div>
+  <p>The error in Step 2 suggests "an index-based loop" or "collecting modifications into a separate collection". Starting from the Step 2 code, write both versions, so that the program prints <code>[10, 20, 30, 40]</code>. Use the Run button. You don't need to know Rust yet: copy the shape of Step 2, and rely on the compiler errors and the hints below.</p>
+  <p class="small muted">Hints: <code>scores.len()</code> gives the length; <code>for i in 0..n</code> loops over 0 to n−1; <code>scores[i]</code> reads an element; <code>Vec::new()</code> makes an empty list; <code>scores.extend(other)</code> appends another list.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">fn main() {
+    // Solution A: loop over positions (indices), not over borrowed items.
+    let mut scores = vec![10, 20, 30];
+    let len = scores.len();          // fix the length before the loop
+    for i in 0..len {
+        if scores[i] == 10 {
+            scores.push(40);         // allowed: no borrow is held across the loop
+        }
+    }
+    println!("A: {scores:?}");
+
+    // Solution B: collect the changes first, apply them afterwards.
+    let mut scores = vec![10, 20, 30];
+    let mut additions = Vec::new();
+    for s in &amp;scores {
+        if *s == 10 {
+            additions.push(40);      // writes go to a *different* vector
+        }
+    }
+    scores.extend(additions);        // the read borrow ended with the loop
+    println!("B: {scores:?}");
+}</code></pre>
+<pre class="output">A: [10, 20, 30, 40]
+B: [10, 20, 30, 40]</pre>
+  <p>Notice that in A, <code>len</code> is computed once, so the 40 we add is not visited. With <code>i &lt; scores.len()</code> re-checked each time, the loop would also visit the new element. That is harmless here, but it is the kind of subtle behaviour change to watch for.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — the one-minute pitch <span class="difficulty">★★☆ consultant skill</span></div>
+  <p>A CTO of a .NET shop asks: "In one minute, what is Rust and why would we care?" Write five bullet points. Be honest about the costs, and don't use the 70% statistic as if it applied to their C# code.</p>
+  <details class="solution"><summary>Show a model answer</summary>
+    <ul>
+      <li>Rust is a compiled language with C/C++-level speed and memory use, but with the memory safety you're used to in C#, enforced by the compiler instead of a garbage collector.</li>
+      <li>No GC means predictable latency and a small footprint: good for hot-path services, proxies, high-volume data processing, edge/IoT and serverless cold starts.</li>
+      <li>It also prevents data races at compile time, which C# can't, so heavily concurrent code is safer to change.</li>
+      <li>The cost is a learning curve of a few months and slower compiles. Start with one well-bounded component, not a rewrite.</li>
+      <li>It's a mature bet: stable since 2015, backed by a foundation (AWS, Google, Microsoft and others), used in the Linux kernel, Android, AWS Lambda's Firecracker and Cloudflare's proxy.</li>
+    </ul>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — read the train timetable <span class="difficulty">★☆☆</span></div>
+  <p>Rust 1.99.0 shipped on 1 October 2026. Using only the six-week rule, on what date is 1.101.0 due? And if a feature is stabilised on main on 2 October 2026, which stable version is it likely to arrive in?</p>
+  <details class="solution"><summary>Show solution</summary>
+    <p>1.100: 1 Oct + 42 days = <strong>12 Nov 2026</strong>. 1.101: 12 Nov + 42 days = <strong>24 Dec 2026</strong>.<br>
+    On 2 October, the 1.100 beta had already branched (on 1 October), so the feature is in nightly 1.101. It reaches beta when 1.101 branches on 12 November, and stable in <strong>1.101 on 24 December 2026</strong>, about 12 weeks later. (Occasionally a change is backported into the current beta, but new features normally are not.)</p>
+  </details>
+</div>
+
+<h2 id="comparison">Comparison: Rust and its neighbours</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th></th><th>Rust</th><th>C# / .NET</th><th>Go</th><th>Java</th><th>C++</th></tr></thead>
+  <tbody>
+    <tr><td>Memory management</td><td>Ownership (compile time)</td><td>GC</td><td>GC</td><td>GC</td><td>Manual + RAII smart pointers</td></tr>
+    <tr><td>Runtime</td><td>Minimal, no VM</td><td>CLR (JIT; NativeAOT option)</td><td>Go runtime (GC + scheduler) in the binary</td><td>JVM</td><td>Minimal, no VM</td></tr>
+    <tr><td>Memory safe by default</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="partial">Mostly (data races can break it)</td><td class="yes">Yes</td><td class="no">No</td></tr>
+    <tr><td>Data races prevented at compile time</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No (runtime race detector)</td><td class="no">No</td><td class="no">No</td></tr>
+    <tr><td>Null safety</td><td class="yes">No null (<code>Option</code>)</td><td class="partial">Nullable annotations (warnings)</td><td class="no"><code>nil</code></td><td class="no"><code>null</code></td><td class="no"><code>nullptr</code></td></tr>
+    <tr><td>Predictable latency (no GC pauses)</td><td class="yes">Yes</td><td class="partial">Good, with tuning</td><td class="partial">Good, with tuning</td><td class="partial">Good, with tuning</td><td class="yes">Yes</td></tr>
+    <tr><td>Learning curve</td><td>Steep</td><td>Moderate</td><td>Gentle</td><td>Moderate</td><td>Steep</td></tr>
+    <tr><td>Compile speed</td><td>Slow-ish</td><td>Fast</td><td>Very fast</td><td>Fast</td><td>Slow</td></tr>
+    <tr><td>Enterprise ecosystem maturity</td><td>Good and growing</td><td>Excellent</td><td>Very good</td><td>Excellent</td><td>Excellent (varied quality)</td></tr>
+  </tbody>
+  <caption>A first look. Chapter 8.1 turns this into a full decision framework, with total cost of ownership.</caption>
+</table></div>
+
+<h3 id="fit">When is Rust a strong fit? (first look)</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Strong fit</th><th>Usually not worth it (yet)</th></tr></thead>
+  <tbody>
+    <tr><td>Latency-sensitive hot paths: proxies, gateways, matching engines, rule evaluation</td><td>Standard CRUD line-of-business APIs where .NET already meets the targets</td></tr>
+    <tr><td>Infrastructure: networking, storage engines, runtimes, schedulers, <strong>workflow engines</strong></td><td>Short-lived prototypes where speed of iteration matters most</td></tr>
+    <tr><td>Code that parses untrusted input (security-critical)</td><td>Teams with no time to learn, and no performance or safety driver</td></tr>
+    <tr><td>Libraries shared across languages (.NET, Python, JS via WebAssembly)</td><td>Rich desktop GUI apps, where other ecosystems are more mature</td></tr>
+    <tr><td>CLI tools, edge/IoT devices, serverless functions with cold-start limits</td><td>Notebook-style data exploration (Python's home turf)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="misconceptions">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Rust is only for systems programming."</div>
+  <p>It started there, but web services, CLIs, data pipelines and WebAssembly front-ends are all mainstream uses. Modules 7, 9 and 10 build enterprise services.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "If it compiles, it's correct."</div>
+  <p>The compiler removes whole classes of bugs (memory, data races, null), not logic errors, deadlocks or bad architecture. You still need tests (chapter 3.4) and design reviews.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "<code>unsafe</code> means Rust isn't really safe."</div>
+  <p><code>unsafe</code> doesn't switch off the checks. It permits five specific extra operations, in a small, searchable, reviewable region. Well-run teams keep it rare and audited (chapter 5.1).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Rust is always faster than C#."</div>
+  <p>Modern .NET is very fast. Badly written Rust (excessive copying, careless allocation) can be slower than good C#. Rust gives you <em>control and predictability</em>. Speed comes from using it well, and from measuring (chapter 6.1).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "You must learn C or C++ first."</div>
+  <p>No. You do need some ideas C# hides (stack vs heap, pointers), and the Foundations module teaches them from scratch.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "You'll fight the borrow checker forever."</div>
+  <p>Most people struggle for a few weeks, then find they design code so that the conflicts don't arise. This course front-loads those ideas so the struggle is shorter.</p></div>
+
+<h2 id="real-world">Real-world view: who uses Rust, and what to learn from each</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Organisation</th><th>What they did</th><th>Reported outcome</th><th>Lesson for an architect</th></tr></thead>
+  <tbody>
+    <tr><td>Google (Android)</td><td>Wrote new Android code in memory-safe languages, including Rust, instead of rewriting old C/C++</td><td>Memory-safety share of vulnerabilities fell from 76% (2019) to 24% (2024, extrapolated)</td><td>You don't need a rewrite: changing the language of <em>new</em> code can shift the risk profile</td></tr>
+    <tr><td>Cloudflare (Pingora)</td><td>Replaced its NGINX-based proxy with Pingora, built in Rust (2022 post)</td><td>Over 1 trillion requests/day; about 70% less CPU and 67% less memory for the same traffic; no crashes caused by its service code</td><td>For high-volume infrastructure, efficiency gains turn directly into cost savings</td></tr>
+    <tr><td>Discord (Read States)</td><td>Rewrote a hot-path Go service in Rust (2020 post)</td><td>Go's GC caused latency spikes roughly every 2 minutes; the Rust version had no spikes and beat Go on every metric they tracked</td><td>GC pauses on large in-memory caches are a classic, concrete trigger for Rust</td></tr>
+    <tr><td>AWS (Firecracker)</td><td>Built the Firecracker microVM manager in Rust</td><td>Runs production workloads for AWS Lambda and AWS Fargate</td><td>Security-critical multi-tenant isolation is a natural fit</td></tr>
+    <tr><td>Linux kernel</td><td>Added initial Rust support in 6.1 (Dec 2022)</td><td>“Initial support for Rust, which will be improved in later releases” (KernelNewbies, Linux 6.1)</td><td>Even the most conservative C codebase accepts Rust incrementally, alongside C</td></tr>
+    <tr><td>Microsoft (MSRC)</td><td>Published its 2019 analysis of 70% memory-safety CVEs and argued for safer systems languages</td><td>Microsoft became a founding member of the Rust Foundation (2021)</td><td>Measure your own vulnerability data. It is the most persuasive argument for your client.</td></tr>
+  </tbody>
+  <caption>Every outcome is quoted from the organisation's own publication; see "Go further".</caption>
+</table></div>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view — the pattern behind the examples</div>
+  <p>Notice what these share: none rewrote everything. Each picked a <strong>bounded component</strong> with a clear driver (latency, cost, security) and integrated it with existing systems.
+    That's the adoption pattern you will recommend (chapter 8.3), and it's how your rule engine and workflow engine will win customers: as well-bounded components with clean APIs that sit alongside a .NET estate.</p>
+</div>
+
+<h2 id="how-to-use">How to use this course</h2>
+<p>The course has 12 modules. The order is deliberate: every term is taught before it's used.</p>
+<ul>
+  <li><strong>M0–M1 Orientation and Foundations:</strong> tooling, then the computer-science ideas .NET hides (memory, data structures, algorithms, types, concurrency).</li>
+  <li><strong>M2–M5 The language:</strong> core Rust, idioms, concurrency and async, then advanced and unsafe Rust.</li>
+  <li><strong>M6–M7 Production:</strong> performance, observability, security, and building real services.</li>
+  <li><strong>M8 Consulting:</strong> when to recommend Rust, and how to adopt it.</li>
+  <li><strong>M9–M11 Your products:</strong> the rule engine, the workflow engine, and putting them together.</li>
+</ul>
+<p>Every chapter follows the same shape: why it matters → intuition → layered explanation (<span class="layer-label basic" style="margin:0">Basic</span> → <span class="layer-label intermediate" style="margin:0">Intermediate</span> → 🔬 deep dive) → hands-on lab → comparison table → pitfalls → production view → quiz → summary → further reading.</p>
+<div class="callout tip"><div class="callout-title">✅ A routine that works</div>
+  <ol>
+    <li>Read the chapter once, quickly. Skip the deep dives on a first pass if you're short of time.</li>
+    <li>Do the lab yourself. <strong>Type the code rather than pasting it</strong>, and read every compiler error.</li>
+    <li>Attempt every exercise before opening the solution.</li>
+    <li>Take the quiz. If you score below 70%, re-read the sections the explanations point to.</li>
+    <li>Click <em>Mark chapter complete</em> at the bottom; your progress shows in the header and the sidebar.</li>
+    <li>Revisit earlier chapters on the spaced-review schedule on the course home page.</li>
+  </ol>
+</div>
+<p>Notes you'll see: <strong>🟣 Coming from C#/.NET</strong> boxes map ideas to what you know. <strong>⚠ Verify</strong> boxes mark facts I couldn't confirm against a primary source. Press <kbd>/</kbd> anywhere to search.</p>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="0.1">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How does Rust free memory without a garbage collector?</div>
+    <ol class="options">
+      <li data-key="a">The programmer calls <code>free</code> explicitly, as in C</li>
+      <li data-key="b">The compiler works out from ownership rules where each value's owner ends, and inserts the cleanup there</li>
+      <li data-key="c">Reference counting is applied automatically to every object</li>
+      <li data-key="d">The operating system reclaims memory when the program exits</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">No. Manual freeing is exactly the error-prone approach Rust replaces.</p>
+      <p data-for="b">Correct. Cleanup happens at predictable points that the compiler determines, with no runtime collector.</p>
+      <p data-for="c">No. Reference counting exists (<code>Rc</code>, <code>Arc</code>), but only when you choose it for a particular value.</p>
+      <p data-for="d">That happens for any program at exit. It's not how a long-running service manages memory.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which of these does <strong>safe</strong> Rust <em>not</em> prevent?</div>
+    <ol class="options">
+      <li data-key="a">Use-after-free</li>
+      <li data-key="b">Data races</li>
+      <li data-key="c">Deadlocks</li>
+      <li data-key="d">Double free</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Prevented at compile time by ownership and borrowing.</p>
+      <p data-for="b">Prevented at compile time by borrowing plus the <code>Send</code>/<code>Sync</code> traits.</p>
+      <p data-for="c">Correct. Two threads waiting on each other's locks is a logic-level problem the compiler doesn't detect.</p>
+      <p data-for="d">Prevented: each value has exactly one owner, so it's freed exactly once.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A client's C# order-pricing service shows p99 latency spikes. They ask whether to rewrite it in Rust. What do you advise first?</div>
+    <ol class="options">
+      <li data-key="a">Rewrite the whole service in Rust now; GC is always the cause</li>
+      <li data-key="b">Measure first: confirm with traces and GC metrics that the spikes come from garbage collection, try .NET-side fixes (fewer allocations, GC settings), and consider Rust for the hot path if a hard latency target is still missed</li>
+      <li data-key="c">Rewrite it in Go, because Go has no garbage collector</li>
+      <li data-key="d">Add more servers; latency spikes are always a capacity problem</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Spikes can come from locks, I/O, the database or the network. A rewrite without a diagnosis is an expensive guess.</p>
+      <p data-for="b">Correct. That's evidence-based consulting. Discord moved to Rust only after confirming GC as the cause and finding that tuning didn't fix it.</p>
+      <p data-for="c">Go does have a garbage collector. Discord's spikes came from it.</p>
+      <p data-for="d">More servers don't remove pauses inside each process.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Your application uses edition 2024. A library you depend on still uses edition 2018. What happens?</div>
+    <ol class="options">
+      <li data-key="a">It works. Each crate is compiled with its own edition, and crates of different editions interoperate.</li>
+      <li data-key="b">The build fails until the library migrates to 2024</li>
+      <li data-key="c">You must install an older compiler for that library</li>
+      <li data-key="d">It compiles, but the library runs in a slower compatibility mode</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Seamless interoperability is the core rule of editions.</p>
+      <p data-for="b">No. Forcing everyone to migrate at once is exactly what editions avoid.</p>
+      <p data-for="c">No. One current compiler supports every edition.</p>
+      <p data-for="d">No. Every edition compiles to the same internal form, so there is no runtime difference.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A bank's platform team asks: "Which Rust version is LTS, so we can standardise on it for three years?" Which answer is accurate?</div>
+    <ol class="options">
+      <li data-key="a">Every 2024-edition release is LTS until the next edition</li>
+      <li data-key="b">Every tenth release (1.90, 1.100, …) is LTS</li>
+      <li data-key="c">The Rust Foundation sells LTS versions</li>
+      <li data-key="d">The project has no official LTS; each stable version is supported until the next one. Teams rely on the stability promise, pin a version per project and upgrade regularly. Qualified toolchains such as Ferrocene exist for safety-critical industries.</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Editions are language opt-ins, not support windows.</p>
+      <p data-for="b">There is no such scheme.</p>
+      <p data-for="c">The Foundation doesn't sell compiler support.</p>
+      <p data-for="d">Correct. Ferrocene (by Ferrous Systems) is an open-source Rust toolchain qualified for standards such as ISO 26262 and IEC 61508.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In the lab, C# threw <code>InvalidOperationException</code> while Rust gave error E0502. What's the key difference?</div>
+    <ol class="options">
+      <li data-key="a">Rust's error is a warning; the program still runs</li>
+      <li data-key="b">Both are runtime errors with different names</li>
+      <li data-key="c">C# detects the problem at runtime (when that code runs); Rust detects it at compile time (before any program exists)</li>
+      <li data-key="d">C# allows modification during iteration; Rust doesn't</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">E0502 is an error. No executable is produced.</p>
+      <p data-for="b">Rust's check happens in the compiler. Nothing runs.</p>
+      <p data-for="c">Correct. The same mistake is caught earlier, so it can't reach production.</p>
+      <p data-for="d">C# doesn't allow it either. It just finds out later, at runtime.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does Microsoft's widely quoted "70%" figure measure?</div>
+    <ol class="options">
+      <li data-key="a">70% of all software bugs in every language are memory bugs</li>
+      <li data-key="b">About 70% of the CVEs Microsoft assigns each year are memory-safety issues</li>
+      <li data-key="c">Rust code has 70% fewer bugs than C#</li>
+      <li data-key="d">70% of Microsoft's code is now written in Rust</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It describes Microsoft's own, largely C/C++, product vulnerabilities, not all software.</p>
+      <p data-for="b">Correct. MSRC, July 2019.</p>
+      <p data-for="c">No such claim exists in the source.</p>
+      <p data-for="d">No such claim exists in the source.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Rust gives C/C++-level performance and control with memory safety enforced by the compiler instead of a garbage collector.</li>
+  <li>Safe Rust prevents memory errors, null errors and data races at compile time. It does not prevent deadlocks, leaks or logic bugs. <code>unsafe</code> is a small, explicit escape hatch.</li>
+  <li>For .NET teams, the case for Rust is predictable latency, a small footprint, portability and reach. Safety is a bonus, since C# is already memory-safe.</li>
+  <li>The language ships stable versions every six weeks, never breaking old code. Breaking changes go into opt-in editions (2015/2018/2021/2024), and crates of different editions interoperate. There is no official LTS.</li>
+  <li>Adoption evidence (Android, Cloudflare, Discord, AWS, Linux) points to one pattern: adopt Rust for bounded components with a clear driver, not wholesale rewrites.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">memory safety</li><li class="chip">garbage collector</li><li class="chip">undefined behaviour</li><li class="chip">data race</li>
+  <li class="chip">ownership</li><li class="chip">unsafe Rust</li><li class="chip">zero-cost abstraction</li><li class="chip">edition</li>
+  <li class="chip">release channel</li><li class="chip">RFC</li><li class="chip">crate</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch00-00-introduction.html">The Rust Programming Language — Introduction</a><span class="why">The official book's view of who Rust is for.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html">The Rust Book — Appendix G: How Rust is Made and “Nightly Rust”</a><span class="why">The primary source for the release train and stabilisation process.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/edition-guide/editions/index.html">The Edition Guide — What are editions?</a><span class="why">The interoperability rule, in the project's own words.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://blog.rust-lang.org/2015/05/15/Rust-1.0.html">Announcing Rust 1.0 (15 May 2015)</a><span class="why">The original stability promise.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://blog.rust-lang.org/2023/06/20/introducing-leadership-council/">Introducing the Rust Leadership Council (June 2023)</a><span class="why">How the project is governed today.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://foundation.rust-lang.org/news/2021-02-08-hello-world/">Rust Foundation — Hello World (8 Feb 2021)</a><span class="why">The foundation's founding announcement.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://www.microsoft.com/en-us/msrc/blog/2019/07/a-proactive-approach-to-more-secure-code">Microsoft MSRC — A proactive approach to more secure code (2019)</a><span class="why">Source of the 70% CVE figure.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://www.chromium.org/Home/chromium-security/memory-safety/">Chromium — Memory safety</a><span class="why">Source of Chromium's ~70% high-severity figure.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://security.googleblog.com/2024/09/eliminating-memory-safety-vulnerabilities-Android.html">Google Security Blog — Eliminating Memory Safety Vulnerabilities at the Source (Sept 2024)</a><span class="why">The Android data, and the "new code" strategy.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/">Cloudflare — How we built Pingora (2022)</a><span class="why">A detailed infrastructure case study with resource numbers.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://discord.com/blog/why-discord-is-switching-from-go-to-rust">Discord — Why Discord is switching from Go to Rust (2020)</a><span class="why">The clearest public account of GC-pause-driven adoption.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://github.com/firecracker-microvm/firecracker">Firecracker on GitHub</a><span class="why">The open-source Rust VMM behind Lambda and Fargate.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://go.dev/ref/mem">The Go Memory Model</a><span class="why">Source for the comparison-table note that data races in Go can lead to memory corruption.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://ferrocene.dev/en/">Ferrocene</a><span class="why">The qualified Rust toolchain for safety-critical industries.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/3158154">R. Jung, J.-H. Jourdan, R. Krebbers, D. Dreyer — “RustBelt: Securing the Foundations of the Rust Programming Language”, PACMPL / POPL 2018</a><span class="why">The formal soundness proof summarised in the deep dive.</span></li>
+  <li><span class="ref-type doc">Article</span><a href="https://www.technologyreview.com/2023/02/14/1067869/rust-worlds-fastest-growing-programming-language/">MIT Technology Review — How Rust went from a side project to the world's most-loved programming language (2023)</a><span class="why">A readable history of the origin story and milestones.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=DnT-LUQgc7s">“Considering Rust” — Jon Gjengset (YouTube)</a><span class="why">A talk aimed at teams evaluating Rust. Watch for his balanced list of drawbacks, useful material for your client conversations.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  Course.chart("ms-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["Microsoft CVEs (2019)", "Chromium high-severity", "Android (2019)", "Android (2024, extrap.)"],
+        datasets: [{
+          label: "Share caused by memory-safety issues (%)",
+          data: [70, 70, 76, 24],
+          backgroundColor: [c.purple, c.blue, c.red, c.green],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.parsed.x + "%" + (ctx.dataIndex < 2 ? " (approx.)" : ""); } } }
+        },
+        scales: {
+          x: { min: 0, max: 100, title: { display: true, text: "% of security bugs that are memory-safety issues" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

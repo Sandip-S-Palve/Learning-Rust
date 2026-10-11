@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0.2 Toolchain and your first project</title>
+<meta name="description" content="rustup, cargo, rust-analyzer, rustfmt and clippy, mapped to the .NET tools you know, with a complete first project.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="0.2">
+<article class="content">
+<h1>Toolchain and your first project</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Install Rust with <code>rustup</code>, and manage toolchains, channels and components</li>
+      <li>Create, build, run, test, format and lint a project with <code>cargo</code></li>
+      <li>Read <code>Cargo.toml</code> and <code>Cargo.lock</code>, and explain how version requirements work</li>
+      <li>Choose between debug and release builds, and explain why the difference is so large</li>
+      <li>Pin a compiler version per project and set up a standard CI quality gate</li>
+      <li>Map each Rust tool to its .NET equivalent</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Toolchain choices are some of the first decisions you'll make for a client team, and they are hard to change later: how compiler versions are pinned, what the CI gate enforces, how dependencies are locked.
+    The good news: Rust's tooling is famously consistent. One tool, <code>cargo</code>, does almost everything, and every Rust project in the world is laid out and built the same way. Once you know it, you can walk into any Rust codebase and build it in minutes.</p>
+</div>
+
+<h2 id="intuition">Intuition first: the tools and their .NET twins</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Think of <strong>rustup</strong> as the .NET SDK installer combined with <code>global.json</code>: it installs compiler versions and picks the right one for each project.
+    <strong>cargo</strong> is the <code>dotnet</code> CLI, MSBuild and the NuGet client rolled into one. <strong>crates.io</strong> is nuget.org.
+    <strong>rust-analyzer</strong> is the language service behind your editor, like Roslyn inside the C# Dev Kit.</p>
+</div>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · the Rust tool map</span>
+  <svg viewBox="0 0 720 380" role="img" aria-label="How rustup, cargo, crates.io, rust-analyzer and the target folder relate">
+    <defs>
+      <marker id="tm-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+    </defs>
+    <!-- rustup -->
+    <rect x="130" y="10" width="460" height="112" rx="10" class="svg-accent"/>
+    <text x="360" y="32" class="svg-title" text-anchor="middle">rustup — toolchain manager</text>
+    <text x="360" y="54" class="svg-text-sm" text-anchor="middle">≈ .NET SDK installer + global.json</text>
+    <text x="360" y="80" class="svg-mono" text-anchor="middle">toolchain: stable-aarch64-apple-darwin (1.99.0)</text>
+    <text x="360" y="104" class="svg-text-sm" text-anchor="middle">components: rustc · cargo · rust-std · rustfmt · clippy · rust-analyzer · rust-docs</text>
+    <!-- cargo -->
+    <rect x="250" y="170" width="220" height="74" rx="10" class="svg-box-strong"/>
+    <text x="360" y="194" class="svg-title" text-anchor="middle">cargo</text>
+    <text x="360" y="214" class="svg-text-sm" text-anchor="middle">build tool + package manager</text>
+    <text x="360" y="232" class="svg-text-sm" text-anchor="middle">≈ dotnet CLI + MSBuild + NuGet</text>
+    <!-- editor -->
+    <rect x="10" y="170" width="200" height="74" rx="10" class="svg-purple"/>
+    <text x="110" y="194" class="svg-title" text-anchor="middle">VS Code + rust-analyzer</text>
+    <text x="110" y="214" class="svg-text-sm" text-anchor="middle">errors, hints, completion</text>
+    <text x="110" y="232" class="svg-text-sm" text-anchor="middle">≈ C# Dev Kit / Roslyn</text>
+    <!-- crates.io -->
+    <rect x="510" y="170" width="200" height="74" rx="10" class="svg-teal"/>
+    <text x="610" y="194" class="svg-title" text-anchor="middle">crates.io</text>
+    <text x="610" y="214" class="svg-text-sm" text-anchor="middle">public package registry</text>
+    <text x="610" y="232" class="svg-text-sm" text-anchor="middle">≈ nuget.org</text>
+    <!-- outputs -->
+    <rect x="130" y="292" width="460" height="74" rx="10" class="svg-box"/>
+    <text x="360" y="316" class="svg-title" text-anchor="middle">Your project</text>
+    <text x="360" y="336" class="svg-mono" text-anchor="middle">Cargo.toml · Cargo.lock · src/ · target/</text>
+    <text x="360" y="354" class="svg-text-sm" text-anchor="middle">target/ ≈ bin/ + obj/ (never commit it)</text>
+    <!-- arrows -->
+    <line x1="360" y1="122" x2="360" y2="166" class="svg-line" marker-end="url(#tm-a)"/>
+    <text x="368" y="146" class="svg-text-sm">installs + selects version</text>
+    <line x1="210" y1="207" x2="246" y2="207" class="svg-line" marker-end="url(#tm-a)"/>
+    <line x1="470" y1="200" x2="506" y2="200" class="svg-line" marker-end="url(#tm-a)"/>
+    <line x1="506" y1="216" x2="474" y2="216" class="svg-line" marker-end="url(#tm-a)"/>
+    <line x1="360" y1="244" x2="360" y2="288" class="svg-line" marker-end="url(#tm-a)"/>
+    <text x="368" y="268" class="svg-text-sm">reads manifest, writes build output</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> rustup installs and selects the toolchain. cargo drives everything else: it calls the compiler (<code>rustc</code>), formatter and linter, and downloads crates from crates.io. Your editor's rust-analyzer gives live feedback as you type.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="install">Installing Rust with rustup</h3>
+<p>Always install through <dfn data-term="rustup">rustup</dfn>, the official installer and version manager. It lives in your home directory (<code>~/.rustup</code> for toolchains, <code>~/.cargo/bin</code> for commands), so it needs no admin rights.</p>
+<ul>
+  <li><strong>macOS / Linux / WSL:</strong> run the command below, then open a new terminal (or run <code>. "$HOME/.cargo/env"</code>).</li>
+  <li><strong>Windows:</strong> download and run <code>rustup-init.exe</code> from <a href="https://www.rust-lang.org/tools/install">rust-lang.org/tools/install</a>. It may ask you to install the <em>Visual Studio C++ Build Tools</em>, because Rust on Windows uses the MSVC linker. If you already have Visual Studio with the C++ workload, you're set.</li>
+</ul>
+<pre data-title="macOS / Linux"><code class="language-bash">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code></pre>
+<p>Check the installation:</p>
+<pre><code class="language-bash">rustc --version
+cargo --version</code></pre>
+<pre class="output">rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)</pre>
+
+<h3 id="toolchains">Toolchains, channels, components and targets</h3>
+<p>rustup manages four things. You'll meet all of them in client work:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concept</th><th>What it is</th><th>Example</th><th>.NET analogy</th></tr></thead>
+  <tbody>
+    <tr><td><dfn data-term="toolchain">Toolchain</dfn></td><td>A complete, specific compiler installation</td><td><code>stable-aarch64-apple-darwin</code>, <code>1.99.0</code>, <code>nightly-2026-10-01</code></td><td>An installed .NET SDK version</td></tr>
+    <tr><td>Channel</td><td>Which release stream a toolchain follows (chapter 0.1)</td><td><code>stable</code>, <code>beta</code>, <code>nightly</code></td><td>GA vs preview SDKs</td></tr>
+    <tr><td><dfn data-term="component">Component</dfn></td><td>An optional tool installed into a toolchain</td><td><code>rustfmt</code>, <code>clippy</code>, <code>rust-src</code>, <code>rust-analyzer</code></td><td>SDK workloads</td></tr>
+    <tr><td><dfn data-term="target">Target</dfn></td><td>A platform you can compile <em>for</em>, written as a "target triple" (CPU-vendor-OS)</td><td><code>x86_64-unknown-linux-gnu</code>, <code>wasm32-unknown-unknown</code></td><td>Runtime identifiers (RIDs) such as <code>linux-x64</code></td></tr>
+  </tbody>
+</table></div>
+<p><code>rustup show</code> tells you what is active and why:</p>
+<pre><code class="language-bash">rustup show</code></pre>
+<pre class="output">Default host: aarch64-apple-darwin
+rustup home:  /Users/you/.rustup
+
+installed toolchains
+--------------------
+stable-aarch64-apple-darwin (active, default)
+
+active toolchain
+----------------
+name: stable-aarch64-apple-darwin
+active because: it's the default toolchain
+installed targets:
+  aarch64-apple-darwin</pre>
+<p>Day-to-day commands: <code>rustup update</code> (move to the newest stable; run it every six weeks or so), <code>rustup component add clippy</code>, <code>rustup target add wasm32-unknown-unknown</code>.</p>
+
+<h3 id="first-project">Your first project, file by file</h3>
+<pre><code class="language-bash">cargo new hello-rust
+cd hello-rust</code></pre>
+<pre class="output">    Creating binary (application) `hello-rust` package
+note: see more `Cargo.toml` keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html</pre>
+<p><code>cargo new</code> creates a folder with a git repository and three files:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>File</th><th>Purpose</th><th>.NET equivalent</th></tr></thead>
+  <tbody>
+    <tr><td><code>Cargo.toml</code></td><td>The <dfn data-term="manifest" data-def="Cargo.toml: the file describing a package — name, version, edition, dependencies and build settings. Like a .csproj.">manifest</dfn>: name, version, edition, dependencies</td><td><code>.csproj</code></td></tr>
+    <tr><td><code>src/main.rs</code></td><td>Entry point of an executable. A library would have <code>src/lib.rs</code> (<code>cargo new --lib</code>)</td><td><code>Program.cs</code></td></tr>
+    <tr><td><code>.gitignore</code></td><td>Contains <code>/target</code>, the build output folder</td><td>Ignoring <code>bin/</code> and <code>obj/</code></td></tr>
+  </tbody>
+</table></div>
+<div class="compare">
+  <div><div class="compare-label">Cargo.toml</div>
+<pre><code class="language-toml">[package]
+name = "hello-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]</code></pre></div>
+  <div><div class="compare-label">src/main.rs</div>
+<pre><code class="language-rust">fn main() {
+    println!("Hello, world!");
+}</code></pre></div>
+</div>
+<p><code>fn main()</code> is the entry point, like <code>static void Main</code> or top-level statements. <code>println!</code> prints a line. The <code>!</code> marks it as a <em>macro</em> (code that generates code; chapter 5.3), not a function. Run it:</p>
+<pre><code class="language-bash">cargo run</code></pre>
+<pre class="output">   Compiling hello-rust v0.1.0 (~/projects/hello-rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s
+     Running `target/debug/hello-rust`
+Hello, world!</pre>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET — the command map</div>
+  <div class="table-wrap" style="margin:.4em 0 0"><table>
+    <thead><tr><th>Task</th><th>.NET</th><th>Rust</th></tr></thead>
+    <tbody>
+      <tr><td>New app / library</td><td><code>dotnet new console</code> / <code>classlib</code></td><td><code>cargo new app</code> / <code>cargo new --lib mylib</code></td></tr>
+      <tr><td>Fast type-check, no binary</td><td>(no direct equivalent)</td><td><code>cargo check</code></td></tr>
+      <tr><td>Build / run</td><td><code>dotnet build</code> / <code>dotnet run</code></td><td><code>cargo build</code> / <code>cargo run</code></td></tr>
+      <tr><td>Pass arguments to the program</td><td><code>dotnet run -- 5</code></td><td><code>cargo run -- 5</code></td></tr>
+      <tr><td>Tests</td><td><code>dotnet test</code></td><td><code>cargo test</code></td></tr>
+      <tr><td>Add a package</td><td><code>dotnet add package X</code></td><td><code>cargo add x</code></td></tr>
+      <tr><td>Optimised build</td><td><code>dotnet publish -c Release</code></td><td><code>cargo build --release</code></td></tr>
+      <tr><td>Format</td><td><code>dotnet format</code></td><td><code>cargo fmt</code></td></tr>
+      <tr><td>Static analysis</td><td>Roslyn analyzers</td><td><code>cargo clippy</code></td></tr>
+      <tr><td>API docs</td><td>XML doc comments + DocFX</td><td><code>///</code> comments + <code>cargo doc</code></td></tr>
+      <tr><td>Dependency tree</td><td><code>dotnet list package --include-transitive</code></td><td><code>cargo tree</code></td></tr>
+      <tr><td>Install a CLI tool</td><td><code>dotnet tool install -g X</code></td><td><code>cargo install x</code></td></tr>
+      <tr><td>Pin SDK / compiler version</td><td><code>global.json</code></td><td><code>rust-toolchain.toml</code></td></tr>
+      <tr><td>Lock dependency versions</td><td><code>packages.lock.json</code></td><td><code>Cargo.lock</code></td></tr>
+      <tr><td>Multi-project solution</td><td><code>.sln</code></td><td>Cargo <em>workspace</em> (chapter 3.5)</td></tr>
+    </tbody>
+  </table></div>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="dependencies">Dependencies, versions and the lockfile</h3>
+<p><code>cargo add rand</code> adds the <code>rand</code> crate (random numbers) to <code>Cargo.toml</code> as <code>rand = "0.10.3"</code>. That string is a <strong>version requirement</strong>, not an exact version. Cargo's default is the <em>caret</em> rule: any later version with the same left-most non-zero number is allowed, because SemVer says it should be compatible.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>You write</th><th>Cargo accepts</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><code>"1.2.3"</code></td><td><code>&gt;=1.2.3, &lt;2.0.0</code></td><td>Major version 1 is the left-most non-zero part</td></tr>
+    <tr><td><code>"0.10.3"</code></td><td><code>&gt;=0.10.3, &lt;0.11.0</code></td><td>Before 1.0, the <em>minor</em> number signals breaking changes</td></tr>
+    <tr><td><code>"0.0.3"</code></td><td>exactly <code>0.0.3</code></td><td>The patch number is the left-most non-zero part</td></tr>
+  </tbody>
+  <caption>Source: The Cargo Book, “Specifying Dependencies”. NuGet's <code>1.2.3</code> means “1.2.3 or higher, with no upper bound”, which is looser than Cargo's caret rule.</caption>
+</table></div>
+<p>The versions actually chosen are recorded in <dfn data-term="Cargo.lock">Cargo.lock</dfn>, so every machine builds exactly the same dependency set. <code>cargo new</code> commits it to git by default. The Cargo Book's caution is worth repeating to clients: <em>"Cargo.lock does not affect the consumers of your package, only Cargo.toml does that."</em> A library's users resolve their own versions. For an application or service, keep the lockfile in git and build in CI with <code>--locked</code>, which fails if the lockfile is out of date.</p>
+
+<h3 id="profiles">Debug vs release builds</h3>
+<p>Cargo has two built-in build <dfn data-term="profile">profiles</dfn>:</p>
+<ul>
+  <li><strong><code>dev</code></strong> (used by <code>cargo build</code>, <code>run</code>, <code>test</code>): fast to compile, no optimisation, full debug information. Output goes to <code>target/debug/</code>.</li>
+  <li><strong><code>release</code></strong> (<code>--release</code>): slower to compile, fully optimised. Output goes to <code>target/release/</code>.</li>
+</ul>
+<p>The gap between them is far larger than most .NET developers expect. These are real measurements from this course's lab machine (Apple M2 Pro, Rust 1.99.0, median of three runs):</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · same code, two profiles</span>
+  <div class="chart-box"><canvas id="profile-chart" aria-label="Bar chart comparing debug and release run times for a loop workload and an iterator workload"></canvas></div>
+  <figcaption><strong>Figure 2.</strong> A hand-written loop (counting primes below 5 million) runs about <strong>2.3×</strong> faster in release. An iterator chain (filter → map → sum over 200 million numbers) runs about <strong>18.6×</strong> faster. Iterators are "zero-cost" <em>only once the optimiser has run</em>: in debug builds every small closure and adapter call is executed literally. The program is in the deep dive below, so you can reproduce it.</figcaption>
+</figure>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>In .NET, Debug and Release usually differ by a modest factor, because the JIT optimises at runtime either way. Rust has no JIT: the compiler does all the optimising ahead of time, and only in release. <strong>Never judge Rust's performance from a debug build.</strong></p>
+</div>
+
+<h3 id="quality">Formatting, linting, testing and docs</h3>
+<p>Four commands make up the everyday quality loop. All come with the default rustup install.</p>
+<ul>
+  <li><code>cargo fmt</code> — formats code with <dfn data-term="rustfmt" data-def="The official Rust code formatter, run with cargo fmt. One standard style for the whole ecosystem.">rustfmt</dfn>. There is one official style, so teams don't argue about formatting. <code>cargo fmt --check</code> only reports differences, which makes it suitable for CI.</li>
+  <li><code>cargo clippy</code> — runs <dfn data-term="Clippy" data-def="The official Rust linter: hundreds of lints for correctness, performance, style and complexity. Run with cargo clippy.">Clippy</dfn>, the official linter, with hundreds of lints for bugs, performance and non-idiomatic code.</li>
+  <li><code>cargo test</code> — compiles and runs every function marked <code>#[test]</code>. Tests usually live in the same file as the code (chapter 3.4).</li>
+  <li><code>cargo doc</code> — builds HTML API docs from <code>///</code> comments. Every crate published on crates.io gets its docs hosted automatically on <a href="https://docs.rs/">docs.rs</a>.</li>
+</ul>
+
+<h3 id="editor">Editor setup: VS Code</h3>
+<ol>
+  <li>Install the <a href="https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer">rust-analyzer</a> extension (publisher: <code>rust-lang</code>). This is the official language server.</li>
+  <li>For debugging, install <a href="https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb">CodeLLDB</a>. rust-analyzer then shows <em>Run | Debug</em> links above <code>main</code> and above each test.</li>
+  <li>Open the project <em>folder</em> (the one containing <code>Cargo.toml</code>), not a single file.</li>
+</ol>
+<p>You'll see inline errors as you type, greyed <em>inlay hints</em> showing the types the compiler inferred (very helpful while learning), go-to-definition into library source, and refactorings.</p>
+
+<details class="deep-dive"><summary>Deep dive: what happens when you run cargo build</summary><div class="body">
+  <p>Cargo works out which crates need (re)building, in dependency order, and calls <code>rustc</code> once per crate. Inside <code>rustc</code>, your code passes through a series of intermediate representations. Step through them:</p>
+  <figure class="visual stepper" data-interval="2600" style="box-shadow:none">
+    <span class="visual-tag">Animation · inside rustc</span>
+    <svg viewBox="0 0 720 230" role="img" aria-label="Rust compiler pipeline from source to executable">
+      <defs>
+        <marker id="cp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      </defs>
+      <g data-hl="1"><rect x="10" y="20" width="150" height="64" rx="8" class="svg-box"/><text x="85" y="44" class="svg-title" text-anchor="middle">Source</text><text x="85" y="66" class="svg-text-sm" text-anchor="middle">.rs files</text></g>
+      <g data-hl="2"><rect x="190" y="20" width="150" height="64" rx="8" class="svg-box"/><text x="265" y="44" class="svg-title" text-anchor="middle">Tokens</text><text x="265" y="66" class="svg-text-sm" text-anchor="middle">lexing</text></g>
+      <g data-hl="3"><rect x="370" y="20" width="150" height="64" rx="8" class="svg-box"/><text x="445" y="44" class="svg-title" text-anchor="middle">AST</text><text x="445" y="66" class="svg-text-sm" text-anchor="middle">macros, names</text></g>
+      <g data-hl="4"><rect x="550" y="20" width="160" height="64" rx="8" class="svg-box"/><text x="630" y="44" class="svg-title" text-anchor="middle">HIR</text><text x="630" y="66" class="svg-text-sm" text-anchor="middle">type checking</text></g>
+      <g data-hl="5"><rect x="10" y="140" width="150" height="64" rx="8" class="svg-box"/><text x="85" y="164" class="svg-title" text-anchor="middle">THIR → MIR</text><text x="85" y="186" class="svg-text-sm" text-anchor="middle">borrow checking</text></g>
+      <g data-hl="6"><rect x="190" y="140" width="150" height="64" rx="8" class="svg-box"/><text x="265" y="164" class="svg-title" text-anchor="middle">LLVM IR</text><text x="265" y="186" class="svg-text-sm" text-anchor="middle">monomorphised</text></g>
+      <g data-hl="7"><rect x="370" y="140" width="150" height="64" rx="8" class="svg-box"/><text x="445" y="164" class="svg-title" text-anchor="middle">Machine code</text><text x="445" y="186" class="svg-text-sm" text-anchor="middle">LLVM optimises</text></g>
+      <g data-hl="8"><rect x="550" y="140" width="160" height="64" rx="8" class="svg-accent"/><text x="630" y="164" class="svg-title" text-anchor="middle">Executable</text><text x="630" y="186" class="svg-text-sm" text-anchor="middle">linker</text></g>
+      <line x1="160" y1="52" x2="186" y2="52" class="svg-line" marker-end="url(#cp-a)"/>
+      <line x1="340" y1="52" x2="366" y2="52" class="svg-line" marker-end="url(#cp-a)"/>
+      <line x1="520" y1="52" x2="546" y2="52" class="svg-line" marker-end="url(#cp-a)"/>
+      <path d="M630 84 C 630 120, 85 104, 85 136" class="svg-line" marker-end="url(#cp-a)"/>
+      <line x1="160" y1="172" x2="186" y2="172" class="svg-line" marker-end="url(#cp-a)"/>
+      <line x1="340" y1="172" x2="366" y2="172" class="svg-line" marker-end="url(#cp-a)"/>
+      <line x1="520" y1="172" x2="546" y2="172" class="svg-line" marker-end="url(#cp-a)"/>
+    </svg>
+    <ol class="stepper-captions">
+      <li><strong>Source.</strong> Cargo hands one crate at a time to <code>rustc</code>. The crate, not the file, is the unit of compilation, so a big crate means more to recompile after each change.</li>
+      <li><strong>Lexing.</strong> The text is split into tokens: keywords, names, numbers, symbols.</li>
+      <li><strong>Parsing → AST.</strong> Tokens become an abstract syntax tree. Macros such as <code>println!</code> are expanded here, and names are resolved (which <code>total</code> is this?).</li>
+      <li><strong>HIR and type checking.</strong> The AST is simplified ("desugared") into HIR. Type inference and trait checking run here, which is where most type errors come from.</li>
+      <li><strong>MIR and borrow checking.</strong> The code is turned into MIR, a control-flow graph. The borrow checker analyses it. The E0502 error from chapter 0.1 was produced here.</li>
+      <li><strong>Monomorphisation → LLVM IR.</strong> Generic code is copied out once per concrete type it's used with (chapter 2.9), then translated to LLVM's intermediate representation.</li>
+      <li><strong>LLVM.</strong> The LLVM backend optimises (lightly in <code>dev</code>, heavily in <code>release</code>) and emits machine code for the target CPU.</li>
+      <li><strong>Linking.</strong> The linker combines your crate, its dependencies and the standard library into one executable with no runtime to install.</li>
+    </ol>
+    <figcaption><strong>Figure 3.</strong> The rustc pipeline, following the official rustc-dev-guide overview. Steps 6–7 explain both the speed of release builds and why Rust compiles more slowly than C#: generic code is duplicated per type, then optimised by LLVM, all ahead of time.</figcaption>
+  </figure>
+  <p><strong>Why compiles get faster after the first one:</strong> dependencies are compiled once and cached in <code>target/</code>, and your own crate is compiled <em>incrementally</em>, reusing unchanged work. <code>cargo check</code> stops after the MIR stage (no code generation), which is why it's the fastest way to ask "does this compile?". rust-analyzer gives you similar feedback continuously as you type.</p>
+  <p><strong>How rustup chooses the compiler:</strong> the <code>cargo</code> and <code>rustc</code> in <code>~/.cargo/bin</code> are small <em>proxies</em> installed by rustup. Each time they run, they choose a toolchain, in this order of precedence: a <code>+toolchain</code> argument (<code>cargo +nightly build</code>), the <code>RUSTUP_TOOLCHAIN</code> environment variable, a directory override, a <code>rust-toolchain.toml</code> file (searched upward from the current folder), and finally the default.</p>
+  <p>The benchmark used for Figure 2 (run <code>cargo run</code> and <code>cargo run --release</code>):</p>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">use std::time::Instant;
+
+/// Counts primes below `limit` by trial division (deliberately simple).
+fn count_primes(limit: u32) -> u32 {
+    let mut count = 0;
+    for n in 2..limit {
+        let mut is_prime = true;
+        let mut d = 2;
+        while d * d &lt;= n {
+            if n % d == 0 {
+                is_prime = false;
+                break;
+            }
+            d += 1;
+        }
+        if is_prime {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Sum of squares of the even numbers, written as an iterator chain.
+fn sum_even_squares(limit: u64) -> u64 {
+    (0..limit).filter(|n| n % 2 == 0).map(|n| n * n % 1_000_007).sum()
+}
+
+fn main() {
+    let start = Instant::now();
+    let primes = count_primes(5_000_000);
+    println!("loop:     {primes} primes in {} ms", start.elapsed().as_millis());
+
+    let start = Instant::now();
+    let total = sum_even_squares(200_000_000);
+    println!("iterator: sum {total} in {} ms", start.elapsed().as_millis());
+}</code></pre>
+<pre class="output">$ cargo run                 (dev profile)
+loop:     348513 primes in 1217 ms
+iterator: sum 49935891238200 in 2138 ms
+$ cargo run --release
+loop:     348513 primes in 518 ms
+iterator: sum 49935891238200 in 115 ms</pre>
+  <p class="small muted">Your numbers will differ by machine. The ratio is what matters. The Playground's "Run" uses debug mode by default; switch it to Release in its menu to compare.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab: from empty folder to tested, linted program</h2>
+<p>Do this on your own machine, not only in the Playground. Every output below is real, from Rust 1.99.0 (paths shortened to <code>~/projects/hello-rust</code>).</p>
+
+<h3 id="lab-1">Step 1 — add a dependency</h3>
+<pre><code class="language-bash">cargo add rand</code></pre>
+<pre class="output">    Updating crates.io index
+      Adding rand v0.10.3 to dependencies
+             Features:
+             + alloc
+             + std
+             + std_rng
+             + sys_rng
+             + thread_rng
+             - chacha
+             - log
+             - serde
+             - simd_support
+             - unbiased
+    Updating crates.io index
+     Locking 8 packages to highest Rust 1.99.0 compatible versions
+      Adding cfg-if v1.0.5
+      Adding chacha20 v0.10.2
+      Adding cpufeatures v0.3.1
+      Adding getrandom v0.4.3
+      Adding libc v0.2.190
+      Adding r-efi v6.0.0
+      Adding rand v0.10.3
+      Adding rand_core v0.10.1</pre>
+<p>Two things to notice. <strong>Features</strong> (<code>+</code> on, <code>-</code> off) are optional parts of a crate you can switch on, a bit like optional NuGet sub-packages (chapter 3.5). And one direct dependency brought in seven <em>transitive</em> ones, now pinned in <code>Cargo.lock</code>.</p>
+
+<h3 id="lab-2">Step 2 — write a small program</h3>
+<p>A dice roller: it takes the number of dice from the command line (default 2), rolls them, and prints the total. Don't worry about every symbol yet; the comments explain the idea, and Module 2 covers each piece.</p>
+<pre data-title="src/main.rs"><code class="language-rust">use std::env;
+
+fn main() {
+    // First command-line argument, parsed as a number; default to 2.
+    let count: u32 = env::args()
+        .nth(1)
+        .and_then(|arg| arg.parse().ok())
+        .unwrap_or(2);
+
+    // Roll `count` dice and collect the results into a list (a Vec).
+    let rolls: Vec&lt;u32&gt; = (0..count).map(|_| rand::random_range(1..=6)).collect();
+    println!("{rolls:?} => total {}", total(&amp;rolls));
+}
+
+/// Adds up the dice rolls.
+fn total(rolls: &amp;[u32]) -> u32 {
+    let mut sum = 0;
+    for r in rolls { sum += r; }
+    return sum;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adds_rolls() {
+        assert_eq!(total(&amp;[1, 2, 3]), 6);
+    }
+
+    #[test]
+    fn no_rolls_is_zero() {
+        assert_eq!(total(&amp;[]), 0);
+    }
+}</code></pre>
+<p class="small muted">The Run button is left off this snippet: the Playground only offers its own fixed set of popular crates, so build this one locally.</p>
+
+<h3 id="lab-3">Step 3 — check formatting</h3>
+<pre><code class="language-bash">cargo fmt --check</code></pre>
+<pre class="output error">Diff in ~/projects/hello-rust/src/main.rs:13:
+ /// Adds up the dice rolls.
+ fn total(rolls: &amp;[u32]) -> u32 {
+     let mut sum = 0;
+-    for r in rolls { sum += r; }
++    for r in rolls {
++        sum += r;
++    }
+     return sum;
+ }</pre>
+<p>The command exits with code 1, so a CI pipeline would fail here. Run <code>cargo fmt</code> (without <code>--check</code>) to apply the fix.</p>
+
+<h3 id="lab-4">Step 4 — lint with Clippy</h3>
+<pre><code class="language-bash">cargo clippy</code></pre>
+<pre class="output error">warning: unneeded `return` statement
+  --&gt; src/main.rs:17:5
+   |
+17 |     return sum;
+   |     ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_return
+   = note: `#[warn(clippy::needless_return)]` on by default
+help: remove `return`
+   |
+17 -     return sum;
+17 +     sum
+   |</pre>
+<p>In Rust, the last expression in a function body <em>is</em> the return value (no semicolon). Writing <code>return</code> there works, but it isn't idiomatic. An even more idiomatic version replaces the whole loop:</p>
+<pre data-title="src/main.rs (fixed)"><code class="language-rust">/// Adds up the dice rolls.
+fn total(rolls: &amp;[u32]) -> u32 {
+    rolls.iter().sum()
+}</code></pre>
+<p><code>cargo clippy</code> now finishes with no warnings.</p>
+
+<h3 id="lab-5">Step 5 — test, run, release</h3>
+<pre><code class="language-bash">cargo test</code></pre>
+<pre class="output">   Compiling hello-rust v0.1.0 (~/projects/hello-rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/main.rs (target/debug/deps/hello_rust-…)
+
+running 2 tests
+test tests::adds_rolls ... ok
+test tests::no_rolls_is_zero ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s</pre>
+<pre><code class="language-bash">cargo run -- 5
+cargo build --release
+./target/release/hello-rust 3</code></pre>
+<pre class="output">[4, 4, 4, 6, 5] => total 23
+    Finished `release` profile [optimized] target(s) in 3.76s
+[3, 6, 2] => total 11</pre>
+<p>Your rolls will differ, since they're random. The release binary is a single 447 KB file on this machine (<code>ls -lh target/release/hello-rust</code>). Copy it to another Mac with the same CPU type and a compatible macOS version and it runs. There's no runtime to install.</p>
+
+<h3 id="lab-6">Step 6 — pin the toolchain</h3>
+<p>For real projects, record the compiler version in the repository so every developer and CI agent uses the same one. Create <code>rust-toolchain.toml</code> next to <code>Cargo.toml</code> (the output below came from the <code>greet</code> project you'll build in Exercise 1; the result is the same in any folder):</p>
+<pre data-title="rust-toolchain.toml"><code class="language-toml">[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]</code></pre>
+<pre><code class="language-bash">rustup show</code></pre>
+<pre class="output">active toolchain
+----------------
+name: 1.99.0-aarch64-apple-darwin
+active because: overridden by '~/projects/greet/rust-toolchain.toml'</pre>
+<p>If the pinned version isn't installed, the first <code>cargo</code> command in the folder installs it automatically. rustup tells you that you can opt out with <code>RUSTUP_AUTO_INSTALL=0</code>. To install explicitly, run <code>rustup install</code>. Upgrading a team means one pull request that changes this file.</p>
+
+<h2 id="exercises">Exercises</h2>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — greet <span class="difficulty">★☆☆</span></div>
+  <p>Create a new project <code>greet</code>. It should print <code>Hello, world!</code>, or <code>Hello, &lt;name&gt;!</code> when a name is passed (<code>cargo run -- Sandip</code>). Put the text-building in a separate function, add one test for it, and make sure <code>cargo fmt --check</code> and <code>cargo clippy</code> are clean.</p>
+  <p class="small muted">Hint: <code>format!("Hello, {name}!")</code> builds a <code>String</code>, like C# string interpolation. <code>env::args().nth(1).unwrap_or_else(|| "world".to_string())</code> gives the first argument or a default.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">use std::env;
+
+fn main() {
+    let name = env::args().nth(1).unwrap_or_else(|| "world".to_string());
+    println!("{}", greeting(&amp;name));
+}
+
+/// Builds the greeting text for `name`.
+fn greeting(name: &amp;str) -> String {
+    format!("Hello, {name}!")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greets_by_name() {
+        assert_eq!(greeting("Ada"), "Hello, Ada!");
+    }
+}</code></pre>
+<pre class="output">$ cargo run -q
+Hello, world!
+$ cargo run -q -- Sandip
+Hello, Sandip!
+$ cargo test -q
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s</pre>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — a CI quality gate <span class="difficulty">★★☆ consultant skill</span></div>
+  <p>Write the commands a CI pipeline should run for <code>greet</code>, in order, so that the build fails on unformatted code, <em>any</em> Clippy warning, a failing test or an out-of-date lockfile. Also pin the toolchain.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-title="ci.sh"><code class="language-bash">set -e                                     # stop at the first failing command
+cargo fmt --check                          # formatting
+cargo clippy --all-targets -- -D warnings  # lints; -D turns warnings into errors
+cargo test --locked                        # tests; --locked fails if Cargo.lock is stale
+cargo build --release --locked             # the artefact you ship</code></pre>
+  <p>Plus the <code>rust-toolchain.toml</code> from Step 6, so CI and laptops use the same compiler. <code>--all-targets</code> makes Clippy check tests and examples too. Ordering cheapest-first gives fast feedback. Tested: on the solution to Exercise 1 the whole gate passes (exit code 0).</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — read the dependency tree <span class="difficulty">★★☆</span></div>
+  <p>In <code>hello-rust</code>, run <code>cargo tree</code>. Which crate pulls in <code>libc</code>? Then compare with the eight packages <code>cargo add</code> locked in Step 1: one of them (<code>r-efi</code>) doesn't appear in the tree. Why?</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">hello-rust v0.1.0 (~/projects/hello-rust)
+└── rand v0.10.3
+    ├── chacha20 v0.10.2
+    │   ├── cfg-if v1.0.5
+    │   └── rand_core v0.10.1
+    ├── getrandom v0.4.3
+    │   ├── cfg-if v1.0.5
+    │   ├── libc v0.2.190
+    │   └── rand_core v0.10.1
+    └── rand_core v0.10.1</pre>
+  <p><code>getrandom</code> (which asks the operating system for random bytes) depends on <code>libc</code> on Unix-like systems such as macOS. <code>r-efi</code> is a dependency only on UEFI targets. <code>Cargo.lock</code> records versions for <strong>every</strong> platform so the lockfile is the same on all machines, but <code>cargo tree</code> shows only what applies to the platform you're building for. (<code>cpufeatures</code> is also missing on this machine: it is only needed on some CPU architectures.) Platform-specific dependencies are common, so check <code>cargo tree --target &lt;triple&gt;</code> when you audit a Linux deployment from a Mac.</p>
+  </details>
+</div>
+
+<h2 id="decisions">Decision tables</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Use</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>"Does it compile?" while coding</td><td><code>cargo check</code> (or just rust-analyzer)</td><td>Skips code generation, so it's much faster</td></tr>
+    <tr><td>Running, debugging, unit tests</td><td><code>dev</code> profile (default)</td><td>Fast compiles, debug info</td></tr>
+    <tr><td>Benchmarks, load tests, anything you ship</td><td><code>--release</code></td><td>Optimised; debug can be 2–20× slower</td></tr>
+    <tr><td>Application or service repository</td><td>Commit <code>Cargo.lock</code>, build with <code>--locked</code></td><td>Reproducible builds</td></tr>
+    <tr><td>Team or client project</td><td>Pin with <code>rust-toolchain.toml</code></td><td>Same compiler everywhere; upgrades become explicit pull requests</td></tr>
+    <tr><td>Installing Rust on a dev machine or CI image</td><td>rustup (not an OS package)</td><td>Per-project toolchain switching, components and targets</td></tr>
+    <tr><td>Trying an unstable feature</td><td><code>cargo +nightly …</code> in a throwaway branch</td><td>Keep production on stable</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Measuring performance in debug builds</div>
+  <p>The most common way newcomers conclude "Rust is slow". Always benchmark with <code>--release</code> (Figure 2).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Committing <code>target/</code></div>
+  <p>It can grow to gigabytes and is machine-specific. <code>cargo new</code> already ignores it. Check this when you take over a repository someone else created by hand.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Two Rust installations</div>
+  <p>Installing Rust from an OS package manager (for example Homebrew's <code>rust</code>) as well as rustup puts two different <code>cargo</code>s on your PATH. Whichever comes first silently wins. Use rustup only, and check with <code>which cargo</code> (expect <code>~/.cargo/bin/cargo</code>).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Forgetting <code>--</code> with <code>cargo run</code></div>
+  <p><code>cargo run 5</code> passes <code>5</code> to <em>cargo</em>; <code>cargo run -- 5</code> passes it to <em>your program</em>. The same rule as <code>dotnet run</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Confusing <code>cargo add</code> and <code>cargo install</code></div>
+  <p><code>cargo add</code> adds a library dependency to this project. <code>cargo install</code> builds a <em>command-line tool</em> into <code>~/.cargo/bin</code>, like <code>dotnet tool install -g</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Silencing Clippy instead of reading it</div>
+  <p>Clippy's suggestions are one of the fastest ways to learn idiomatic Rust. Fix them, or allow a specific lint with a written reason. Never turn them all off.</p></div>
+
+<h2 id="real-world">Real-world view: a client-ready project baseline</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <p>When you set up or review a Rust repository for a client, this is the baseline to check:</p>
+  <ul>
+    <li><strong><code>rust-toolchain.toml</code></strong> pins the compiler and the components CI needs.</li>
+    <li><strong><code>Cargo.lock</code></strong> is committed for applications and services, and CI builds with <code>--locked</code>.</li>
+    <li><strong>A CI gate</strong> runs fmt-check → clippy with <code>-D warnings</code> → tests → release build (Exercise 2).</li>
+    <li><strong>The <code>target/</code> folder is cached</strong> between CI runs, keyed on <code>Cargo.lock</code> and the toolchain version. A cold build of a large service can take many minutes; a warm one is much faster (chapter 6.5).</li>
+    <li><strong>A regular upgrade cadence:</strong> bump the toolchain roughly every six weeks, or at least every few releases, so that each upgrade stays small.</li>
+    <li><strong>Release artefacts</strong> are built once with <code>--release</code> in CI and promoted through environments, never rebuilt per environment (the same rule as for .NET publish output).</li>
+  </ul>
+  <p>Later chapters add supply-chain checks (<code>cargo deny</code>, <code>cargo audit</code>, chapter 6.4) and minimum-supported-Rust-version policies (chapter 3.5).</p>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="0.2">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which tool is the closest equivalent to the <code>dotnet</code> CLI plus MSBuild plus the NuGet client?</div>
+    <ol class="options">
+      <li data-key="a"><code>rustup</code></li>
+      <li data-key="b"><code>rustc</code></li>
+      <li data-key="c"><code>cargo</code></li>
+      <li data-key="d"><code>rust-analyzer</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">rustup installs and selects toolchains, like the SDK installer plus <code>global.json</code>.</p>
+      <p data-for="b">rustc is the compiler (like <code>csc</code>). You rarely call it directly.</p>
+      <p data-for="c">Correct. Cargo builds, runs, tests and manages dependencies.</p>
+      <p data-for="d">rust-analyzer is the editor's language server.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text"><code>Cargo.toml</code> says <code>serde = "1.0.200"</code>. Which version can Cargo pick?</div>
+    <ol class="options">
+      <li data-key="a">Exactly 1.0.200 only</li>
+      <li data-key="b">Any version from 1.0.200 up to, but not including, 2.0.0</li>
+      <li data-key="c">Any version from 1.0.200 up to, but not including, 1.1.0</li>
+      <li data-key="d">Any version at all, the newest available</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That needs <code>"=1.0.200"</code>.</p>
+      <p data-for="b">Correct. The caret rule keeps the left-most non-zero number (major 1) fixed.</p>
+      <p data-for="c">That is the rule for a <code>0.x</code> version, or for a tilde requirement (<code>~1.0.200</code>).</p>
+      <p data-for="d">Cargo never crosses a SemVer-incompatible boundary unless you say so.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A client's developer benchmarks a Rust parser against the existing C# one and finds Rust is three times <em>slower</em>. They ran <code>cargo run</code>. What do you check first?</div>
+    <ol class="options">
+      <li data-key="a">Whether the C# version has a bug</li>
+      <li data-key="b">Whether they need a nightly compiler</li>
+      <li data-key="c">Whether Rust is a bad fit for parsing</li>
+      <li data-key="d">That they built with the <code>dev</code> profile. Re-run with <code>cargo run --release</code>, ideally with a proper benchmark harness (chapter 6.1).</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Possible, but not the first suspect.</p>
+      <p data-for="b">Stable Rust's release mode is fully optimised.</p>
+      <p data-for="c">Parsing is one of Rust's strengths.</p>
+      <p data-for="d">Correct. Debug builds skip optimisation, and iterator-heavy code can be roughly 18× slower (Figure 2).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Where does the borrow checker run inside <code>rustc</code>?</div>
+    <ol class="options">
+      <li data-key="a">On MIR, after type checking and before code generation</li>
+      <li data-key="b">In LLVM, during optimisation</li>
+      <li data-key="c">At runtime, inside the executable</li>
+      <li data-key="d">In rust-analyzer only</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's also why <code>cargo check</code>, which stops before code generation, still reports borrow errors.</p>
+      <p data-for="b">LLVM knows nothing about Rust's ownership rules.</p>
+      <p data-for="c">Borrow checking is purely compile time; there's no runtime cost.</p>
+      <p data-for="d">rust-analyzer shows diagnostics, but the compiler is the authority.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A platform team wants every developer laptop and CI agent to use exactly Rust 1.99.0 for one repository, without changing anyone's global default. What do you recommend?</div>
+    <ol class="options">
+      <li data-key="a">Ask everyone to run <code>rustup default 1.99.0</code></li>
+      <li data-key="b">Set <code>edition = "1.99"</code> in <code>Cargo.toml</code></li>
+      <li data-key="c">Commit a <code>rust-toolchain.toml</code> with <code>channel = "1.99.0"</code></li>
+      <li data-key="d">Commit <code>Cargo.lock</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That changes everyone's global default and isn't enforced by the repository.</p>
+      <p data-for="b">Editions are 2015/2018/2021/2024, not compiler versions.</p>
+      <p data-for="c">Correct. It applies per directory tree, and rustup installs the toolchain automatically on first use.</p>
+      <p data-for="d">The lockfile pins <em>dependency</em> versions, not the compiler.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does <code>cargo tree</code> on a Mac show fewer packages than <code>Cargo.lock</code> contains?</div>
+    <ol class="options">
+      <li data-key="a"><code>Cargo.lock</code> is out of date</li>
+      <li data-key="b"><code>Cargo.lock</code> records dependencies for all platforms; <code>cargo tree</code> shows only those for the platform you're building for</li>
+      <li data-key="c"><code>cargo tree</code> hides small crates</li>
+      <li data-key="d">Some crates are downloaded at runtime</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It isn't. Platform-specific dependencies such as <code>r-efi</code> are expected.</p>
+      <p data-for="b">Correct. That keeps the lockfile identical on every machine.</p>
+      <p data-for="c">It doesn't hide crates; use <code>--target</code> to view other platforms.</p>
+      <p data-for="d">Rust resolves and compiles everything at build time.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In <code>fn total(rolls: &amp;[u32]) -&gt; u32 { rolls.iter().sum() }</code>, why is there no <code>return</code> keyword?</div>
+    <ol class="options">
+      <li data-key="a">Functions without <code>return</code> return nothing</li>
+      <li data-key="b">Clippy inserts it automatically at compile time</li>
+      <li data-key="c"><code>sum()</code> prints the value instead of returning it</li>
+      <li data-key="d">The final expression of a block, written without a semicolon, is the block's value, and so the function's return value</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">No. The type says it returns <code>u32</code>, and the final expression provides it.</p>
+      <p data-for="b">Clippy only suggests changes; it doesn't rewrite your code during compilation.</p>
+      <p data-for="c"><code>sum()</code> computes a value; it doesn't print.</p>
+      <p data-for="d">Correct. Chapter 2.1 covers expressions in detail.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li><strong>rustup</strong> installs and selects toolchains (channel + components + targets). Pin per project with <code>rust-toolchain.toml</code>.</li>
+  <li><strong>cargo</strong> does everything else: <code>new</code>, <code>check</code>, <code>build</code>, <code>run</code>, <code>test</code>, <code>add</code>, <code>fmt</code>, <code>clippy</code>, <code>doc</code>, <code>tree</code>.</li>
+  <li><code>Cargo.toml</code> holds version <em>requirements</em> (caret rule by default). <code>Cargo.lock</code> records the exact versions. Commit it for applications and build with <code>--locked</code>.</li>
+  <li>Debug and release can differ by an order of magnitude, because all optimisation happens at compile time. Never benchmark a debug build.</li>
+  <li>A client-ready baseline: pinned toolchain, committed lockfile, CI gate (fmt → clippy -D warnings → test → release build), cached <code>target/</code>, regular upgrades.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">rustup</li><li class="chip">toolchain</li><li class="chip">component</li><li class="chip">target</li><li class="chip">Cargo</li>
+  <li class="chip">manifest</li><li class="chip">Cargo.lock</li><li class="chip">crates.io</li><li class="chip">profile</li><li class="chip">rustfmt</li>
+  <li class="chip">Clippy</li><li class="chip">rust-analyzer</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://www.rust-lang.org/tools/install">Install Rust (official)</a><span class="why">Current installers for every platform, including the Windows MSVC prerequisites.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rust-lang.github.io/rustup/">The rustup book</a><span class="why">Toolchains, components, targets, and the <a href="https://rust-lang.github.io/rustup/overrides.html">override precedence</a> used in the deep dive.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/cargo/">The Cargo Book</a><span class="why">Especially <a href="https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html">Specifying Dependencies</a>, <a href="https://doc.rust-lang.org/cargo/reference/profiles.html">Profiles</a>, <a href="https://doc.rust-lang.org/cargo/guide/project-layout.html">Package Layout</a> and the <a href="https://doc.rust-lang.org/cargo/faq.html">FAQ on Cargo.lock</a>.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/clippy/">The Clippy book</a><span class="why">Lint groups and configuration. The <a href="https://rust-lang.github.io/rust-clippy/">lint list</a> is searchable.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rust-analyzer.github.io/">rust-analyzer</a><span class="why">Editor features and configuration.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rustc-dev-guide.rust-lang.org/overview.html">rustc-dev-guide — Overview of the compiler</a><span class="why">The primary source for the pipeline animation.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/rustdoc/">The rustdoc book</a> and <a href="https://docs.rs/">docs.rs</a><span class="why">Writing docs, and where published crate docs live.</span></li>
+  <li><span class="ref-type book">Book</span><a href="https://doc.rust-lang.org/book/ch01-00-getting-started.html">The Rust Programming Language — Ch. 1 Getting Started</a><span class="why">The official walkthrough of the same setup.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  Course.chart("profile-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["Loop: count primes < 5M", "Iterator chain: 200M numbers"],
+        datasets: [
+          { label: "dev (cargo run)", data: [1217, 2138], backgroundColor: c.muted, borderRadius: 6 },
+          { label: "release (cargo run --release)", data: [518, 115], backgroundColor: c.accent, borderRadius: 6 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: { y: { title: { display: true, text: "milliseconds (lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

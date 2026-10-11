@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component Guide · Rust for the .NET Architect</title>
+<meta name="description" content="Every building block used by the chapters, rendered with real examples.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/course-data.js"></script>
+<script src="assets/app.js"></script>
+</head>
+<body data-page="styleguide">
+<article class="content">
+  <div class="chapter-kicker">Design system</div>
+  <h1>Component guide</h1>
+  <p class="stamp">Phase 2 deliverable · every chapter is built from these parts</p>
+  <p>This page renders each component the chapters use, so you can check how they look in light and dark mode, on desktop and on mobile.
+    Use the theme button in the header to switch themes. Press <kbd>/</kbd> to search.</p>
+
+  <h2>Chapter meta card</h2>
+  <p>Chapters write only the objectives. Prerequisites and estimated time come from <code>course-data.js</code>, so they never drift out of sync.</p>
+  <div class="meta-card">
+    <div class="objectives"><h4>Learning objectives</h4>
+      <ul><li>Explain what a <em>move</em> is and why Rust uses moves by default</li>
+          <li>Predict when a value is dropped</li>
+          <li>Choose between moving, borrowing and cloning</li></ul></div>
+    <div><h4>Prerequisites</h4><span class="chip done">2.1 Syntax and basic types</span><span class="chip">F1 How a program uses memory</span></div>
+    <div><h4>Estimated time</h4><div class="time">≈ 4 h</div><div class="small muted">reading + labs + exercises</div></div>
+  </div>
+
+  <h2>Callouts</h2>
+  <div class="callout why"><div class="callout-title">💡 Why this matters</div>
+    <p>A .NET service leaks memory through forgotten event handlers or undisposed streams. Rust's ownership rules make most of those leaks impossible to write by mistake.</p></div>
+  <div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+    <p>Ownership is like the single signed original of a contract. You can hand it to someone else (a <em>move</em>), or let people read it under supervision (a <em>borrow</em>), but there is only ever one original, and when its owner leaves, it is shredded.</p></div>
+  <div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+    <p><code>Drop</code> plays the role of <code>IDisposable.Dispose</code>, except you never call it and can't forget it: the compiler inserts the call at the end of the owner's scope.</p></div>
+  <div class="callout pitfall"><div class="callout-title">⚠️ Pitfall</div>
+    <p>Calling <code>.clone()</code> to silence the borrow checker compiles, but it may copy megabytes on every call. Find out <em>why</em> the borrow failed first.</p></div>
+  <div class="callout verify"><div class="callout-title">⚠ Verify</div>
+    <p>Used whenever a fact could not be confirmed against a primary source on the stamp date. Example: “The exact release that stabilised feature X is believed to be 1.88 — check the release notes.”</p></div>
+  <div class="callout tip"><div class="callout-title">✅ Tip</div><p>Run <code>cargo clippy</code> before every commit; it catches many non-idiomatic patterns.</p></div>
+  <div class="callout note"><div class="callout-title">ℹ️ Note</div><p>A neutral side note.</p></div>
+  <div class="callout architecture"><div class="callout-title">🏗 Architecture view</div><p>How the concept appears in production systems, framed as trade-offs.</p></div>
+
+  <h2>Layered explanation</h2>
+  <span class="layer-label basic">Basic</span>
+  <p>Every value has exactly one owner. When the owner goes out of scope, the value is dropped.</p>
+  <span class="layer-label intermediate">Intermediate</span>
+  <p>Assigning a <code>String</code> to another variable <em>moves</em> it: the pointer, length and capacity are copied, the heap data is not, and the old variable becomes unusable.</p>
+  <details class="deep-dive"><summary>Deep dive: what the compiler actually generates</summary><div class="body">
+    <p>A move is a plain bitwise copy of the stack part of the value (here 24 bytes on 64-bit targets). What makes it a <em>move</em> rather than a copy is the compiler's static tracking: it records the source as uninitialised and refuses later reads. If a move happens only on some paths through the code, the compiler adds a hidden <em>drop flag</em> to decide at runtime whether to call <code>Drop</code>.</p>
+  </div></details>
+
+  <h2>Code blocks</h2>
+  <p>Rust blocks marked <code>data-playground</code> get a <strong>Run ▶</strong> button that opens the code in the official Rust Playground.</p>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">fn main() {
+    let s1 = String::from("hello");
+    let s2 = s1;                 // ownership moves to s2
+    println!("{s2}, world!");
+    // println!("{s1}");         // error[E0382]: borrow of moved value: `s1`
+} // s2 goes out of scope here: its heap buffer is freed</code></pre>
+<pre class="output">hello, world!</pre>
+<pre class="output error">error[E0382]: borrow of moved value: `s1`
+ --> src/main.rs:5:16
+  |
+2 |     let s1 = String::from("hello");
+  |         -- move occurs because `s1` has type `String`, which does not implement the `Copy` trait
+3 |     let s2 = s1;
+  |              -- value moved here</pre>
+
+  <h3>“Coming from C#” side-by-side</h3>
+  <div class="compare">
+    <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">var s1 = "hello";
+var s2 = s1;          // both refer to the same object
+Console.WriteLine(s1); // fine: the GC tracks both references</code></pre></div>
+    <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">let s1 = String::from("hello");
+let s2 = s1;          // s1 is moved, not shared
+// println!("{s1}");  // compile error</code></pre></div>
+  </div>
+<pre data-title="Cargo.toml"><code class="language-toml">[package]
+name = "demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }</code></pre>
+
+  <h2>Step-through animation</h2>
+  <p>Captions are written as a list. Each SVG element says which steps it appears in, using <code>data-show</code> and <code>data-hl</code>. Use Play, Step, Back and Reset, or the arrow keys after clicking the figure.</p>
+  <figure class="visual stepper" data-interval="2400">
+    <span class="visual-tag">Animation · ownership move</span>
+    <svg viewBox="0 0 640 270" role="img" aria-label="Stack and heap during a move of a String">
+      <defs>
+        <marker id="sg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+        <marker id="sg-arrow-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+      </defs>
+      <text x="110" y="20" class="svg-title" text-anchor="middle">Stack</text>
+      <text x="480" y="20" class="svg-title" text-anchor="middle">Heap</text>
+      <line x1="300" y1="10" x2="300" y2="260" class="svg-line-dash"/>
+      <!-- s1 -->
+      <g data-show="-1" data-hl="1">
+        <rect x="20" y="40" width="180" height="90" rx="8" class="svg-box"/>
+        <text x="32" y="56" class="svg-text-sm">s1: String</text>
+        <text x="32" y="80" class="svg-mono">ptr  ●</text>
+        <text x="32" y="100" class="svg-mono">len  5</text>
+        <text x="32" y="120" class="svg-mono">cap  5</text>
+      </g>
+      <g data-show="2-3" data-hl="3"><rect x="20" y="40" width="180" height="90" rx="8" class="svg-red"/>
+        <text x="110" y="76" class="svg-text" text-anchor="middle">s1</text>
+        <text x="110" y="98" class="svg-text-sm" text-anchor="middle">moved — unusable</text></g>
+      <path d="M88 80 C 220 80, 300 90, 398 92" class="svg-line" marker-end="url(#sg-arrow)" data-show="-1"/>
+      <!-- s2 -->
+      <g data-show="2-3" data-hl="2">
+        <rect x="20" y="150" width="180" height="90" rx="8" class="svg-accent"/>
+        <text x="32" y="166" class="svg-text-sm">s2: String</text>
+        <text x="32" y="190" class="svg-mono">ptr  ●</text>
+        <text x="32" y="210" class="svg-mono">len  5</text>
+        <text x="32" y="230" class="svg-mono">cap  5</text>
+      </g>
+      <path d="M88 190 C 230 190, 300 110, 398 98" class="svg-line-accent" marker-end="url(#sg-arrow-acc)" data-show="2-3"/>
+      <!-- heap buffer -->
+      <g data-show="-3" data-hl="3">
+        <rect x="400" y="70" width="200" height="44" rx="6" class="svg-box-strong"/>
+        <g class="svg-mono">
+          <text x="420" y="92" class="svg-mono">h</text><text x="458" y="92" class="svg-mono">e</text><text x="496" y="92" class="svg-mono">l</text>
+          <text x="534" y="92" class="svg-mono">l</text><text x="572" y="92" class="svg-mono">o</text>
+        </g>
+      </g>
+      <g data-show="4"><rect x="400" y="70" width="200" height="44" rx="6" class="svg-box" stroke-dasharray="5 4"/>
+        <text x="500" y="92" class="svg-text-sm" text-anchor="middle">freed by Drop</text></g>
+      <g data-show="4"><text x="110" y="200" class="svg-text-sm" text-anchor="middle">(scope ended — stack slots gone)</text></g>
+    </svg>
+    <ol class="stepper-captions">
+      <li><code>let s1 = String::from("hello");</code> — <code>s1</code> lives on the stack (pointer, length, capacity). The text lives on the heap.</li>
+      <li><code>let s2 = s1;</code> — the three stack words are copied into <code>s2</code>. The heap data is <strong>not</strong> copied.</li>
+      <li>The compiler now treats <code>s1</code> as moved. Using it is a compile error, so the buffer can never be freed twice.</li>
+      <li>At the closing <code>}</code>, only <code>s2</code> owns the buffer, so <code>Drop</code> runs exactly once.</li>
+    </ol>
+    <figcaption><strong>Figure.</strong> A move copies the handle, not the data, and invalidates the source. Compare this with C#, where both variables would keep referencing the same object.</figcaption>
+  </figure>
+
+  <h2>Charts</h2>
+  <figure class="visual">
+    <span class="visual-tag">Chart · growth of common complexities</span>
+    <div class="chart-box"><canvas id="sg-chart" aria-label="Line chart comparing O(log n), O(n), O(n log n) and O(n squared)"></canvas></div>
+    <figcaption><strong>Figure.</strong> Operation counts as the input size <em>n</em> grows, on a log scale so that all four curves stay visible. The colours follow the theme.</figcaption>
+  </figure>
+
+  <h2>Mermaid diagrams</h2>
+  <figure class="visual">
+    <span class="visual-tag">Diagram · where a Rust error goes</span>
+    <div class="mermaid">
+flowchart LR
+  A[Function returns Result] -->|Ok| B[Continue]
+  A -->|Err| C{Can this layer handle it?}
+  C -->|yes| D[Recover / retry]
+  C -->|no| E[? propagates upward]
+  E --> F[Boundary: HTTP 4xx/5xx, log, metrics]
+    </div>
+    <figcaption><strong>Figure.</strong> Mermaid renders with the current theme and redraws when you switch themes.</figcaption>
+  </figure>
+
+  <h2>Math</h2>
+  <p>Amortised cost of pushing to a <code>Vec</code> that doubles its capacity: the total copy work for \(n\) pushes is bounded by</p>
+  $$ \sum_{k=0}^{\lfloor \log_2 n \rfloor} 2^k \;<\; 2n \quad\Longrightarrow\quad \text{amortised cost per push} = O(1). $$
+
+  <h2>Tables</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Need</th><th>Rust</th><th>.NET equivalent</th><th>Thread-safe?</th></tr></thead>
+    <tbody>
+      <tr><td>Single owner, heap</td><td><code>Box&lt;T&gt;</code></td><td>— (all objects are heap/GC)</td><td class="yes">If T is</td></tr>
+      <tr><td>Shared, one thread</td><td><code>Rc&lt;T&gt;</code></td><td>Plain reference</td><td class="no">No</td></tr>
+      <tr><td>Shared, many threads</td><td><code>Arc&lt;T&gt;</code></td><td>Plain reference</td><td class="yes">Yes</td></tr>
+      <tr><td>Mutation through shared ref</td><td><code>RefCell&lt;T&gt;</code></td><td>Any mutable field</td><td class="partial">Single-threaded only</td></tr>
+    </tbody>
+    <caption>Decision tables use this style. Wide tables scroll sideways on mobile.</caption>
+  </table></div>
+
+  <h2>Glossary terms</h2>
+  <p>Terms the course defines show a tooltip on hover or focus: <dfn data-term="move" data-def="Transferring ownership of a value to a new owner. The old binding can no longer be used.">move</dfn> and
+    <dfn data-term="borrow" data-def="Creating a reference (&T or &mut T) that lets code use a value without taking ownership.">borrow</dfn>.</p>
+
+  <h2>Exercises</h2>
+  <div class="exercise">
+    <div class="exercise-title">Exercise 1 <span class="difficulty">★☆☆ warm-up</span></div>
+    <p>Change the program above so that both <code>s1</code> and <code>s2</code> can be printed. Give two different solutions and say which one allocates.</p>
+    <details class="solution"><summary>Show solution</summary>
+<pre><code class="language-rust">// 1) Clone: allocates a second heap buffer
+let s1 = String::from("hello");
+let s2 = s1.clone();
+println!("{s1} {s2}");
+
+// 2) Borrow: no allocation, s2 is a reference to s1
+let s1 = String::from("hello");
+let s2 = &s1;
+println!("{s1} {s2}");</code></pre>
+    <p>Prefer borrowing unless you really need two independent owners.</p></details>
+  </div>
+
+  <h2>Check your understanding</h2>
+  <div class="quiz" data-quiz="styleguide">
+    <div class="q" data-answer="c">
+      <div class="q-type">Multiple choice</div>
+      <div class="q-text">After <code>let b = a;</code> where <code>a: String</code>, what is copied?</div>
+      <ol class="options">
+        <li data-key="a">The whole heap buffer</li>
+        <li data-key="b">Nothing — <code>b</code> is an alias for <code>a</code></li>
+        <li data-key="c">The pointer, length and capacity</li>
+        <li data-key="d">Only the pointer</li>
+      </ol>
+      <div class="explain">
+        <p data-for="a">Wrong: copying the heap data is what <code>.clone()</code> does, and it is never implicit for <code>String</code>.</p>
+        <p data-for="b">Wrong: Rust has no implicit aliasing. Sharing needs an explicit reference (<code>&amp;a</code>).</p>
+        <p data-for="c">Correct: the 3-word stack header is copied bitwise, and <code>a</code> becomes unusable.</p>
+        <p data-for="d">Wrong: length and capacity are part of the value too; <code>b</code> needs them.</p>
+      </div>
+    </div>
+    <div class="q" data-answer="b">
+      <div class="q-type">Scenario</div>
+      <div class="q-text">Your team is porting a C# cache that hands the same <code>Customer</code> object to many request handlers running on a thread pool. Which Rust type fits best as the shared handle?</div>
+      <ol class="options">
+        <li data-key="a"><code>Rc&lt;Customer&gt;</code></li>
+        <li data-key="b"><code>Arc&lt;Customer&gt;</code></li>
+        <li data-key="c"><code>Box&lt;Customer&gt;</code></li>
+        <li data-key="d"><code>&amp;'static Customer</code> created with <code>Box::leak</code> on every insert</li>
+      </ol>
+      <div class="explain">
+        <p data-for="a">Wrong: <code>Rc</code> is not <code>Send</code>, so the compiler will not let it cross threads.</p>
+        <p data-for="b">Correct: atomic reference counting gives shared ownership across threads, and the last handle frees the value.</p>
+        <p data-for="c">Wrong: <code>Box</code> has one owner, so it can't be shared.</p>
+        <p data-for="d">Wrong: it compiles, but it leaks every entry ever cached — memory that is never reclaimed.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>Summary and references</h2>
+  <ul class="summary-list"><li>Each chapter ends with five summary bullets like these.</li><li>Key terms are added to the global glossary.</li></ul>
+  <ul class="key-terms"><li class="chip">ownership</li><li class="chip">move</li><li class="chip">Drop</li></ul>
+  <ul class="refs">
+    <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html">The Rust Book — What is Ownership?</a><span class="why">The official explanation, with diagrams.</span></li>
+    <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/3158154">Jung et al., “RustBelt”, POPL 2018 (PACMPL, 2017)</a><span class="why">A formal proof that Rust's safety guarantees hold.</span></li>
+    <li><span class="ref-type book">Book</span><a href="https://nostarch.com/rust-rustaceans">Jon Gjengset, <em>Rust for Rustaceans</em></a><span class="why">Ch. 1 covers memory and ownership at expert depth.</span></li>
+  </ul>
+</article>
+<script>
+Course.ready(function () {
+  Course.chart("sg-chart", function (c) {
+    var ns = [1, 2, 4, 8, 16, 32, 64];
+    function ds(label, f, color, dash) {
+      return { label: label, data: ns.map(f), borderColor: color, backgroundColor: color, borderDash: dash || [], tension: .25, pointRadius: 3 };
+    }
+    return {
+      type: "line",
+      data: { labels: ns, datasets: [
+        ds("O(log n)", function (n) { return Math.log2(n); }, c.series[0]),
+        ds("O(n)", function (n) { return n; }, c.series[1]),
+        ds("O(n log n)", function (n) { return n * Math.log2(n); }, c.series[2]),
+        ds("O(n²)", function (n) { return n * n; }, c.series[3], [6, 4])
+      ]},
+      options: { plugins: { legend: { position: "bottom" } },
+        scales: { x: { title: { display: true, text: "n (input size)" } },
+                  y: { type: "logarithmic", min: 0.5, title: { display: true, text: "operations (log scale)" } } } }
+    };
+  });
+});
+</script>
+</body>
+</html>

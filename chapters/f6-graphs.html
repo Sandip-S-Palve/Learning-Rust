@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F6 Graphs</title>
+<meta name="description" content="Graph vocabulary and representations, BFS, DFS, topological sort with cycle detection, and Dijkstra's shortest paths — the foundation for rule dependencies and workflow DAGs.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .gx-controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 8px; font-size: .9rem; }
+  .gx-controls select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .gx-state { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; font-size: .9rem; }
+  .gx-state > div { background: var(--surface-2); border-radius: 8px; padding: 8px 12px; }
+  .gx-state strong { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 2px; }
+  .gx-state code { font-size: .95rem; }
+  @media (max-width: 640px) { .gx-state { grid-template-columns: 1fr; } }
+  .gx-node { transition: fill .25s, stroke .25s; }
+  .gx-unseen { fill: var(--surface-2); stroke: var(--border); stroke-width: 2; }
+  .gx-frontier { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 2.5; }
+  .gx-current { fill: var(--accent); stroke: var(--accent); stroke-width: 3; }
+  .gx-done { fill: var(--teal-soft); stroke: var(--teal); stroke-width: 2; }
+  .gx-label { fill: var(--text); font: 700 15px var(--font-mono); }
+  .gx-current + .gx-label { fill: #fff; }
+  .gx-dist { fill: var(--muted); font: 12px var(--font-body); }
+</style>
+</head>
+<body data-chapter="F6">
+<article class="content">
+<h1>Graphs</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Model a problem as a graph: vertices, edges, directed vs undirected, weighted, cycles, DAGs</li>
+      <li>Choose a representation (adjacency list vs matrix) and build one in Rust with indices</li>
+      <li>Run breadth-first and depth-first search by hand and in code, and know what each is for</li>
+      <li>Order dependencies with topological sort, group them into parallel layers, and detect cycles</li>
+      <li>Find weighted shortest paths with Dijkstra's algorithm, and know its key restriction</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Both of your products are graph engines in disguise. A <strong>workflow definition</strong> is a directed graph of steps: which steps can run in parallel, which must wait, and whether someone has accidentally created a loop that will never finish. A <strong>rule set</strong> is a graph of facts and rules: rule B needs a value that rule A computes, so A must evaluate first, and a circular dependency must be rejected when the rules are <em>saved</em>, not discovered at 3 a.m. in production.</p>
+  <p>You also meet graphs in every architecture review: service call maps ("what breaks if the database is down?"), package dependency trees (<code>cargo tree</code> from chapter 0.2), permission hierarchies, network routes.</p>
+</div>
+
+<h2 id="intuition">Intuition first: a city map and a recipe</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li>A <strong>city map</strong> is a graph: junctions connected by roads, some one-way, each with a travel time. "How do I get from A to B fastest?" is a shortest-path question.</li>
+    <li>A <strong>recipe</strong> is a directed graph with no loops: you must chop before you fry, and preheat before you bake, but chopping and preheating can happen at the same time. Working out a valid order is a <em>topological sort</em>. A recipe that says "fry the sauce, which requires the finished dish" is a cycle: impossible to cook.</li>
+  </ul>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="vocabulary">Vocabulary</h3>
+<p>A <dfn data-term="graph" data-def="A set of vertices (nodes) connected by edges. Edges may be directed or undirected, weighted or unweighted.">graph</dfn> is a set of <dfn data-term="vertex" data-def="A node in a graph (plural: vertices).">vertices</dfn> (also called nodes) connected by <dfn data-term="edge" data-def="A connection between two vertices in a graph; may be directed (a → b) and may carry a weight.">edges</dfn>. Trees (chapter F5) are a special case: connected and with no cycles.</p>
+<ul>
+  <li><strong>Directed vs undirected:</strong> a one-way street (A → B) vs a two-way road (A — B). Dependencies are directed; "these services share a network" is undirected.</li>
+  <li><strong>Weighted:</strong> edges carry a number (latency, cost, distance).</li>
+  <li><strong>Path:</strong> a sequence of edges from one vertex to another. A <dfn data-term="cycle" data-def="A path that starts and ends at the same vertex. In a dependency graph, a cycle means no valid order exists.">cycle</dfn> is a path that returns to its start.</li>
+  <li><strong><dfn data-term="DAG" data-def="Directed acyclic graph: directed edges and no cycles. Every DAG has at least one topological order. Workflows and build systems are DAGs.">DAG</dfn></strong> (directed acyclic graph): directed, with no cycles. Workflows, build systems, spreadsheets and rule dependencies are all DAGs, or must be.</li>
+  <li><strong>Degree:</strong> the number of edges touching a vertex. In directed graphs this splits into in-degree (edges arriving) and out-degree (edges leaving).</li>
+  <li><strong>Sparse vs dense:</strong> most real graphs are <em>sparse</em>, each vertex connected to a few others rather than to all.</li>
+</ul>
+
+<h3 id="representation">Representing a graph</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Representation</th><th>How</th><th>Memory</th><th>"Is there an edge a→b?"</th><th>"Neighbours of a"</th></tr></thead>
+  <tbody>
+    <tr><td><dfn data-term="adjacency list" data-def="A graph representation storing, for each vertex, the list of its neighbours. O(V + E) memory; the default for sparse graphs.">Adjacency list</dfn></td><td><code>Vec&lt;Vec&lt;usize&gt;&gt;</code>: for each vertex, a list of neighbours</td><td>O(V + E)</td><td>O(degree)</td><td>O(degree): just read the list</td></tr>
+    <tr><td>Adjacency matrix</td><td>V × V grid of booleans (or weights)</td><td>O(V²)</td><td>O(1)</td><td>O(V): scan a row</td></tr>
+    <tr><td>Edge list</td><td><code>Vec&lt;(usize, usize)&gt;</code></td><td>O(E)</td><td>O(E)</td><td>O(E)</td></tr>
+  </tbody>
+  <caption>V = number of vertices, E = number of edges. For sparse graphs the adjacency list is the default. The lab measured a 1M-vertex, 5M-edge graph at <strong>51 MB</strong> as lists; a 1-bit-per-cell matrix would need <strong>125 GB</strong>.</caption>
+</table></div>
+<p>In Rust, vertices are usually just <strong>indices</strong> (<code>0..V</code>) into vectors. That's the arena pattern from chapters F3 and F5, with no pointers and no ownership puzzles. If your vertices have names, keep a <code>HashMap&lt;String, usize&gt;</code> from name to index alongside (Lab step 2 does this).</p>
+
+<h3 id="bfs-dfs">Breadth-first and depth-first search</h3>
+<p>Almost every graph algorithm is built on one of two ways to visit everything reachable from a start vertex:</p>
+<ul>
+  <li><dfn data-term="BFS" data-def="Breadth-first search: explore a graph in rings of increasing distance using a FIFO queue. Finds shortest paths in unweighted graphs. O(V + E).">Breadth-first search (BFS)</dfn> uses a <strong>queue</strong> (FIFO, chapter F3). It visits everything 1 hop away, then 2 hops, and so on, in expanding rings. So it finds <strong>shortest paths by number of edges</strong>.</li>
+  <li><dfn data-term="DFS" data-def="Depth-first search: follow one path as deep as possible before backtracking, using a stack (or recursion). Basis for cycle detection and topological sorting. O(V + E).">Depth-first search (DFS)</dfn> uses a <strong>stack</strong> (LIFO): follow one path as deep as it goes, then back up. It underlies cycle detection, topological sorting and maze solving.</li>
+</ul>
+<p>Both mark vertices as <em>seen</em> so that nothing is visited twice, which makes each run O(V + E): every vertex and edge handled once. Explore them interactively:</p>
+
+<figure class="visual" id="gx">
+  <span class="visual-tag">Interactive · BFS vs DFS explorer</span>
+  <div class="gx-controls">
+    <label>Algorithm <select id="gx-alg"><option value="bfs">BFS (queue)</option><option value="dfs">DFS (stack)</option></select></label>
+    <label>Start at <select id="gx-start"></select></label>
+  </div>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Graph with eight vertices A to H for exploring breadth-first and depth-first search" id="gx-svg"></svg>
+  <div class="stepper-controls">
+    <button type="button" id="gx-reset">⟲ Reset</button>
+    <button type="button" id="gx-play" class="primary">▶ Play</button>
+    <button type="button" id="gx-step">Step ▶</button>
+    <span class="stepper-count" id="gx-count"></span>
+  </div>
+  <div class="gx-state">
+    <div><strong id="gx-frontier-label">Queue (front → back)</strong><code id="gx-frontier"></code></div>
+    <div><strong>Visit order</strong><code id="gx-order"></code></div>
+  </div>
+  <div class="stepper-caption" id="gx-caption"></div>
+  <figcaption><strong>Figure 1.</strong> Orange = current vertex, amber = waiting in the queue/stack, teal = finished. With BFS from A, the small numbers show hop distance. Neighbours are considered in alphabetical order, exactly as the lab's Rust program does. From A it prints <code>BFS: A B C D E F G H</code> and <code>DFS: A B D E G F C H</code>.</figcaption>
+</figure>
+
+<h3 id="topo">Topological sort: ordering dependencies</h3>
+<p>Given a DAG of "must happen before" edges, a <dfn data-term="topological sort" data-def="An ordering of a DAG's vertices such that every edge a → b has a before b. Exists if and only if the graph has no cycle.">topological sort</dfn> lists the vertices so that every edge points forward. A valid order exists if and only if there's no cycle. <strong>Kahn's algorithm</strong> (1962) is the one to know, because it does three jobs at once:</p>
+<ol>
+  <li>Count each vertex's in-degree (how many prerequisites it has).</li>
+  <li>Every vertex with in-degree 0 is <em>ready</em>. Take the ready ones, and for each of their outgoing edges, decrement the target's in-degree. Targets that reach 0 become ready.</li>
+  <li>Repeat. If you run out of ready vertices before all are done, the leftovers are stuck on a <strong>cycle</strong> (or downstream of one).</li>
+</ol>
+<p>Process the ready set one batch at a time and you get <strong>layers</strong>: everything in a layer can run <em>in parallel</em>. That is exactly how a workflow engine schedules independent steps.</p>
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · Kahn's algorithm in layers</span>
+  <svg viewBox="0 0 720 270" role="img" aria-label="Topological sort of a rule dependency graph into parallel layers, then a cycle detected">
+    <defs>
+      <marker id="tp-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="tp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <line x1="165" y1="70" x2="191" y2="70" class="svg-line" marker-end="url(#tp-m)"/><line x1="165" y1="210" x2="191" y2="210" class="svg-line" marker-end="url(#tp-m)"/><line x1="345" y1="70" x2="371" y2="70" class="svg-line" marker-end="url(#tp-m)"/><line x1="345" y1="210" x2="371" y2="70" class="svg-line" marker-end="url(#tp-m)"/><line x1="345" y1="210" x2="371" y2="210" class="svg-line" marker-end="url(#tp-m)"/><line x1="525" y1="70" x2="551" y2="140" class="svg-line" marker-end="url(#tp-m)"/><line x1="525" y1="210" x2="551" y2="140" class="svg-line" marker-end="url(#tp-m)"/><g data-show="=1"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-amber"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-amber"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-box"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-box"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-box"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=2</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-box"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-box"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=2</text><text x="360" y="18" class="svg-title" text-anchor="middle">count prerequisites (in=); in=0 means ready</text></g><g data-show="=2"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-amber"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-amber"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-box"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=2</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-box"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-box"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=2</text><text x="360" y="18" class="svg-title" text-anchor="middle">layer 0 done: its targets' counts drop, layer 1 ready</text></g><g data-show="=3"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-amber"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-amber"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-box"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=2</text><text x="360" y="18" class="svg-title" text-anchor="middle">layer 1 done: layer 2 ready</text></g><g data-show="=4"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-amber"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=0</text><text x="360" y="18" class="svg-title" text-anchor="middle">layer 2 done: decision ready</text></g><g data-show="=5"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-teal"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=0</text><text x="360" y="18" class="svg-title" text-anchor="middle">all 7 steps ordered in 4 parallel layers</text></g><g data-show="=6"><rect x="15.0" y="50.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">load_customer</text><text x="161.0" y="42.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="15.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="90" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">load_orders</text><text x="161.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="195.0" y="50.0" width="150" height="40" rx="7" class="svg-red"/><text x="270" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">credit_score</text><text x="341.0" y="42.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="195.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="270" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">order_total</text><text x="341.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="375.0" y="50.0" width="150" height="40" rx="7" class="svg-red"/><text x="450" y="70" class="svg-mono" text-anchor="middle" style="font-size:12px">risk_rule</text><text x="521.0" y="42.0" class="svg-text-sm" text-anchor="end">in=1</text><rect x="375.0" y="190.0" width="150" height="40" rx="7" class="svg-teal"/><text x="450" y="210" class="svg-mono" text-anchor="middle" style="font-size:12px">discount_rule</text><text x="521.0" y="182.0" class="svg-text-sm" text-anchor="end">in=0</text><rect x="555.0" y="120.0" width="150" height="40" rx="7" class="svg-red"/><text x="630" y="140" class="svg-mono" text-anchor="middle" style="font-size:12px">decision</text><text x="701.0" y="112.0" class="svg-text-sm" text-anchor="end">in=1</text><text x="360" y="18" class="svg-title" text-anchor="middle">add decision → credit_score: three steps never reach in=0</text></g><path d="M630 120.0 C 630 10, 300 0, 290 48.0" class="svg-line-accent" stroke-dasharray="6 4" marker-end="url(#tp-a)" data-show="6"/>
+  </svg>
+  <ol class="stepper-captions">
+    <li>Each step shows <code>in=</code>, its number of unfinished prerequisites. Steps with <code>in=0</code> (amber) are ready right now: load_customer and load_orders. That's layer 0, and both can run in parallel.</li>
+    <li>When layer 0 finishes, every arrow leaving it decrements its target's count. credit_score and order_total reach 0: layer 1.</li>
+    <li>Layer 1 finishes. risk_rule had 2 prerequisites, and both are now done, so it and discount_rule become ready: layer 2.</li>
+    <li>Layer 2 finishes, and decision becomes ready.</li>
+    <li>Everything is ordered. The longest chain has 4 steps, so with enough workers the whole graph takes 4 "rounds", not 7.</li>
+    <li>Someone adds "credit_score needs decision" (dashed arrow). Now credit_score, risk_rule and decision wait on each other: their counts never reach 0, and the algorithm ends with them unprocessed (red). That's a cycle, caught before anything runs.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> The same graph and results as Lab step 2. Layers = maximum parallelism; leftovers = a cycle (or steps downstream of one).</figcaption>
+</figure>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="cycles">Cycle detection with DFS colours</h3>
+<p>Kahn tells you <em>that</em> there's a cycle and which steps are stuck. To show a user <em>the cycle itself</em> ("credit_score → risk_rule → decision → credit_score"), use DFS with three colours: <strong>white</strong> (not visited), <strong>grey</strong> (on the current path, entered but not finished) and <strong>black</strong> (finished). Meeting a <em>grey</em> vertex means you've walked back onto your own path: a cycle, which you can read off by following parent links. Exercise 1 implements it. Tarjan's 1972 paper extended these DFS ideas into linear-time algorithms for strongly connected components, the maximal groups of vertices that all reach each other, which is the general way to find every cycle at once.</p>
+
+<h3 id="dijkstra">Weighted shortest paths: Dijkstra</h3>
+<p>When edges have weights, the fewest hops isn't the cheapest route. <dfn data-term="Dijkstra's algorithm" data-def="Single-source shortest paths for graphs with non-negative edge weights: repeatedly settle the closest unsettled vertex using a min-heap. O((V + E) log V).">Dijkstra's algorithm</dfn> (1959) finds the cheapest path from a start vertex to all others, provided no weight is negative:</p>
+<ol>
+  <li>Distance to the start is 0; everything else is ∞.</li>
+  <li>Repeatedly take the <em>unsettled vertex with the smallest known distance</em> (a min-heap from chapter F5) and settle it. Its distance is now final.</li>
+  <li>For each edge out of it, see whether going through it gives a neighbour a shorter distance; if so, update and push.</li>
+</ol>
+<figure class="visual">
+  <span class="visual-tag">Diagram · service call latencies, shortest paths from the gateway</span>
+  <svg viewBox="0 0 720 280" role="img" aria-label="Weighted directed graph of five services with the shortest-path tree from the gateway highlighted">
+    <defs>
+      <marker id="dj-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="dj-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <!-- edges: non-tree dashed, tree accent -->
+    <line x1="140" y1="140" x2="282" y2="62" class="svg-line-accent" marker-end="url(#dj-a)"/><text x="200" y="88" class="svg-mono">4</text>
+    <line x1="140" y1="150" x2="390" y2="212" class="svg-line-dash" marker-end="url(#dj-m)"/><text x="250" y="200" class="svg-mono">15</text>
+    <line x1="320" y1="70" x2="410" y2="190" class="svg-line-accent" marker-end="url(#dj-a)"/><text x="372" y="122" class="svg-mono">3</text>
+    <line x1="340" y1="55" x2="530" y2="55" class="svg-line-dash" marker-end="url(#dj-m)"/><text x="430" y="44" class="svg-mono">10</text>
+    <line x1="440" y1="195" x2="545" y2="80" class="svg-line-accent" marker-end="url(#dj-a)"/><text x="500" y="150" class="svg-mono">2</text>
+    <line x1="590" y1="80" x2="635" y2="185" class="svg-line-accent" marker-end="url(#dj-a)"/><text x="622" y="128" class="svg-mono">5</text>
+    <line x1="460" y1="215" x2="608" y2="215" class="svg-line-dash" marker-end="url(#dj-m)"/><text x="530" y="236" class="svg-mono">12</text>
+    <!-- nodes -->
+    <g><rect x="40" y="122" width="100" height="44" rx="8" class="svg-accent"/><text x="90" y="138" class="svg-title" text-anchor="middle">gateway</text><text x="90" y="156" class="svg-text-sm" text-anchor="middle">0 ms</text></g>
+    <g><rect x="270" y="36" width="80" height="44" rx="8" class="svg-teal"/><text x="310" y="52" class="svg-title" text-anchor="middle">auth</text><text x="310" y="70" class="svg-text-sm" text-anchor="middle">4 ms</text></g>
+    <g><rect x="380" y="190" width="80" height="44" rx="8" class="svg-teal"/><text x="420" y="206" class="svg-title" text-anchor="middle">rules</text><text x="420" y="224" class="svg-text-sm" text-anchor="middle">7 ms</text></g>
+    <g><rect x="530" y="36" width="110" height="44" rx="8" class="svg-teal"/><text x="585" y="52" class="svg-title" text-anchor="middle">workflow</text><text x="585" y="70" class="svg-text-sm" text-anchor="middle">9 ms</text></g>
+    <g><rect x="600" y="190" width="80" height="44" rx="8" class="svg-teal"/><text x="640" y="206" class="svg-title" text-anchor="middle">db</text><text x="640" y="224" class="svg-text-sm" text-anchor="middle">14 ms</text></g>
+  </svg>
+  <figcaption><strong>Figure 3.</strong> Solid orange edges form the <em>shortest-path tree</em> Dijkstra found in Lab step 3. The "direct" gateway → rules link (15 ms) loses to gateway → auth → rules (4 + 3 = 7 ms), and db is cheapest at 14 ms via rules → workflow, not via the 12 ms rules → db edge (7 + 12 = 19). Hand-check it: every number agrees with the program's output.</figcaption>
+</figure>
+<p>With a binary heap, Dijkstra runs in O((V + E) log V). Its one hard rule: <strong>no negative weights</strong>. Settling the closest vertex assumes no later path can get cheaper, and a negative edge breaks that. For graphs with negative weights, the Bellman–Ford algorithm (O(V·E)) works and also detects negative cycles. For unweighted graphs, plain BFS is simpler and faster.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>The .NET base class library has no general graph type; teams roll their own adjacency lists or use a NuGet package. Rust is similar: the standard library gives you the building blocks (<code>Vec</code>, <code>VecDeque</code>, <code>BinaryHeap</code>, <code>HashMap</code>), and the widely used <a href="https://docs.rs/petgraph/latest/petgraph/"><code>petgraph</code></a> crate (version 0.8.3 on crates.io as of this writing, with over half a billion downloads) provides graph types plus <code>toposort</code>, <code>dijkstra</code>, strongly connected components and more. Lab step 5 uses it. Write the algorithm yourself once to understand it, then use the library in production.</p>
+</div>
+
+<details class="deep-dive"><summary>Deep dive: why recursion is the wrong tool for DFS on user-supplied graphs</summary><div class="body">
+  <p>Textbooks write DFS recursively. It's elegant, and every call frame remembers where it was. But each recursion level costs a stack frame (chapter F1), and the depth equals the longest path explored. A workflow or rule graph uploaded by a customer can be a chain of 100,000 steps. Recursive DFS on that is a stack overflow: a crash triggered by input, which is a denial-of-service vector.</p>
+  <p>The fix is mechanical. Replace the call stack with an explicit <code>Vec</code> used as a stack, as Lab step 1's <code>dfs</code> and Exercise 1's <code>find_cycle</code> do. The memory moves to the heap, where the limit is gigabytes, not megabytes, and the depth is bounded by your data size rather than by the thread's stack. For algorithms that need "post-order" (do something <em>after</em> all children finish, as the colour-based cycle check does), store <code>(vertex, next-neighbour-index)</code> pairs on the stack so you can resume each vertex where you left off.</p>
+  <p>Also validate graph size at the API boundary: cap the number of steps per workflow and rules per set. Linear-time algorithms are cheap, but unbounded input never is.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>Create a project (<code>cargo add petgraph</code> for step 5) with these programs in <code>src/bin/</code>, and run each with <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — BFS and DFS</h3>
+<pre data-playground data-title="src/bin/traverse.rs"><code class="language-rust">use std::collections::VecDeque;
+
+/// Undirected graph as an adjacency list: adj[v] = neighbours of v (sorted).
+fn build(n: usize, edges: &amp;[(usize, usize)]) -&gt; Vec&lt;Vec&lt;usize&gt;&gt; {
+    let mut adj = vec![Vec::new(); n];
+    for &amp;(a, b) in edges {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    for list in &amp;mut adj {
+        list.sort_unstable();
+    }
+    adj
+}
+
+/// Breadth-first search: visit in rings of increasing distance. Returns (order, distances).
+fn bfs(adj: &amp;[Vec&lt;usize&gt;], start: usize) -&gt; (Vec&lt;usize&gt;, Vec&lt;Option&lt;usize&gt;&gt;) {
+    let mut dist = vec![None; adj.len()];
+    let mut order = Vec::new();
+    let mut queue = VecDeque::new();
+    dist[start] = Some(0);
+    queue.push_back(start);
+    while let Some(v) = queue.pop_front() {
+        order.push(v);
+        for &amp;w in &amp;adj[v] {
+            if dist[w].is_none() {
+                dist[w] = Some(dist[v].unwrap() + 1);
+                queue.push_back(w);
+            }
+        }
+    }
+    (order, dist)
+}
+
+/// Depth-first search with an explicit stack (no recursion, so no stack-overflow risk).
+fn dfs(adj: &amp;[Vec&lt;usize&gt;], start: usize) -&gt; Vec&lt;usize&gt; {
+    let mut seen = vec![false; adj.len()];
+    let mut order = Vec::new();
+    let mut stack = vec![start];
+    while let Some(v) = stack.pop() {
+        if seen[v] {
+            continue;
+        }
+        seen[v] = true;
+        order.push(v);
+        for &amp;w in adj[v].iter().rev() {
+            if !seen[w] {
+                stack.push(w); // pushed in reverse so the smallest neighbour is explored first
+            }
+        }
+    }
+    order
+}
+
+fn main() {
+    let names = ["A", "B", "C", "D", "E", "F", "G", "H"];
+    // A-B, A-C, B-D, B-E, C-F, E-G, F-G, G-H
+    let adj = build(8, &amp;[(0, 1), (0, 2), (1, 3), (1, 4), (2, 5), (4, 6), (5, 6), (6, 7)]);
+    let (order, dist) = bfs(&amp;adj, 0);
+    let show = |v: &amp;[usize]| v.iter().map(|&amp;i| names[i]).collect::&lt;Vec&lt;_&gt;&gt;().join(" ");
+    println!("BFS from A: {}", show(&amp;order));
+    let d: Vec&lt;String&gt; = (0..8).map(|i| format!("{}={}", names[i], dist[i].unwrap())).collect();
+    println!("hops from A: {}", d.join(" "));
+    println!("DFS from A: {}", show(&amp;dfs(&amp;adj, 0)));
+}</code></pre>
+<pre class="output">BFS from A: A B C D E F G H
+hops from A: A=0 B=1 C=1 D=2 E=2 F=2 G=3 H=4
+DFS from A: A B D E G F C H</pre>
+<p>The two functions differ in essentially one line: <code>VecDeque::pop_front</code> (queue) vs <code>Vec::pop</code> (stack). BFS marks a vertex when it's <em>discovered</em>, so it's never queued twice. This DFS marks on <em>pop</em> and skips repeats, which reproduces the classic recursive visiting order.</p>
+
+<h3 id="lab-2">Step 2 — dependency layers and cycle detection (Kahn)</h3>
+<pre data-playground data-title="src/bin/depends.rs"><code class="language-rust">use std::collections::{HashMap, VecDeque};
+
+/// A directed graph of named steps; an edge a -&gt; b means "a must finish before b".
+struct Deps {
+    names: Vec&lt;String&gt;,
+    index: HashMap&lt;String, usize&gt;,
+    out: Vec&lt;Vec&lt;usize&gt;&gt;,
+}
+
+impl Deps {
+    fn new() -&gt; Deps {
+        Deps { names: Vec::new(), index: HashMap::new(), out: Vec::new() }
+    }
+
+    /// Map a name to a node index, creating the node on first use.
+    fn node(&amp;mut self, name: &amp;str) -&gt; usize {
+        if let Some(&amp;i) = self.index.get(name) {
+            return i;
+        }
+        let i = self.names.len();
+        self.names.push(name.to_string());
+        self.index.insert(name.to_string(), i);
+        self.out.push(Vec::new());
+        i
+    }
+
+    /// `step` needs `prerequisite` to finish first.
+    fn needs(&amp;mut self, step: &amp;str, prerequisite: &amp;str) {
+        let (s, p) = (self.node(step), self.node(prerequisite));
+        self.out[p].push(s);
+    }
+
+    /// Kahn's algorithm, grouped into layers: every step in a layer can run in parallel.
+    /// Returns Err(stuck steps) if there is a cycle.
+    fn layers(&amp;self) -&gt; Result&lt;Vec&lt;Vec&lt;&amp;str&gt;&gt;, Vec&lt;&amp;str&gt;&gt; {
+        let n = self.names.len();
+        let mut indegree = vec![0; n];
+        for targets in &amp;self.out {
+            for &amp;t in targets {
+                indegree[t] += 1;
+            }
+        }
+        let mut ready: VecDeque&lt;usize&gt; = (0..n).filter(|&amp;v| indegree[v] == 0).collect();
+        let mut layers = Vec::new();
+        let mut done = 0;
+        while !ready.is_empty() {
+            let mut layer: Vec&lt;usize&gt; = ready.drain(..).collect();
+            layer.sort_unstable_by(|a, b| self.names[*a].cmp(&amp;self.names[*b])); // deterministic output
+            for &amp;v in &amp;layer {
+                done += 1;
+                for &amp;w in &amp;self.out[v] {
+                    indegree[w] -= 1;
+                    if indegree[w] == 0 {
+                        ready.push_back(w);
+                    }
+                }
+            }
+            layers.push(layer.iter().map(|&amp;v| self.names[v].as_str()).collect());
+        }
+        if done == n {
+            Ok(layers)
+        } else {
+            Err((0..n).filter(|&amp;v| indegree[v] &gt; 0).map(|v| self.names[v].as_str()).collect())
+        }
+    }
+}
+
+fn main() {
+    let mut g = Deps::new();
+    g.needs("credit_score", "load_customer");
+    g.needs("order_total", "load_orders");
+    g.needs("risk_rule", "credit_score");
+    g.needs("risk_rule", "order_total");
+    g.needs("discount_rule", "order_total");
+    g.needs("decision", "risk_rule");
+    g.needs("decision", "discount_rule");
+
+    match g.layers() {
+        Ok(layers) =&gt; {
+            for (i, layer) in layers.iter().enumerate() {
+                println!("layer {i}: {}", layer.join(", "));
+            }
+        }
+        Err(stuck) =&gt; println!("cycle! stuck: {stuck:?}"),
+    }
+
+    println!("-- after adding: credit_score needs decision --");
+    g.needs("credit_score", "decision");
+    match g.layers() {
+        Ok(layers) =&gt; println!("{layers:?}"),
+        Err(stuck) =&gt; println!("cycle detected; these steps can never become ready: {}", stuck.join(", ")),
+    }
+}</code></pre>
+<pre class="output">layer 0: load_customer, load_orders
+layer 1: credit_score, order_total
+layer 2: discount_rule, risk_rule
+layer 3: decision
+-- after adding: credit_score needs decision --
+cycle detected; these steps can never become ready: credit_score, risk_rule, decision</pre>
+<p><code>Result</code> is Rust's "success or error" type (chapter 2.6): <code>Ok(layers)</code> or <code>Err(stuck)</code>, and <code>match</code> handles both. Notice the deliberate sort inside each layer. Iteration order must be deterministic for output, tests and replay, the lesson from chapter F4.</p>
+
+<h3 id="lab-3">Step 3 — Dijkstra</h3>
+<pre data-playground data-title="src/bin/dijkstra.rs"><code class="language-rust">use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+/// Shortest distances from `start` in a graph with non-negative edge weights.
+/// adj[v] = list of (neighbour, weight). Returns (distance, previous node) per node.
+fn dijkstra(adj: &amp;[Vec&lt;(usize, u64)&gt;], start: usize) -&gt; (Vec&lt;u64&gt;, Vec&lt;Option&lt;usize&gt;&gt;) {
+    let mut dist = vec![u64::MAX; adj.len()];
+    let mut prev = vec![None; adj.len()];
+    let mut heap = BinaryHeap::new(); // min-heap via Reverse (chapter F5)
+    dist[start] = 0;
+    heap.push(Reverse((0, start)));
+    while let Some(Reverse((d, v))) = heap.pop() {
+        if d &gt; dist[v] {
+            continue; // a stale entry: we already found a shorter way to v
+        }
+        for &amp;(w, weight) in &amp;adj[v] {
+            let nd = d + weight;
+            if nd &lt; dist[w] {
+                dist[w] = nd;
+                prev[w] = Some(v);
+                heap.push(Reverse((nd, w)));
+            }
+        }
+    }
+    (dist, prev)
+}
+
+fn main() {
+    // Services and network latency in ms between them (directed calls).
+    let names = ["gateway", "auth", "rules", "workflow", "db"];
+    let mut adj = vec![Vec::new(); names.len()];
+    let mut call = |a: usize, b: usize, ms: u64| adj[a].push((b, ms));
+    call(0, 1, 4);  // gateway -&gt; auth
+    call(0, 2, 15); // gateway -&gt; rules (slow link)
+    call(1, 2, 3);  // auth -&gt; rules
+    call(1, 3, 10); // auth -&gt; workflow
+    call(2, 3, 2);  // rules -&gt; workflow
+    call(3, 4, 5);  // workflow -&gt; db
+    call(2, 4, 12); // rules -&gt; db
+
+    let (dist, prev) = dijkstra(&amp;adj, 0);
+    for (i, name) in names.iter().enumerate() {
+        // Walk the `prev` links backwards to recover the path.
+        let mut path = vec![i];
+        while let Some(p) = prev[*path.last().unwrap()] {
+            path.push(p);
+        }
+        path.reverse();
+        let route: Vec&lt;&amp;str&gt; = path.iter().map(|&amp;v| names[v]).collect();
+        println!("{name:&gt;8}: {:&gt;2} ms via {}", dist[i], route.join(" -&gt; "));
+    }
+}</code></pre>
+<pre class="output"> gateway:  0 ms via gateway
+    auth:  4 ms via gateway -&gt; auth
+   rules:  7 ms via gateway -&gt; auth -&gt; rules
+workflow:  9 ms via gateway -&gt; auth -&gt; rules -&gt; workflow
+      db: 14 ms via gateway -&gt; auth -&gt; rules -&gt; workflow -&gt; db</pre>
+<p>The "stale entry" check is the standard trick for heaps without a decrease-key operation: push a vertex again whenever its distance improves, and ignore outdated copies when they pop. Rust's <code>BinaryHeap</code> has no decrease-key operation, so this is the idiomatic form.</p>
+
+<h3 id="lab-4">Step 4 — BFS at scale</h3>
+<pre data-title="src/bin/scale.rs"><code class="language-rust">use std::collections::VecDeque;
+use std::time::Instant;
+
+fn next_rand(s: &amp;mut u64) -&gt; u64 { *s ^= *s &lt;&lt; 13; *s ^= *s &gt;&gt; 7; *s ^= *s &lt;&lt; 17; *s }
+
+fn main() {
+    const V: usize = 1_000_000;
+    const E: usize = 5_000_000;
+    let mut seed = 11;
+    let mut adj: Vec&lt;Vec&lt;u32&gt;&gt; = vec![Vec::new(); V];
+    for _ in 0..E {
+        let a = (next_rand(&amp;mut seed) % V as u64) as usize;
+        let b = (next_rand(&amp;mut seed) % V as u64) as u32;
+        adj[a].push(b); // directed edge a -&gt; b
+    }
+    let list_bytes: usize = adj.iter().map(|l| l.capacity() * 4).sum::&lt;usize&gt;() + V * std::mem::size_of::&lt;Vec&lt;u32&gt;&gt;();
+    println!("adjacency list: {:.0} MB", list_bytes as f64 / 1e6);
+    println!("adjacency matrix (1 bit per cell) would need: {:.0} GB", (V as f64 * V as f64 / 8.0) / 1e9);
+
+    let start = Instant::now();
+    let mut seen = vec![false; V];
+    let mut queue = VecDeque::from([0u32]);
+    seen[0] = true;
+    let mut reached = 0;
+    while let Some(v) = queue.pop_front() {
+        reached += 1;
+        for &amp;w in &amp;adj[v as usize] {
+            if !seen[w as usize] {
+                seen[w as usize] = true;
+                queue.push_back(w);
+            }
+        }
+    }
+    println!("BFS reached {reached} of {V} vertices in {:.1} ms", start.elapsed().as_secs_f64() * 1e3);
+}</code></pre>
+<pre class="output">adjacency list: 51 MB
+adjacency matrix (1 bit per cell) would need: 125 GB
+BFS reached 993008 of 1000000 vertices in 50.5 ms</pre>
+<p>Linear time in practice: a million vertices and five million edges in about 50 ms (median of 3 runs: 48.8 / 50.5 / 58.8). Using <code>u32</code> instead of <code>usize</code> for vertex IDs halves the edge storage, a common trick once you know your graph has fewer than 4 billion vertices. Not every vertex is reached: with random directed edges, some vertices have no path in from vertex 0.</p>
+
+<h3 id="lab-5">Step 5 — the same job with petgraph</h3>
+<pre data-title="src/bin/with_petgraph.rs"><code class="language-rust">use petgraph::algo::toposort;
+use petgraph::graph::DiGraph;
+
+fn main() {
+    let mut g = DiGraph::&lt;&amp;str, ()&gt;::new();
+    let customer = g.add_node("load_customer");
+    let credit = g.add_node("credit_score");
+    let decision = g.add_node("decision");
+    g.add_edge(customer, credit, ());
+    g.add_edge(credit, decision, ());
+
+    match toposort(&amp;g, None) {
+        Ok(order) =&gt; println!("order: {:?}", order.iter().map(|&amp;n| g[n]).collect::&lt;Vec&lt;_&gt;&gt;()),
+        Err(cycle) =&gt; println!("cycle at {}", g[cycle.node_id()]),
+    }
+
+    g.add_edge(decision, credit, ()); // introduce a cycle
+    match toposort(&amp;g, None) {
+        Ok(order) =&gt; println!("order: {:?}", order.iter().map(|&amp;n| g[n]).collect::&lt;Vec&lt;_&gt;&gt;()),
+        Err(cycle) =&gt; println!("cycle detected involving: {}", g[cycle.node_id()]),
+    }
+}</code></pre>
+<pre class="output">order: ["load_customer", "credit_score", "decision"]
+cycle detected involving: decision</pre>
+<p>Tested with petgraph 0.8.3. <code>DiGraph&lt;N, E&gt;</code> stores node and edge data in vectors indexed by <code>NodeIndex</code>, the same arena idea as your hand-written versions.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as unit tests (3 passed) and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — show the user the cycle <span class="difficulty">★★★ product skill</span></div>
+  <p>A rule-set editor must reject circular dependencies <em>and</em> show the loop. Write <code>find_cycle(adj) -&gt; Option&lt;Vec&lt;usize&gt;&gt;</code> that returns one cycle as a node list with the first node repeated at the end, for example <code>[1, 2, 3, 1]</code>. It must not use recursion.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Find one cycle in a directed graph, returned as a list of nodes
+/// (first node repeated at the end), or None if the graph is acyclic.
+/// Uses DFS with three colours: 0 = unvisited, 1 = on the current path, 2 = finished.
+pub fn find_cycle(adj: &amp;[Vec&lt;usize&gt;]) -&gt; Option&lt;Vec&lt;usize&gt;&gt; {
+    let n = adj.len();
+    let mut colour = vec![0u8; n];
+    let mut parent = vec![usize::MAX; n];
+    for root in 0..n {
+        if colour[root] != 0 {
+            continue;
+        }
+        // Explicit stack of (node, index of next neighbour to try): iterative DFS.
+        let mut stack = vec![(root, 0usize)];
+        colour[root] = 1;
+        while let Some(top) = stack.last_mut() {
+            let v = top.0;
+            if top.1 &lt; adj[v].len() {
+                let w = adj[v][top.1];
+                top.1 += 1; // next time, try the following neighbour
+                if colour[w] == 0 {
+                    colour[w] = 1;
+                    parent[w] = v;
+                    stack.push((w, 0));
+                } else if colour[w] == 1 {
+                    // w is on the current path: walk parents back from v to w.
+                    let mut cycle = vec![w];
+                    let mut x = v;
+                    while x != w {
+                        cycle.push(x);
+                        x = parent[x];
+                    }
+                    cycle.push(w);
+                    cycle.reverse();
+                    return Some(cycle);
+                }
+            } else {
+                colour[v] = 2; // all neighbours done
+                stack.pop();
+            }
+        }
+    }
+    None
+}
+
+fn main() {
+    let cyclic = vec![vec![1], vec![2], vec![3], vec![1]]; // 0 -&gt; 1 -&gt; 2 -&gt; 3 -&gt; 1
+    let dag = vec![vec![1, 2], vec![3], vec![3], vec![]];
+    println!("{:?}", find_cycle(&amp;cyclic)); // Some([1, 2, 3, 1])
+    println!("{:?}", find_cycle(&amp;dag));    // None
+}</code></pre>
+  <p>The stack holds <code>(vertex, next neighbour to try)</code>, so each vertex resumes where it left off: post-order without recursion. Meeting a grey (1) vertex means we've looped back onto our own path. Map the indices back to names in the error message: "credit_score → risk_rule → decision → credit_score".</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — blast radius <span class="difficulty">★★☆ consultant skill</span></div>
+  <p>Given which services call which (<code>depends_on[a]</code> = services a calls), list every service affected, directly or transitively, if service <code>failed</code> goes down.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::VecDeque;
+
+/// Everything that (directly or transitively) depends on `failed`.
+/// `depends_on[a]` lists what a calls; we search the reversed edges from `failed`.
+pub fn impacted_by(depends_on: &amp;[Vec&lt;usize&gt;], failed: usize) -&gt; Vec&lt;usize&gt; {
+    let n = depends_on.len();
+    let mut callers = vec![Vec::new(); n]; // reverse the edges once: O(V + E)
+    for (a, targets) in depends_on.iter().enumerate() {
+        for &amp;b in targets {
+            callers[b].push(a);
+        }
+    }
+    let mut seen = vec![false; n];
+    let mut queue = VecDeque::from([failed]);
+    seen[failed] = true;
+    let mut out = Vec::new();
+    while let Some(v) = queue.pop_front() {
+        for &amp;c in &amp;callers[v] {
+            if !seen[c] {
+                seen[c] = true;
+                out.push(c);
+                queue.push_back(c);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+fn main() {
+    let names = ["gateway", "auth", "rules", "db", "reports"];
+    // gateway -&gt; auth -&gt; db ; gateway -&gt; rules -&gt; db ; reports -&gt; rules
+    let deps = vec![vec![1, 2], vec![3], vec![3], vec![], vec![2]];
+    let hit: Vec&lt;&amp;str&gt; = impacted_by(&amp;deps, 2).iter().map(|&amp;i| names[i]).collect();
+    println!("if rules fails: {hit:?}"); // ["gateway", "reports"]
+}</code></pre>
+  <p>The key move is <strong>reversing the edges</strong>: "who calls X" is a search along reversed "X calls" edges. BFS also tells you each service's distance from the failure, which is useful for ordering an incident's impact list.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — isolated groups <span class="difficulty">★☆☆</span></div>
+  <p>Count the connected components of an undirected graph (groups of vertices reachable from each other). Example: 6 vertices with edges 0–1, 1–2, 3–4 have 3 groups: {0,1,2}, {3,4}, {5}.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::VecDeque;
+
+/// Number of connected components in an undirected graph.
+pub fn components(n: usize, edges: &amp;[(usize, usize)]) -&gt; usize {
+    let mut adj = vec![Vec::new(); n];
+    for &amp;(a, b) in edges {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let mut seen = vec![false; n];
+    let mut count = 0;
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        count += 1; // a new, untouched group
+        let mut queue = VecDeque::from([start]);
+        seen[start] = true;
+        while let Some(v) = queue.pop_front() {
+            for &amp;w in &amp;adj[v] {
+                if !seen[w] {
+                    seen[w] = true;
+                    queue.push_back(w);
+                }
+            }
+        }
+    }
+    count
+}
+
+fn main() {
+    println!("{}", components(6, &amp;[(0, 1), (1, 2), (3, 4)])); // 3
+}</code></pre>
+  <p>Each BFS from an unseen vertex floods exactly one component. Still O(V + E) in total, because <code>seen</code> stops any vertex being processed twice. Practical uses: finding which tenants' data are entangled, or which workflow steps can be deployed independently.</p>
+  </details>
+</div>
+
+<h2 id="comparison">Which algorithm for which question?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Question</th><th>Algorithm</th><th>Cost</th></tr></thead>
+  <tbody>
+    <tr><td>What can I reach from X? / Is there a path?</td><td>BFS or DFS</td><td>O(V + E)</td></tr>
+    <tr><td>Fewest hops from X (unweighted)?</td><td>BFS</td><td>O(V + E)</td></tr>
+    <tr><td>In what order can these dependencies run? Which in parallel?</td><td>Kahn's topological sort (by layers)</td><td>O(V + E)</td></tr>
+    <tr><td>Is there a cycle, and what is it?</td><td>DFS with colours (or Kahn for "which are stuck")</td><td>O(V + E)</td></tr>
+    <tr><td>Cheapest route with non-negative weights?</td><td>Dijkstra with a min-heap</td><td>O((V + E) log V)</td></tr>
+    <tr><td>Cheapest route with negative weights?</td><td>Bellman–Ford</td><td>O(V · E)</td></tr>
+    <tr><td>Which groups are mutually reachable (directed)?</td><td>Strongly connected components (Tarjan)</td><td>O(V + E)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Forgetting the "seen" set</div>
+  <p>Without it, any cycle makes BFS or DFS loop forever, and even acyclic graphs with shared descendants get revisited exponentially often. Mark vertices the moment they're discovered (BFS) or entered (DFS).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Recursive DFS on input-sized graphs</div>
+  <p>One long chain in a customer's workflow and the thread's stack overflows (deep dive). Use an explicit stack.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Dijkstra with negative weights</div>
+  <p>It silently gives wrong answers, with no error. Use Bellman–Ford, or redesign the weights.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ An adjacency matrix for a big sparse graph</div>
+  <p>O(V²) memory: 125 GB at a million vertices, versus 51 MB for lists. Matrices are only right for small or genuinely dense graphs.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Non-deterministic topological orders</div>
+  <p>Many orders are usually valid. If you pick among ready steps by iterating a <code>HashMap</code>, the order changes per run, which breaks replay and makes logs hard to compare. Sort ready steps by a stable key, as Lab step 2 does.</p></div>
+
+<h2 id="real-world">Real-world view: graphs in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Workflow definitions</strong> are validated as DAGs when <em>saved</em>: run Kahn, and if there's a cycle, report it with Exercise 1's path. At run time, the layers give the steps that can run in parallel, and in-degree counting tells the engine when a step's last prerequisite finished, which is what triggers it (chapter 10.3).</li>
+    <li><strong>Rule dependencies:</strong> when rules derive facts that other rules consume, the engine orders evaluation topologically and rejects cycles. Some rule styles (forward chaining, Rete) <em>do</em> allow recursion through facts. That's a deliberate design choice you'll revisit in chapter 9.1.</li>
+    <li><strong>Incremental re-evaluation:</strong> when one fact changes, only rules reachable from it in the dependency graph need re-checking: a BFS from the changed vertex. This is the idea behind Rete's efficiency, and behind spreadsheet recalculation.</li>
+    <li><strong>Operations:</strong> blast-radius analysis (Exercise 2), deployment ordering (topological), and detecting dependency cycles between microservices in architecture reviews.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F6">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which data structure makes BFS "breadth-first"?</div>
+    <ol class="options">
+      <li data-key="a">A stack</li><li data-key="b">A FIFO queue</li><li data-key="c">A min-heap</li><li data-key="d">A hash map</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">A stack gives DFS.</p>
+      <p data-for="b">Correct. First discovered, first explored, which produces expanding rings.</p>
+      <p data-for="c">That's Dijkstra (ordered by distance).</p>
+      <p data-for="d">A hash map may track "seen", but doesn't decide the order.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A customer uploads a workflow where step X waits for Y, Y waits for Z and Z waits for X. Kahn's algorithm runs. What happens?</div>
+    <ol class="options">
+      <li data-key="a">It loops forever</li>
+      <li data-key="b">It outputs X, Y, Z in some order</li>
+      <li data-key="c">It crashes with a stack overflow</li>
+      <li data-key="d">None of X, Y, Z ever reaches in-degree 0, so the algorithm stops with them unprocessed, and you report a cycle</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It terminates when the ready set is empty.</p>
+      <p data-for="b">No valid order exists.</p>
+      <p data-for="c">Kahn is iterative.</p>
+      <p data-for="d">Correct. Exactly Lab step 2's second output.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In Lab step 2, why are <code>load_customer</code> and <code>load_orders</code> in the same layer?</div>
+    <ol class="options">
+      <li data-key="a">Both have no prerequisites (in-degree 0), so neither depends on the other, and they can run in parallel</li>
+      <li data-key="b">They're alphabetically adjacent</li>
+      <li data-key="c">They were added first</li>
+      <li data-key="d">They have the same number of dependents</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct.</p>
+      <p data-for="b">Alphabetical order only sorts <em>within</em> a layer.</p>
+      <p data-for="c">Insertion order doesn't define layers.</p>
+      <p data-for="d">Dependents don't matter; prerequisites do.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does Dijkstra require non-negative edge weights?</div>
+    <ol class="options">
+      <li data-key="a">Heaps can't store negative numbers</li>
+      <li data-key="b">It's a performance optimisation only</li>
+      <li data-key="c">It finalises the closest unsettled vertex, assuming no later path can get cheaper, which a negative edge could violate</li>
+      <li data-key="d">Negative weights cause integer overflow</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Heaps handle any ordered values.</p>
+      <p data-for="b">It's about correctness.</p>
+      <p data-for="c">Correct. Use Bellman–Ford for negative weights.</p>
+      <p data-for="d">Not the reason.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">A social graph has 50 million users and about 100 friends each. Which representation?</div>
+    <ol class="options">
+      <li data-key="a">Adjacency matrix: O(1) edge checks</li>
+      <li data-key="b">Adjacency lists: O(V + E) memory (about 5 billion edges), versus O(V²) = 2.5 quadrillion cells for a matrix</li>
+      <li data-key="c">Edge list only</li>
+      <li data-key="d">A single <code>HashMap&lt;(u64,u64), bool&gt;</code> of all pairs of users</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Fast checks are useless if the matrix can't fit in memory.</p>
+      <p data-for="b">Correct. Sparse graph, so lists.</p>
+      <p data-for="c">Finding neighbours would be O(E) per vertex.</p>
+      <p data-for="d">Storing every pair is the matrix again.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your cycle checker uses recursive DFS. A customer uploads a 200,000-step linear workflow and the validation service crashes. Root cause and fix?</div>
+    <ol class="options">
+      <li data-key="a">The graph has a cycle; reject it</li>
+      <li data-key="b">BFS would also crash</li>
+      <li data-key="c">Increase server memory</li>
+      <li data-key="d">Recursion depth equals path length, so 200,000 frames overflow the thread stack. Use an explicit heap-allocated stack (and cap workflow size)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">A linear chain has no cycle.</p>
+      <p data-for="b">BFS uses a heap-allocated queue; no recursion.</p>
+      <p data-for="c">Heap memory isn't the limit; stack size is.</p>
+      <p data-for="d">Correct. See the deep dive.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">To find everything affected by a service failing, given "A calls B" edges, you should…</div>
+    <ol class="options">
+      <li data-key="a">Search from the failed service along <em>reversed</em> edges (who calls it, who calls them…)</li>
+      <li data-key="b">Search along the original edges from the failed service</li>
+      <li data-key="c">Run Dijkstra</li>
+      <li data-key="d">Topologically sort the whole graph</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Exercise 2.</p>
+      <p data-for="b">That finds what the failed service <em>calls</em>, not who depends on it.</p>
+      <p data-for="c">There are no weights to minimise here.</p>
+      <p data-for="d">Ordering doesn't answer reachability.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">BFS and DFS both run in O(V + E). What guarantees that?</div>
+    <ol class="options">
+      <li data-key="a">The graph being a tree</li>
+      <li data-key="b">Using a hash map for the adjacency list</li>
+      <li data-key="c">Marking vertices as seen, so each vertex is processed once and each edge examined a constant number of times</li>
+      <li data-key="d">Sorting the neighbours</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">They work on any graph.</p>
+      <p data-for="b">Vectors work fine.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d">Sorting only fixes the order; it doesn't affect the bound.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Graphs are vertices plus edges (directed or not, weighted or not). DAGs, with no cycles, model dependencies, workflows and rule evaluation order.</li>
+  <li>Use adjacency lists (<code>Vec&lt;Vec&lt;usize&gt;&gt;</code>, vertices as indices) for sparse graphs: measured 51 MB vs 125 GB for a matrix at 1M vertices.</li>
+  <li>BFS (queue) explores in rings and gives fewest-hop paths; DFS (stack) dives deep and underlies cycle detection. Both are O(V + E). Use explicit stacks, not recursion, for input-sized graphs.</li>
+  <li>Kahn's topological sort orders dependencies, groups them into parallel layers, and reveals cycles (stuck vertices). DFS colours recover the actual cycle to show the user.</li>
+  <li>Dijkstra plus a min-heap finds cheapest paths with non-negative weights in O((V + E) log V). Use <code>petgraph</code> in production once you understand the algorithms.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">graph</li><li class="chip">vertex</li><li class="chip">edge</li><li class="chip">cycle</li><li class="chip">DAG</li>
+  <li class="chip">adjacency list</li><li class="chip">BFS</li><li class="chip">DFS</li><li class="chip">topological sort</li><li class="chip">Dijkstra's algorithm</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-11.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://docs.rs/petgraph/latest/petgraph/">petgraph documentation</a><span class="why">Graph types and ready-made algorithms (toposort, dijkstra, SCCs) for production use.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1007/BF01386390">E. W. Dijkstra — “A note on two problems in connexion with graphs”, Numerische Mathematik 1, 1959</a><span class="why">The original shortest-path algorithm: famously short.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/368996.369025">A. B. Kahn — “Topological sorting of large networks”, Communications of the ACM 5(11), 1962</a><span class="why">The in-degree algorithm used in Lab step 2.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1137/0201010">R. Tarjan — “Depth-First Search and Linear Graph Algorithms”, SIAM Journal on Computing 1(2), 1972</a><span class="why">DFS as the basis of linear-time graph algorithms, including strongly connected components.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=oFVYVzlvk9c">“9. Breadth-First Search” — MIT OpenCourseWare</a>, <a href="https://www.youtube.com/watch?v=IBfWDYSffUU">“10. Depth-First Search”</a>, <a href="https://www.youtube.com/watch?v=NSHizBK9JD8">“13. Dijkstra”</a><span class="why">MIT 6.006 lectures matching this chapter's three main algorithms. Lecture 10 also covers topological sort and cycle detection.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- BFS / DFS explorer ----------
+  var names = ["A","B","C","D","E","F","G","H"];
+  var edges = [[0,1],[0,2],[1,3],[1,4],[2,5],[4,6],[5,6],[6,7]];
+  var pos = [[90,150],[230,70],[230,230],[380,40],[380,140],[380,250],[530,190],[650,190]];
+  var adj = names.map(function () { return []; });
+  edges.forEach(function (e) { adj[e[0]].push(e[1]); adj[e[1]].push(e[0]); });
+  adj.forEach(function (l) { l.sort(function (a, b) { return a - b; }); });
+
+  var NS = "http://www.w3.org/2000/svg", svg = document.getElementById("gx-svg");
+  function mk(tag, attrs, text) { var n = document.createElementNS(NS, tag); for (var k in attrs) n.setAttribute(k, attrs[k]); if (text !== undefined) n.textContent = text; return n; }
+  edges.forEach(function (e) { svg.appendChild(mk("line", { x1: pos[e[0]][0], y1: pos[e[0]][1], x2: pos[e[1]][0], y2: pos[e[1]][1], "class": "svg-line" })); });
+  var circles = [], dists = [];
+  names.forEach(function (nm, i) {
+    var c = mk("circle", { cx: pos[i][0], cy: pos[i][1], r: 24, "class": "gx-node gx-unseen" });
+    svg.appendChild(c); circles.push(c);
+    svg.appendChild(mk("text", { x: pos[i][0], y: pos[i][1], "text-anchor": "middle", "class": "gx-label" }, nm));
+    var d = mk("text", { x: pos[i][0] + 30, y: pos[i][1] - 24, "class": "gx-dist" }, ""); svg.appendChild(d); dists.push(d);
+  });
+
+  var algSel = document.getElementById("gx-alg"), startSel = document.getElementById("gx-start");
+  names.forEach(function (nm, i) { var o = document.createElement("option"); o.value = i; o.textContent = nm; startSel.appendChild(o); });
+
+  // Precompute a list of states, mirroring the Rust programs exactly.
+  function run(alg, s) {
+    var states = [], seen = names.map(function () { return false; }), dist = names.map(function () { return null; });
+    var order = [], frontier = [s];
+    if (alg === "bfs") { seen[s] = true; dist[s] = 0; }
+    states.push({ cur: null, frontier: frontier.slice(), order: [], dist: dist.slice(), done: [], msg: alg === "bfs" ? "Start: put " + names[s] + " in the queue and mark it seen." : "Start: push " + names[s] + " on the stack." });
+    while (frontier.length) {
+      var v = alg === "bfs" ? frontier.shift() : frontier.pop();
+      if (alg === "dfs") { if (seen[v]) { states.push({ cur: null, frontier: frontier.slice(), order: order.slice(), dist: dist.slice(), done: order.slice(), msg: "Pop " + names[v] + ": already visited, skip it." }); continue; } seen[v] = true; }
+      order.push(v);
+      var added = [];
+      if (alg === "bfs") {
+        adj[v].forEach(function (w) { if (!seen[w]) { seen[w] = true; dist[w] = dist[v] + 1; frontier.push(w); added.push(names[w]); } });
+      } else {
+        adj[v].slice().reverse().forEach(function (w) { if (!seen[w]) { frontier.push(w); added.push(names[w]); } });
+      }
+      var verb = alg === "bfs" ? "Dequeue " : "Pop ";
+      states.push({ cur: v, frontier: frontier.slice(), order: order.slice(), dist: dist.slice(), done: order.slice(0, -1),
+        msg: verb + names[v] + " and visit it. " + (added.length ? (alg === "bfs" ? "Enqueue unseen neighbours: " : "Push unvisited neighbours (reverse order, so the smallest is on top): ") + added.join(", ") + "." : "No new neighbours.") });
+    }
+    states.push({ cur: null, frontier: [], order: order.slice(), dist: dist.slice(), done: order.slice(), msg: (alg === "bfs" ? "Queue" : "Stack") + " empty: every reachable vertex visited. Order: " + order.map(function (i) { return names[i]; }).join(" ") + "." });
+    return states;
+  }
+
+  var states = [], k = 0, timer = null;
+  var playBtn = document.getElementById("gx-play");
+  function render() {
+    var st = states[k], alg = algSel.value;
+    circles.forEach(function (c, i) {
+      var cls = "gx-unseen";
+      if (st.done.indexOf(i) >= 0) cls = "gx-done";
+      if (st.frontier.indexOf(i) >= 0) cls = "gx-frontier";
+      if (st.cur === i) cls = "gx-current";
+      c.setAttribute("class", "gx-node " + cls);
+      dists[i].textContent = alg === "bfs" && st.dist[i] !== null ? "d=" + st.dist[i] : "";
+    });
+    document.getElementById("gx-frontier-label").textContent = alg === "bfs" ? "Queue (front → back)" : "Stack (bottom → top)";
+    document.getElementById("gx-frontier").textContent = st.frontier.length ? st.frontier.map(function (i) { return names[i]; }).join("  ") : "(empty)";
+    document.getElementById("gx-order").textContent = st.order.length ? st.order.map(function (i) { return names[i]; }).join(" ") : "—";
+    document.getElementById("gx-caption").textContent = st.msg;
+    document.getElementById("gx-count").textContent = (k + 1) + " / " + states.length;
+    document.getElementById("gx-step").disabled = k >= states.length - 1;
+  }
+  function stop() { clearInterval(timer); timer = null; playBtn.textContent = "▶ Play"; }
+  function reset() { stop(); states = run(algSel.value, +startSel.value); k = 0; render(); }
+  document.getElementById("gx-step").onclick = function () { stop(); if (k < states.length - 1) { k++; render(); } };
+  document.getElementById("gx-reset").onclick = reset;
+  playBtn.onclick = function () {
+    if (timer) { stop(); return; }
+    if (k >= states.length - 1) reset();
+    playBtn.textContent = "❚❚ Pause";
+    timer = setInterval(function () { if (k < states.length - 1) { k++; render(); } else stop(); }, 1300);
+  };
+  algSel.onchange = reset; startSel.onchange = reset;
+  reset();
+  window.__gx = { run: run, names: names }; // exposed for automated checks
+
+});
+</script>
+</body>
+</html>

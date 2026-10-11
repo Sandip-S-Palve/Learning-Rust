@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F7 Core algorithms and techniques</title>
+<meta name="description" content="Recursion, divide and conquer, sorting (and what Rust and .NET really use), binary search, greedy algorithms and dynamic programming — with interactive visualisers and measured results.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .sv-controls, .dp-controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 8px; font-size: .9rem; }
+  .sv-controls select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .sv-bars { display: flex; align-items: flex-end; gap: 4px; height: 190px; padding: 6px 4px 0; border-bottom: 1px solid var(--border); }
+  .sv-bar { flex: 1; background: var(--teal); border-radius: 3px 3px 0 0; position: relative; transition: height .2s; min-width: 6px; }
+  .sv-bar.cmp { background: var(--amber); }
+  .sv-bar.swap { background: var(--accent); }
+  .sv-bar.done { background: var(--green); }
+  .sv-bar span { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font: 600 10px var(--font-mono); color: #fff; }
+  .sv-stats { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; font: .85rem var(--font-mono); color: var(--muted); }
+  .dp-wrap { overflow-x: auto; }
+  table.dp { border-collapse: collapse; margin: 4px auto; font: 14px var(--font-mono); width: auto; }
+  table.dp td, table.dp th { width: 36px; height: 32px; text-align: center; border: 1px solid var(--border); padding: 0; }
+  table.dp th { background: var(--surface-2); font-weight: 700; }
+  table.dp td.filled { background: var(--surface); }
+  table.dp td.current { background: var(--accent); color: #fff; font-weight: 700; }
+  table.dp td.source { background: var(--amber-soft); }
+  table.dp td.answer { background: var(--green-soft); color: var(--green); font-weight: 700; outline: 2px solid var(--green); }
+</style>
+</head>
+<body data-chapter="F7">
+<article class="content">
+<h1>Core algorithms and techniques</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Write correct recursive solutions (base case + recursive case) and know when to avoid recursion</li>
+      <li>Apply divide and conquer, and read its cost from a recurrence</li>
+      <li>Compare insertion sort, merge sort and quicksort; explain stability; and know what Rust and .NET actually ship</li>
+      <li>Use binary search, including Rust's <code>partition_point</code>, to search monotonic data</li>
+      <li>Recognise when a greedy choice is safe and when you need dynamic programming, and implement both</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Chapters F2–F6 gave you the data structures. This chapter gives you the <em>techniques</em> that recur in every system you'll design: divide a problem in half, pick the locally best option, or remember answers you've already computed. They show up directly in your products. A rule editor suggests "did you mean <code>credit_score</code>?" using <strong>edit distance</strong>, a dynamic-programming algorithm. The workflow engine merges overlapping maintenance windows with <strong>sort-then-sweep</strong>. An incident review finds the first bad deploy with <strong>binary search</strong>.</p>
+  <p>You'll also settle a question every .NET developer has wondered about: what sort does my platform actually use, and is it stable? The answers differ between Rust and .NET, and that difference has caused real bugs in ported code.</p>
+</div>
+
+<h2 id="intuition">Intuition first: three ways to sort a deck of cards</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong>Insertion sort</strong> is how you sort a hand of cards: pick up each new card and slide it into place among the ones you already hold. Great for a handful of cards, or a hand that's almost sorted. Painful for a whole deck.</li>
+    <li><strong>Merge sort</strong> is a team effort: split the deck in half, give each half to a friend to sort (they split theirs again…), then merge the two sorted piles by repeatedly taking the smaller top card. That's <em>divide and conquer</em>.</li>
+    <li><strong>Quicksort</strong> picks one card as a <em>pivot</em> and throws every card onto a "lower" or "higher" pile, then sorts each pile the same way. Fast on average, but if your pivot is always the smallest card (say, on an already-sorted deck), one pile is empty every time and you've gained nothing.</li>
+  </ul>
+</div>
+
+<figure class="visual" id="sv">
+  <span class="visual-tag">Interactive · sorting visualiser</span>
+  <div class="sv-controls">
+    <label>Algorithm <select id="sv-alg"><option value="insertion">Insertion sort</option><option value="merge">Merge sort</option><option value="quick">Quicksort (first element as pivot)</option></select></label>
+    <label>Input <select id="sv-input"><option value="random">Random</option><option value="sorted">Already sorted</option><option value="reversed">Reversed</option></select></label>
+  </div>
+  <div class="sv-bars" id="sv-bars"></div>
+  <div class="stepper-controls">
+    <button type="button" id="sv-reset">⟲ Reset</button>
+    <button type="button" id="sv-play" class="primary">▶ Play</button>
+    <button type="button" id="sv-step">Step ▶</button>
+    <span class="stepper-count" id="sv-count"></span>
+  </div>
+  <div class="sv-stats"><span id="sv-cmp">comparisons: 0</span><span id="sv-wr">writes: 0</span></div>
+  <div class="stepper-caption" id="sv-caption"></div>
+  <figcaption><strong>Figure 1.</strong> 16 values. Amber = being compared, orange = being moved, green = sorted. Try quicksort on <em>Already sorted</em>: it makes 120 comparisons, the maximum n(n−1)/2, while merge sort needs 32 and insertion sort just 15 (one per element). On <em>Random</em> input the counts are 88 (insertion), 45 (merge) and 44 (quicksort): quicksort is only bad when its pivot choice keeps failing.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="recursion">Recursion</h3>
+<p>A <dfn data-term="recursion" data-def="A function that solves a problem by calling itself on smaller instances, stopping at a base case.">recursive</dfn> function solves a problem by calling itself on a smaller version of the same problem. Every correct recursion has two parts:</p>
+<ol>
+  <li>A <dfn data-term="base case" data-def="The input small enough to answer directly in a recursive function, which stops the recursion.">base case</dfn>, small enough to answer directly ("a list of 0 or 1 items is already sorted").</li>
+  <li>A <strong>recursive case</strong> that makes progress towards the base case ("sort each half").</li>
+</ol>
+<p>Each call is a stack frame (chapter F1), so recursion depth is limited, and input-controlled depth is a crash risk (chapter F6's deep dive). Recursion is the right way to <em>think</em> about many problems. Whether to <em>implement</em> it recursively depends on how deep it can go: merge sort's depth is log₂ n (20 for a million items), which is perfectly safe; walking a customer-supplied chain is not.</p>
+
+<h3 id="divide-conquer">Divide and conquer</h3>
+<p><dfn data-term="divide and conquer" data-def="Split a problem into independent subproblems, solve them (often recursively), and combine the results; e.g. merge sort.">Divide and conquer</dfn> splits a problem into independent parts, solves each (usually recursively), and combines the answers. <dfn data-term="merge sort" data-def="Divide-and-conquer sort: sort each half recursively, then merge the two sorted halves. O(n log n) always, stable, O(n) extra memory.">Merge sort</dfn> is the classic example: split in half, sort both halves, then <em>merge</em> by repeatedly taking the smaller front element. Its cost obeys a recurrence:</p>
+$$ T(n) = 2\,T\!\left(\tfrac{n}{2}\right) + c\,n \quad\Longrightarrow\quad T(n) = O(n \log n) $$
+<p>Why: there are \(\log_2 n\) levels of halving, and the merges at each level touch all n elements once, so n work per level. Independent halves are also why divide and conquer parallelises well: give each half to a different core (chapter 4.4).</p>
+
+<h3 id="sorting">Sorting algorithms and stability</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Algorithm</th><th>Best</th><th>Average</th><th>Worst</th><th>Extra memory</th><th>Stable?</th></tr></thead>
+  <tbody>
+    <tr><td>Insertion sort</td><td>O(n), already sorted</td><td>O(n²)</td><td>O(n²)</td><td>O(1)</td><td class="yes">Yes</td></tr>
+    <tr><td>Merge sort</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n)</td><td class="yes">Yes</td></tr>
+    <tr><td>Quicksort (naive pivot)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n²), e.g. on sorted input</td><td>O(log n) stack</td><td class="no">No</td></tr>
+    <tr><td>Heapsort (chapter F5)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(1)</td><td class="no">No</td></tr>
+  </tbody>
+</table></div>
+<p>A <dfn data-term="stable sort" data-def="A sort that keeps elements with equal keys in their original relative order.">stable sort</dfn> keeps items with equal keys in their original order. That matters whenever you sort by one field after data has already been ordered by another, for example grouping orders by customer while keeping each customer's orders in arrival order (Lab step 3).</p>
+<p>Real libraries combine these algorithms into <em>hybrids</em>. This is what the official documentation says each platform ships today:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Call</th><th>Stable?</th><th>Algorithm (documented "current implementation")</th></tr></thead>
+  <tbody>
+    <tr><td>Rust <code>slice::sort</code>, <code>sort_by</code>, <code>sort_by_key</code></td><td class="yes">Yes</td><td>Based on <strong>driftsort</strong> (Orson Peters, Lukas Bergdoll): "combines the fast average case of quicksort with the fast worst case and partial run detection of mergesort, achieving linear time on fully sorted and reversed inputs." Allocates auxiliary memory for larger inputs.</td></tr>
+    <tr><td>Rust <code>slice::sort_unstable</code> (and <code>_by</code>, <code>_by_key</code>)</td><td class="no">No</td><td>Based on <strong>ipnsort</strong> (Bergdoll, Peters): "combines the fast average case of quicksort with the fast worst case of heapsort, achieving linear time on fully sorted and reversed inputs." In place.</td></tr>
+    <tr><td>.NET <code>Array.Sort</code>, <code>List&lt;T&gt;.Sort</code></td><td class="no">No</td><td><strong>Introsort</strong>: insertion sort for partitions ≤ 16 elements, heapsort when partitioning goes too deep, otherwise quicksort. Documented as "an unstable sort".</td></tr>
+    <tr><td>.NET LINQ <code>OrderBy</code> / <code>ThenBy</code></td><td class="yes">Yes</td><td>Documented: "This method performs a stable sort."</td></tr>
+  </tbody>
+  <caption>Rust's docs also note that both sorts may panic if your <code>Ord</code> implementation isn't a total order. Implementation details may change between releases; stability and complexity guarantees do not.</caption>
+</table></div>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET — the porting trap</div>
+  <p>Notice the defaults are <em>opposite</em>. In .NET the method you reach for (<code>List.Sort</code>) is unstable, and LINQ is stable. In Rust the default <code>sort</code> is stable, and you opt into <code>sort_unstable</code> for speed (about 1.5× in the lab). Porting <code>list.Sort(...)</code> to <code>v.sort_by(...)</code> is safe. Porting LINQ <code>OrderBy</code> to <code>sort_unstable_by</code> silently breaks code that relied on equal items keeping their order.</p>
+</div>
+
+<h3 id="binary-search">Binary search and partition points</h3>
+<p>Binary search (chapter F2) finds a value in sorted data in O(log n). The more general form asks: in a sequence where some condition is <em>true for a prefix and false afterwards</em>, where does it flip? Rust's <code>partition_point(pred)</code> answers exactly that: "the index of the first element of the second partition". It's the algorithm behind <code>git bisect</code> ("first commit where the tests fail") and behind finding the first deploy whose error rate crossed a threshold (Exercise 3). The only requirement is <strong>monotonicity</strong>: once the condition turns false, it stays false.</p>
+
+<span class="layer-label intermediate">Intermediate</span>
+<h3 id="greedy">Greedy algorithms</h3>
+<p>A <dfn data-term="greedy algorithm" data-def="An algorithm that makes the locally best choice at each step and never revisits it; optimal only for problems with the right structure.">greedy algorithm</dfn> makes the choice that looks best right now and never reconsiders it. It's fast and simple, and optimal only when the problem has the right structure. Two examples:</p>
+<ul>
+  <li><strong>Works:</strong> scheduling the most non-overlapping meetings in one room. Always pick the meeting that <em>ends earliest</em>; this provably leaves the most room for the rest. Merging overlapping windows (Exercise 2) is a similar sort-then-sweep.</li>
+  <li><strong>Fails:</strong> making change with the fewest coins. "Take the largest coin that fits" is optimal for {1, 5, 10, 25}, but with coins {1, 3, 4} and amount 6, greedy picks 4 + 1 + 1 (3 coins) while the best is 3 + 3 (2 coins). The lab shows both.</li>
+</ul>
+<p>The lesson for design reviews: a greedy heuristic needs an argument for why the local choice can't hurt later. Without that argument, treat it as an approximation, which is often fine but should be known.</p>
+
+<h3 id="dp">Dynamic programming</h3>
+<p><dfn data-term="dynamic programming" data-def="Solving a problem by combining solutions to overlapping subproblems, storing each subproblem's answer so it is computed only once (memoisation or bottom-up tables).">Dynamic programming</dfn> (DP) applies when a problem breaks into subproblems that <em>overlap</em>: the same smaller question is asked many times. Instead of recomputing, store each answer once. Two styles:</p>
+<ul>
+  <li><strong>Top-down (<dfn data-term="memoisation" data-def="Caching a function's results by argument so repeated calls return instantly; top-down dynamic programming.">memoisation</dfn>):</strong> write the natural recursion and cache results in a map. Measured below: Fibonacci(40) drops from 284 ms to 0.007 ms, because the naive version makes about 330 million calls and the memoised one 40 distinct computations.</li>
+  <li><strong>Bottom-up (tabulation):</strong> fill a table from the smallest subproblems upwards. No recursion, so no stack risk, and often only the last row needs to be kept.</li>
+</ul>
+<p>The classic DP for your products is <dfn data-term="edit distance" data-def="The minimum number of single-character insertions, deletions and substitutions to turn one string into another (Levenshtein distance), computed by dynamic programming in O(m·n).">edit distance</dfn> (Levenshtein distance): the fewest single-character insertions, deletions or substitutions to turn one string into another. Cell <code>(i, j)</code> holds the distance between the first <em>i</em> letters of one word and the first <em>j</em> of the other, computed from its three neighbours. Fill the table:</p>
+
+<figure class="visual" id="dp">
+  <span class="visual-tag">Interactive · edit distance table, “kitten” → “sitting”</span>
+  <div class="dp-wrap"><table class="dp" id="dp-table"></table></div>
+  <div class="stepper-controls">
+    <button type="button" id="dp-reset">⟲ Reset</button>
+    <button type="button" id="dp-play" class="primary">▶ Play</button>
+    <button type="button" id="dp-step">Step ▶</button>
+    <button type="button" id="dp-all">Fill all</button>
+    <span class="stepper-count" id="dp-count"></span>
+  </div>
+  <div class="stepper-caption" id="dp-caption"></div>
+  <figcaption><strong>Figure 2.</strong> The first row and column are "turn a prefix into the empty string": 0, 1, 2… Every other cell is the minimum of three options: substitute (diagonal, +0 if the letters match, +1 if not), delete (from above, +1) or insert (from the left, +1). The bottom-right cell is the answer, 3: k→s, e→i, insert g. O(m·n) time.</figcaption>
+</figure>
+
+<details class="deep-dive"><summary>Deep dive: the Ω(n log n) barrier — and how modern sorts are “linear” anyway</summary><div class="body">
+  <p>Any sort that only learns about the data by <em>comparing</em> pairs needs at least about \(n \log_2 n\) comparisons in the worst case. There are \(n!\) possible orderings of n items, and each comparison has two outcomes, so k comparisons can distinguish at most \(2^k\) cases. To distinguish all orderings you need</p>
+  $$ 2^k \ge n! \;\Longrightarrow\; k \ge \log_2(n!) \approx n\log_2 n - 1.44\,n $$
+  <p>(by Stirling's approximation). So merge sort and heapsort are optimal comparison sorts, up to constants.</p>
+  <p>How then can Rust's documentation promise "linear time on fully sorted and reversed inputs"? Because the bound is about the <em>worst case over all inputs</em>. An <em>adaptive</em> sort first looks for existing sorted runs, which costs n − 1 comparisons to confirm a fully sorted input, and exploits them. That's the "partial run detection of mergesort" in driftsort's description, and it's why the lab's <code>sort</code> took 0.03 ms on 100,000 already-sorted numbers versus 1.4 ms on random ones. Real data is often partly sorted (appending to time-ordered logs, re-sorting after a few changes), so adaptivity pays off in practice.</p>
+  <p>Sorts that don't compare at all can beat n log n. Counting sort and radix sort exploit the structure of the keys (small integers, fixed-width strings) to run in O(n + k) or O(d·n). MIT's Lecture 5 (in Go further) covers them.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+
+<h3 id="lab-1">Step 1 — four sorts, three sizes, two input orders</h3>
+<pre data-title="src/bin/sorts.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+/// Insertion sort: O(n²) worst case, but fast for tiny or nearly sorted input.
+fn insertion_sort(v: &amp;mut [u64]) {
+    for i in 1..v.len() {
+        let mut j = i;
+        while j &gt; 0 &amp;&amp; v[j - 1] &gt; v[j] {
+            v.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+}
+
+/// Merge sort: O(n log n) always, stable, needs O(n) extra memory.
+fn merge_sort(v: &amp;mut Vec&lt;u64&gt;) {
+    if v.len() &lt;= 1 {
+        return;
+    }
+    let mut right = v.split_off(v.len() / 2); // divide...
+    merge_sort(v);                            // ...conquer each half...
+    merge_sort(&amp;mut right);
+    let left = std::mem::take(v);             // ...and combine (merge)
+    let (mut i, mut j) = (0, 0);
+    v.reserve(left.len() + right.len());
+    while i &lt; left.len() &amp;&amp; j &lt; right.len() {
+        if left[i] &lt;= right[j] { v.push(left[i]); i += 1; } else { v.push(right[j]); j += 1; }
+    }
+    v.extend_from_slice(&amp;left[i..]);
+    v.extend_from_slice(&amp;right[j..]);
+}
+
+/// Textbook quicksort with the FIRST element as pivot: O(n log n) on random input,
+/// O(n²) on already-sorted input.
+fn naive_quicksort(v: &amp;mut [u64]) {
+    if v.len() &lt;= 1 {
+        return;
+    }
+    let pivot = v[0];
+    let mut store = 1;
+    for i in 1..v.len() {
+        if v[i] &lt; pivot {
+            v.swap(i, store);
+            store += 1;
+        }
+    }
+    v.swap(0, store - 1);
+    let (left, right) = v.split_at_mut(store - 1);
+    naive_quicksort(left);
+    naive_quicksort(&amp;mut right[1..]);
+}
+
+fn next_rand(s: &amp;mut u64) -&gt; u64 { *s ^= *s &lt;&lt; 13; *s ^= *s &gt;&gt; 7; *s ^= *s &lt;&lt; 17; *s }
+
+/// Time a closure in milliseconds, formatted for the table.
+fn ms(f: impl FnOnce()) -&gt; String {
+    let t = Instant::now();
+    f();
+    format!("{:.2}", t.elapsed().as_secs_f64() * 1e3)
+}
+
+fn main() {
+    let mut seed = 3;
+    for &amp;n in &amp;[1_000usize, 10_000, 100_000] {
+        let random: Vec&lt;u64&gt; = (0..n).map(|_| next_rand(&amp;mut seed)).collect();
+        let sorted: Vec&lt;u64&gt; = (0..n as u64).collect();
+        for (label, data) in [("random", &amp;random), ("sorted", &amp;sorted)] {
+            let skip = || "skipped".to_string();
+            let mut a = data.clone();
+            let t_ins = if n &lt;= 10_000 { ms(|| insertion_sort(&amp;mut a)) } else { skip() };
+            let mut b = data.clone();
+            let t_mrg = ms(|| merge_sort(&amp;mut b));
+            let mut c = data.clone();
+            // naive quicksort on large sorted input would recurse n levels deep: skip it
+            let t_qck = if label == "random" || n &lt;= 10_000 { ms(|| naive_quicksort(&amp;mut c)) } else { skip() };
+            let mut d = data.clone();
+            let t_std = ms(|| d.sort());
+            let mut e = data.clone();
+            let t_uns = ms(|| e.sort_unstable());
+            black_box((&amp;a, &amp;b, &amp;c, &amp;d, &amp;e));
+            println!("n={n:&gt;7} {label:&gt;6}: insertion {t_ins:&gt;8}  merge {t_mrg:&gt;6}  naive-quick {t_qck:&gt;8}  sort {t_std:&gt;5}  sort_unstable {t_uns:&gt;5}  (ms)");
+        }
+    }
+}</code></pre>
+<pre class="output">n=   1000 random: insertion     0.10  merge   0.14  naive-quick     0.03  sort  0.01  sort_unstable  0.01  (ms)
+n=   1000 sorted: insertion     0.00  merge   0.08  naive-quick     0.18  sort  0.00  sort_unstable  0.00  (ms)
+n=  10000 random: insertion     9.37  merge   1.17  naive-quick     0.38  sort  0.14  sort_unstable  0.09  (ms)
+n=  10000 sorted: insertion     0.00  merge   0.64  naive-quick    15.58  sort  0.00  sort_unstable  0.00  (ms)
+n= 100000 random: insertion  skipped  merge  12.63  naive-quick     4.64  sort  1.40  sort_unstable  0.93  (ms)
+n= 100000 sorted: insertion  skipped  merge   6.50  naive-quick  skipped  sort  0.03  sort_unstable  0.03  (ms)</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · 10,000 numbers, random vs already sorted</span>
+  <div class="chart-box"><canvas id="sort-chart" aria-label="Bar chart of sort times for five algorithms on random and sorted input"></canvas></div>
+  <figcaption><strong>Figure 3.</strong> The middle of three runs, release build, lab Mac. Read across: insertion sort is the slowest on random input (9.4 ms) and the fastest on sorted input. Naive quicksort is the reverse: 0.38 ms random, <strong>15.6 ms sorted</strong> (its O(n²) case). The library sorts win both, and are effectively instant on sorted input (adaptive). Log scale; 0.00 ms values are plotted at the 0.005 ms floor.</figcaption>
+</figure>
+<p>Read the table like a consultant. Hand-written sorts lose to the standard library by 3–10× on random data, and textbook quicksort has a pathological case on input that's <em>common in practice</em>: data that's already sorted. Always use the library sort. The "skipped" cells were omitted on purpose: insertion sort at 100,000 is O(n²) (seconds), and naive quicksort on 100,000 sorted items would recurse 100,000 levels deep, the stack risk from chapter F1.</p>
+
+<h3 id="lab-2">Step 2 — memoisation turns exponential into linear</h3>
+<pre data-playground data-title="src/bin/fib.rs"><code class="language-rust">use std::collections::HashMap;
+use std::time::Instant;
+
+/// Plain recursion: recomputes the same subproblems over and over: O(φⁿ) ≈ O(1.618ⁿ).
+fn fib_naive(n: u64) -&gt; u64 {
+    if n &lt; 2 { n } else { fib_naive(n - 1) + fib_naive(n - 2) }
+}
+
+/// Top-down dynamic programming (memoisation): each n computed once: O(n).
+fn fib_memo(n: u64, memo: &amp;mut HashMap&lt;u64, u64&gt;) -&gt; u64 {
+    if n &lt; 2 {
+        return n;
+    }
+    if let Some(&amp;v) = memo.get(&amp;n) {
+        return v;
+    }
+    let v = fib_memo(n - 1, memo) + fib_memo(n - 2, memo);
+    memo.insert(n, v);
+    v
+}
+
+/// Bottom-up dynamic programming: fill from the smallest case up, O(n) time, O(1) memory.
+fn fib_bottom_up(n: u64) -&gt; u64 {
+    let (mut a, mut b) = (0u64, 1u64);
+    for _ in 0..n {
+        (a, b) = (b, a + b);
+    }
+    a
+}
+
+fn main() {
+    for n in [30, 35, 40] {
+        let t = Instant::now();
+        let x = fib_naive(n);
+        let t_naive = t.elapsed();
+        let t = Instant::now();
+        let y = fib_memo(n, &amp;mut HashMap::new());
+        let t_memo = t.elapsed();
+        let z = fib_bottom_up(n);
+        assert!(x == y &amp;&amp; y == z);
+        println!("fib({n}) = {x:&gt;9}: naive {:&gt;8.1} ms, memoised {:&gt;6.3} ms", t_naive.as_secs_f64() * 1e3, t_memo.as_secs_f64() * 1e3);
+    }
+    println!("fib(90) = {} (bottom-up, instant)", fib_bottom_up(90));
+}</code></pre>
+<pre class="output">fib(30) =    832040: naive      2.4 ms, memoised  0.014 ms
+fib(35) =   9227465: naive     25.9 ms, memoised  0.008 ms
+fib(40) = 102334155: naive    283.6 ms, memoised  0.007 ms
+fib(90) = 2880067194370816120 (bottom-up, instant)</pre>
+<p>Each +5 to n multiplies the naive time by about 11 (φ⁵ ≈ 11.1), which is exponential growth you can see. The memoised version stays flat. The bottom-up version needs neither recursion nor a map. Fibonacci itself is a toy, but the same pattern turns real problems from impossible to instant.</p>
+
+<h3 id="lab-3">Step 3 — stability you can see</h3>
+<pre data-playground data-title="src/bin/stable.rs"><code class="language-rust">fn main() {
+    // Orders, already in arrival order (the time is the 3rd field).
+    let mut orders = vec![
+        ("globex", 250, "09:01"),
+        ("acme", 100, "09:02"),
+        ("globex", 75, "09:03"),
+        ("acme", 300, "09:04"),
+        ("initech", 50, "09:05"),
+        ("acme", 20, "09:06"),
+    ];
+    // Group by customer. A STABLE sort keeps each customer's orders in arrival order.
+    orders.sort_by_key(|&amp;(customer, _, _)| customer);
+    for (customer, amount, time) in &amp;orders {
+        println!("{customer:&lt;8} {amount:&gt;4}  {time}");
+    }
+}</code></pre>
+<pre class="output">acme      100  09:02
+acme      300  09:04
+acme       20  09:06
+globex    250  09:01
+globex     75  09:03
+initech    50  09:05</pre>
+<p>Each customer's orders stay in time order, guaranteed by <code>sort_by_key</code>'s stability. <code>sort_unstable_by_key</code> makes no such promise. With six items it may happen to give the same output, which is exactly how this kind of bug slips through tests and appears in production with larger data.</p>
+
+<h3 id="lab-4">Step 4 — greedy vs dynamic programming</h3>
+<pre data-playground data-title="src/bin/greedy_vs_dp.rs"><code class="language-rust">/// Greedy change-making: always take the largest coin that fits.
+fn greedy_coins(coins: &amp;[u32], mut amount: u32) -&gt; Vec&lt;u32&gt; {
+    let mut sorted = coins.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut used = Vec::new();
+    for c in sorted {
+        while amount &gt;= c {
+            amount -= c;
+            used.push(c);
+        }
+    }
+    used
+}
+
+/// Dynamic programming: best[a] = fewest coins that make amount a.
+fn dp_coins(coins: &amp;[u32], amount: u32) -&gt; Option&lt;Vec&lt;u32&gt;&gt; {
+    let n = amount as usize;
+    let mut best = vec![u32::MAX; n + 1];
+    let mut last = vec![0u32; n + 1]; // which coin was used last to reach a
+    best[0] = 0;
+    for a in 1..=n {
+        for &amp;c in coins {
+            let c_us = c as usize;
+            if c_us &lt;= a &amp;&amp; best[a - c_us] != u32::MAX &amp;&amp; best[a - c_us] + 1 &lt; best[a] {
+                best[a] = best[a - c_us] + 1;
+                last[a] = c;
+            }
+        }
+    }
+    if best[n] == u32::MAX {
+        return None;
+    }
+    let mut used = Vec::new();
+    let mut a = n;
+    while a &gt; 0 {
+        used.push(last[a]);
+        a -= last[a] as usize;
+    }
+    Some(used)
+}
+
+fn main() {
+    for coins in [vec![1, 5, 10, 25], vec![1, 3, 4]] {
+        let amount = 6;
+        println!("coins {coins:?}, amount {amount}: greedy {:?}  dp {:?}", greedy_coins(&amp;coins, amount), dp_coins(&amp;coins, amount).unwrap());
+    }
+}</code></pre>
+<pre class="output">coins [1, 5, 10, 25], amount 6: greedy [5, 1]  dp [1, 5]
+coins [1, 3, 4], amount 6: greedy [4, 1, 1]  dp [3, 3]</pre>
+<p>For US-style coins, greedy and DP agree (two coins either way). For {1, 3, 4}, greedy uses 3 coins and DP finds 2. DP considers every way to reach each smaller amount, so it can't be fooled by a locally attractive choice. That costs O(amount × coins) instead of greedy's near-instant answer.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as unit tests (3 passed) and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — “did you mean…?” for fact names <span class="difficulty">★★☆ product skill</span></div>
+  <p>Implement <code>edit_distance(a, b)</code> (Figure 2's algorithm). Check that "kitten" → "sitting" is 3 and that a typo "credit_scor" is distance 1 from "credit_score". A rule editor can then suggest the closest known fact name.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Levenshtein edit distance (insertions, deletions, substitutions).
+/// table[i][j] = distance between the first i chars of `a` and the first j chars of `b`.
+pub fn edit_distance(a: &amp;str, b: &amp;str) -&gt; usize {
+    let a: Vec&lt;char&gt; = a.chars().collect();
+    let b: Vec&lt;char&gt; = b.chars().collect();
+    let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in table.iter_mut().enumerate() {
+        row[0] = i; // turn a[..i] into "" by i deletions
+    }
+    for (j, cell) in table[0].iter_mut().enumerate() {
+        *cell = j; // turn "" into b[..j] by j insertions
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let substitute = table[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            let delete = table[i - 1][j] + 1;
+            let insert = table[i][j - 1] + 1;
+            table[i][j] = substitute.min(delete).min(insert);
+        }
+    }
+    table[a.len()][b.len()]
+}
+
+fn main() {
+    println!("{}", edit_distance("kitten", "sitting"));          // 3
+    println!("{}", edit_distance("credit_scor", "credit_score")); // 1
+}</code></pre>
+  <p>Notice <code>.chars()</code>: Rust strings are UTF-8 (chapter 2.4), so we compare characters, not bytes. <code>usize::from(bool)</code> turns false/true into 0/1. Only the previous row is ever needed, so a production version can use O(n) memory instead of O(m·n).</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — merge maintenance windows <span class="difficulty">★★☆</span></div>
+  <p>Given time windows <code>(start, end)</code> in any order, merge overlapping ones. <code>[(9,11), (1,3), (2,5), (10,12), (6,7)]</code> becomes <code>[(1,5), (6,7), (9,12)]</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Merge overlapping [start, end) time windows.
+pub fn merge_windows(mut windows: Vec&lt;(u32, u32)&gt;) -&gt; Vec&lt;(u32, u32)&gt; {
+    windows.sort_unstable(); // by start time: O(n log n)
+    let mut merged: Vec&lt;(u32, u32)&gt; = Vec::new();
+    for (start, end) in windows {
+        match merged.last_mut() {
+            Some(last) if start &lt;= last.1 =&gt; last.1 = last.1.max(end), // overlaps: extend
+            _ =&gt; merged.push((start, end)),                            // gap: new window
+        }
+    }
+    merged
+}
+
+fn main() {
+    let w = vec![(9, 11), (1, 3), (2, 5), (10, 12), (6, 7)];
+    println!("{:?}", merge_windows(w)); // [(1, 5), (6, 7), (9, 12)]
+}</code></pre>
+  <p>Sort, then sweep once: after sorting by start, a window can only overlap the most recent merged one. O(n log n) overall, dominated by the sort. The <code>match</code> arm with <code>if</code> is a <em>guard</em> (chapter 2.5). <code>sort_unstable</code> is fine here, because windows equal as whole tuples are interchangeable.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — bisect the bad deploy <span class="difficulty">★☆☆ consultant skill</span></div>
+  <p>Error rates per deploy (oldest first) stay under 1% until something breaks, then stay above. Find the first bad deploy in O(log n) with <code>partition_point</code>, or return <code>None</code> if none is bad.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Index of the first deploy whose error rate exceeds 1%.
+/// `error_pct` is non-decreasing once things break, so binary search applies.
+pub fn first_bad(error_pct: &amp;[f64]) -&gt; Option&lt;usize&gt; {
+    let i = error_pct.partition_point(|&amp;e| e &lt;= 1.0); // first index where the predicate is false
+    if i &lt; error_pct.len() { Some(i) } else { None }
+}
+
+fn main() {
+    println!("{:?}", first_bad(&amp;[0.1, 0.2, 0.4, 3.5, 4.0, 7.2])); // Some(3)
+    println!("{:?}", first_bad(&amp;[0.1, 0.2]));                     // None
+}</code></pre>
+  <p>Over 1,000 deploys that's at most 10 checks. In real incidents each "check" might be an expensive test run or canary, which is exactly why <code>git bisect</code> uses binary search. If the data isn't monotonic (it recovers, then breaks again), binary search can return a wrong answer silently. Check the assumption.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which technique?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Signal in the problem</th><th>Technique</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Splits into independent halves whose answers combine cheaply</td><td>Divide and conquer</td><td>Merge sort; parallel aggregation</td></tr>
+    <tr><td>Sorted data, or a yes/no condition that flips once</td><td>Binary search / <code>partition_point</code></td><td>First bad deploy; lookup in a sorted table</td></tr>
+    <tr><td>A locally best choice provably can't hurt later choices</td><td>Greedy</td><td>Earliest-finish scheduling; merging intervals</td></tr>
+    <tr><td>The same subproblems recur, and the optimum is built from optimal sub-answers</td><td>Dynamic programming</td><td>Edit distance; min coins; resource allocation</td></tr>
+    <tr><td>Two sorted sequences (or one, from both ends)</td><td>Two pointers</td><td>The merge step; pair sum in a sorted array</td></tr>
+    <tr><td>You just need it sorted</td><td>The library sort, every time</td><td><code>sort</code> (stable) or <code>sort_unstable</code> (faster)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Writing your own sort</div>
+  <p>The lab's hand-written sorts were 3–10× slower than the library on random data, and one had an O(n²) case on sorted data. Use <code>sort</code> or <code>sort_unstable</code>, and write algorithms only to learn them.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Assuming .NET and Rust sorts have the same stability</div>
+  <p>.NET <code>List.Sort</code>: unstable. LINQ <code>OrderBy</code>: stable. Rust <code>sort</code>: stable; <code>sort_unstable</code>: not. Map them deliberately when porting.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ An inconsistent comparator</div>
+  <p>A comparison that isn't a total order (say, comparing floats containing NaN with <code>partial_cmp().unwrap()</code>, or a comparator that depends on time) gives garbage order. Rust's docs warn that the sort "may panic". For floats use <code>f64::total_cmp</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Trusting a greedy heuristic without proof</div>
+  <p>It's fast and often right, and occasionally quietly suboptimal ({1, 3, 4} coins). Know which one you have.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Deep recursion in production</div>
+  <p>Fine when depth is log n (merge sort); dangerous when depth follows input (naive quicksort on sorted data, walking chains). Prefer iterative or bottom-up forms when depth is unbounded.</p></div>
+
+<h2 id="real-world">Real-world view: these techniques in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule editor:</strong> edit distance suggests the nearest known fact or function name on a typo; dynamic programming in the UI path, costing O(m·n) per candidate. Cap name lengths.</li>
+    <li><strong>Workflow scheduling:</strong> merge maintenance and blackout windows (sort-then-sweep), and assign tasks to the earliest-free worker (greedy plus the min-heap from F5).</li>
+    <li><strong>Deterministic ordering:</strong> sort with a stable sort and a full tie-breaker key (<code>(due_time, sequence)</code>) whenever order affects behaviour or replay (chapters F4 and F5).</li>
+    <li><strong>Operations:</strong> bisect regressions across deploys or rule-set versions with <code>partition_point</code> logic. Keep version history monotonic and queryable so you can.</li>
+    <li><strong>Batch analytics:</strong> divide and conquer over partitions (per tenant, per day) parallelises naturally; chapter 4.4 does it with rayon.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F7">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why did the naive quicksort take about 40× longer on already-sorted input?</div>
+    <ol class="options">
+      <li data-key="a">Sorted data is bigger</li>
+      <li data-key="b">The CPU cache was cold</li>
+      <li data-key="c">With the first element as pivot, every partition puts everything on one side, so it does n levels of O(n) work: O(n²)</li>
+      <li data-key="d">Rust optimises random data better</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Same n.</p>
+      <p data-for="b">Not a 40× effect.</p>
+      <p data-for="c">Correct. That's also why recursion depth hits n.</p>
+      <p data-for="d">No such optimisation.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You port C# code that does <code>orders.OrderBy(o =&gt; o.Customer)</code> after the list was already in time order, and later code assumes each customer's orders remain time-ordered. Which Rust call preserves that behaviour?</div>
+    <ol class="options">
+      <li data-key="a"><code>orders.sort_unstable_by_key(|o| o.customer)</code></li>
+      <li data-key="b"><code>orders.sort_by_key(|o| o.customer)</code>, which is stable like LINQ <code>OrderBy</code></li>
+      <li data-key="c">Either; they're identical</li>
+      <li data-key="d">Neither; Rust can't sort by key</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Unstable: may reorder equal customers' orders.</p>
+      <p data-for="b">Correct.</p>
+      <p data-for="c">They differ precisely in stability.</p>
+      <p data-for="d">Both by-key methods exist.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does the recurrence \(T(n) = 2T(n/2) + cn\) describe, and solve to?</div>
+    <ol class="options">
+      <li data-key="a">Binary search: O(log n)</li>
+      <li data-key="b">Insertion sort: O(n²)</li>
+      <li data-key="c">Linear search: O(n)</li>
+      <li data-key="d">Merge sort (two half-size subproblems plus a linear merge): O(n log n)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Binary search is T(n) = T(n/2) + c: one subproblem, constant extra work.</p>
+      <p data-for="b">Insertion sort isn't divide and conquer.</p>
+      <p data-for="c">No subdivision there.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">With coins {1, 3, 4}, why does "take the largest coin that fits" fail for amount 6?</div>
+    <ol class="options">
+      <li data-key="a">Taking 4 first is locally best but forces 1 + 1 afterwards (3 coins); 3 + 3 (2 coins) needs a non-greedy first choice</li>
+      <li data-key="b">Greedy algorithms can't handle the number 6</li>
+      <li data-key="c">The coins aren't sorted</li>
+      <li data-key="d">It doesn't fail</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Lab step 4 shows both answers.</p>
+      <p data-for="b">The issue is the coin system, not the amount.</p>
+      <p data-for="c">The greedy function sorts them first.</p>
+      <p data-for="d">It returns [4, 1, 1], which isn't optimal.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What makes a problem suitable for dynamic programming?</div>
+    <ol class="options">
+      <li data-key="a">The input is sorted</li>
+      <li data-key="b">It has no subproblems</li>
+      <li data-key="c">Overlapping subproblems (the same smaller questions recur) and optimal substructure (the best answer is built from best sub-answers)</li>
+      <li data-key="d">A greedy choice always works</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Not required.</p>
+      <p data-for="b">Then there's nothing to reuse.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d">If greedy works, you usually don't need DP.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Rust's docs say <code>sort</code> achieves "linear time on fully sorted and reversed inputs". Does that contradict the Ω(n log n) lower bound for comparison sorting?</div>
+    <ol class="options">
+      <li data-key="a">Yes, the bound is wrong</li>
+      <li data-key="b">No. The bound is for the worst case over all inputs, and an adaptive sort detects existing runs, which on sorted input costs about n comparisons</li>
+      <li data-key="c">Yes, Rust doesn't use comparisons</li>
+      <li data-key="d">No, because Rust sorts in parallel</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">The bound is a proven theorem.</p>
+      <p data-for="b">Correct. See the deep dive.</p>
+      <p data-for="c">It's a comparison sort.</p>
+      <p data-for="d"><code>slice::sort</code> is single-threaded.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">An engineer proposes binary search over daily revenue figures to find "the first day revenue dropped below target". Under what condition is that valid?</div>
+    <ol class="options">
+      <li data-key="a">Always</li>
+      <li data-key="b">If there are fewer than 1,000 days</li>
+      <li data-key="c">If revenue is stored in a <code>HashMap</code></li>
+      <li data-key="d">Only if the condition is monotonic: once below target, revenue stays below. Otherwise binary search may return a wrong day</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Not for non-monotonic data.</p>
+      <p data-for="b">Size is irrelevant to correctness.</p>
+      <p data-for="c">Binary search needs an ordered sequence.</p>
+      <p data-for="d">Correct. For non-monotonic data, scan linearly.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In the edit-distance table, what does cell (i, j) depend on?</div>
+    <ol class="options">
+      <li data-key="a">Its diagonal, upper and left neighbours: substitute, delete and insert</li>
+      <li data-key="b">Only the cell above</li>
+      <li data-key="c">Every cell in the table</li>
+      <li data-key="d">The final answer</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's why a row-by-row fill works.</p>
+      <p data-for="b">It needs three neighbours.</p>
+      <p data-for="c">Just three, so the total is O(m·n).</p>
+      <p data-for="d">The answer is computed last, from it.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Recursion = base case + progress. It's fine at log n depth, risky when depth follows input. Divide and conquer (merge sort) solves halves and combines them: T(n) = 2T(n/2) + n = O(n log n).</li>
+  <li>Use the library sort. Rust's <code>sort</code> (driftsort-based) is stable; <code>sort_unstable</code> (ipnsort-based) is faster. Both are linear on sorted input. .NET's <code>List.Sort</code> is unstable introsort; LINQ <code>OrderBy</code> is stable.</li>
+  <li>Binary search generalises to <code>partition_point</code> over any monotonic condition (bisecting deploys and versions).</li>
+  <li>Greedy is fast but needs a proof (it fails for coins {1, 3, 4}). Dynamic programming stores overlapping sub-answers: Fibonacci(40) from 284 ms to 0.007 ms, and edit distance in O(m·n).</li>
+  <li>Measured: textbook quicksort is 40× slower on sorted input, while library sorts are effectively instant on it, because real data is often partly sorted.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">recursion</li><li class="chip">base case</li><li class="chip">divide and conquer</li><li class="chip">merge sort</li><li class="chip">quicksort</li>
+  <li class="chip">stable sort</li><li class="chip">greedy algorithm</li><li class="chip">dynamic programming</li><li class="chip">memoisation</li><li class="chip">edit distance</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-12.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/primitive.slice.html#method.sort">Rust slice docs — <code>sort</code>, <code>sort_unstable</code>, <code>partition_point</code></a><span class="why">The "Current implementation" notes quoted in this chapter.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://learn.microsoft.com/dotnet/api/system.array.sort">Microsoft Learn — <code>Array.Sort</code></a> and <a href="https://learn.microsoft.com/dotnet/api/system.linq.enumerable.orderby"><code>Enumerable.OrderBy</code></a><span class="why">.NET's introsort description and its stability statements.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://github.com/Voultapher/driftsort">driftsort</a> and <a href="https://github.com/Voultapher/sort-research-rs">sort-research-rs</a> (Lukas Bergdoll)<span class="why">Design notes and benchmarks behind Rust's current sorts.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1093/comjnl/5.1.10">C. A. R. Hoare — “Quicksort”, The Computer Journal 5(1), 1962</a><span class="why">The original quicksort paper.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.wikipedia.org/wiki/Introsort">Introsort</a> and <a href="https://en.wikipedia.org/wiki/Levenshtein_distance">Levenshtein distance</a> (Wikipedia)<span class="why">Background for .NET's sort and for Exercise 1.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=oS9aPzUNG-s">“3. Sets and Sorting”</a>, <a href="https://www.youtube.com/watch?v=yndgIDO0zQQ">“5. Linear Sorting”</a>, <a href="https://www.youtube.com/watch?v=r4-cftqTcdI">“15. Dynamic Programming, Part 1: SRTBOT, Fib, DAGs, Bowling”</a> — MIT OpenCourseWare<span class="why">MIT 6.006: merge sort and the lower bound, sorting without comparisons, and a systematic recipe (SRTBOT) for designing DP solutions.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- sorting visualiser ----------
+  var N = 16;
+  function inputFor(kind) {
+    var base = [], s = 7;
+    for (var i = 0; i < N; i++) base.push(i + 1);
+    if (kind === "sorted") return base;
+    if (kind === "reversed") return base.reverse();
+    for (var j = N - 1; j > 0; j--) { s = (s * 1103515245 + 12345) & 0x7fffffff; var k = s % (j + 1); var t = base[j]; base[j] = base[k]; base[k] = t; }
+    return base;
+  }
+  function framesFor(alg, arr) {
+    var a = arr.slice(), frames = [], cmp = 0, wr = 0;
+    function snap(hiCmp, hiSwap, done, msg) { frames.push({ a: a.slice(), cmp: hiCmp || [], swap: hiSwap || [], done: done || [], c: cmp, w: wr, msg: msg }); }
+    snap([], [], [], "Unsorted input.");
+    if (alg === "insertion") {
+      for (var i = 1; i < a.length; i++) {
+        var j = i;
+        while (j > 0) {
+          cmp++; snap([j - 1, j], [], [], "Compare " + a[j - 1] + " and " + a[j] + ".");
+          if (a[j - 1] > a[j]) { var t = a[j - 1]; a[j - 1] = a[j]; a[j] = t; wr += 2; snap([], [j - 1, j], [], "Swap: slide " + a[j - 1] + " left."); j--; }
+          else break;
+        }
+      }
+    } else if (alg === "merge") {
+      for (var width = 1; width < a.length; width *= 2) {
+        for (var lo = 0; lo < a.length; lo += 2 * width) {
+          var mid = Math.min(lo + width, a.length), hi = Math.min(lo + 2 * width, a.length);
+          var left = a.slice(lo, mid), right = a.slice(mid, hi), p = 0, q = 0, k = lo;
+          while (p < left.length && q < right.length) {
+            cmp++;
+            if (left[p] <= right[q]) { a[k] = left[p++]; } else { a[k] = right[q++]; }
+            wr++; snap([], [k], [], "Merge runs of " + width + ": write the smaller front element.");
+            k++;
+          }
+          while (p < left.length) { a[k++] = left[p++]; wr++; }
+          while (q < right.length) { a[k++] = right[q++]; wr++; }
+          snap([], [], [], "Runs of " + (2 * width) + " are now sorted.");
+        }
+      }
+    } else {
+      var stack = [[0, a.length - 1]];
+      while (stack.length) {
+        var r = stack.pop(), l = r[0], h = r[1];
+        if (l >= h) continue;
+        var pivot = a[l], store = l + 1;
+        for (var x = l + 1; x <= h; x++) {
+          cmp++; snap([l, x], [], [], "Compare " + a[x] + " with pivot " + pivot + ".");
+          if (a[x] < pivot) { var t2 = a[x]; a[x] = a[store]; a[store] = t2; wr += 2; store++; }
+        }
+        var t3 = a[l]; a[l] = a[store - 1]; a[store - 1] = t3; wr += 2;
+        snap([], [store - 1], [], "Pivot " + pivot + " placed at its final position.");
+        stack.push([store, h]); stack.push([l, store - 2]);
+      }
+    }
+    var all = []; for (var d = 0; d < a.length; d++) all.push(d);
+    snap([], [], all, "Sorted: " + cmp + " comparisons, " + wr + " element writes.");
+    return frames;
+  }
+  var bars = document.getElementById("sv-bars"), barEls = [];
+  for (var b = 0; b < N; b++) { var e = document.createElement("div"); e.className = "sv-bar"; e.appendChild(document.createElement("span")); bars.appendChild(e); barEls.push(e); }
+  var svFrames = [], svK = 0, svTimer = null, svPlay = document.getElementById("sv-play");
+  function svRender() {
+    var f = svFrames[svK];
+    f.a.forEach(function (v, i) {
+      var el = barEls[i];
+      el.style.height = (8 + v * 11) + "px";
+      el.firstChild.textContent = v;
+      el.className = "sv-bar" + (f.done.indexOf(i) >= 0 ? " done" : f.swap.indexOf(i) >= 0 ? " swap" : f.cmp.indexOf(i) >= 0 ? " cmp" : "");
+    });
+    document.getElementById("sv-cmp").textContent = "comparisons: " + f.c;
+    document.getElementById("sv-wr").textContent = "writes: " + f.w;
+    document.getElementById("sv-caption").textContent = f.msg;
+    document.getElementById("sv-count").textContent = (svK + 1) + " / " + svFrames.length;
+    document.getElementById("sv-step").disabled = svK >= svFrames.length - 1;
+  }
+  function svStop() { clearInterval(svTimer); svTimer = null; svPlay.textContent = "▶ Play"; }
+  function svReset() { svStop(); svFrames = framesFor(document.getElementById("sv-alg").value, inputFor(document.getElementById("sv-input").value)); svK = 0; svRender(); }
+  document.getElementById("sv-step").onclick = function () { svStop(); if (svK < svFrames.length - 1) { svK++; svRender(); } };
+  document.getElementById("sv-reset").onclick = svReset;
+  svPlay.onclick = function () {
+    if (svTimer) { svStop(); return; }
+    if (svK >= svFrames.length - 1) svReset();
+    svPlay.textContent = "❚❚ Pause";
+    svTimer = setInterval(function () { if (svK < svFrames.length - 1) { svK++; svRender(); } else svStop(); }, 140);
+  };
+  document.getElementById("sv-alg").onchange = svReset;
+  document.getElementById("sv-input").onchange = svReset;
+  svReset();
+  window.__sv = { framesFor: framesFor, inputFor: inputFor };
+
+  // ---------- edit distance table ----------
+  var A = "kitten", B = "sitting", m = A.length, n = B.length;
+  var tbl = document.getElementById("dp-table"), cells = [];
+  var head = "<tr><th></th><th>ε</th>" + B.split("").map(function (c) { return "<th>" + c + "</th>"; }).join("") + "</tr>";
+  var rows = "";
+  for (var i = 0; i <= m; i++) {
+    rows += "<tr><th>" + (i === 0 ? "ε" : A[i - 1]) + "</th>";
+    for (var j = 0; j <= n; j++) rows += '<td id="dp-' + i + '-' + j + '"></td>';
+    rows += "</tr>";
+  }
+  tbl.innerHTML = head + rows;
+  var val = [], order = [];
+  for (var i2 = 0; i2 <= m; i2++) { val.push([]); for (var j2 = 0; j2 <= n; j2++) { val[i2].push(null); if (i2 > 0 && j2 > 0) order.push([i2, j2]); } }
+  var dpK = 0, dpTimer = null, dpPlay = document.getElementById("dp-play");
+  function cell(i, j) { return document.getElementById("dp-" + i + "-" + j); }
+  function dpInit() {
+    for (var i = 0; i <= m; i++) for (var j = 0; j <= n; j++) {
+      var c = cell(i, j); c.className = ""; c.textContent = "";
+      if (i === 0 || j === 0) { val[i][j] = i + j; c.textContent = i + j; c.className = "filled"; } else val[i][j] = null;
+    }
+    dpK = 0; dpRender("Base cases filled: turning a prefix into the empty string (ε) costs one edit per letter.", null);
+  }
+  function dpStepOnce() {
+    if (dpK >= order.length) return;
+    var p = order[dpK], i = p[0], j = p[1];
+    var same = A[i - 1] === B[j - 1];
+    var sub = val[i - 1][j - 1] + (same ? 0 : 1), del = val[i - 1][j] + 1, ins = val[i][j - 1] + 1;
+    val[i][j] = Math.min(sub, del, ins);
+    dpK++;
+    var msg = "Cell (" + A.slice(0, i) + " → " + B.slice(0, j) + "): substitute " + (same ? "('" + A[i - 1] + "' matches, +0)" : "('" + A[i - 1] + "'→'" + B[j - 1] + "', +1)") + " = " + sub + ", delete = " + del + ", insert = " + ins + ". Minimum " + val[i][j] + ".";
+    if (dpK === order.length) msg += " Done: the edit distance is " + val[m][n] + ".";
+    dpRender(msg, p);
+  }
+  function dpRender(msg, p) {
+    for (var i = 0; i <= m; i++) for (var j = 0; j <= n; j++) {
+      var c = cell(i, j);
+      if (val[i][j] !== null) { c.textContent = val[i][j]; c.className = "filled"; }
+    }
+    if (p) {
+      cell(p[0] - 1, p[1] - 1).className = "source"; cell(p[0] - 1, p[1]).className = "source"; cell(p[0], p[1] - 1).className = "source";
+      cell(p[0], p[1]).className = "current";
+    }
+    if (dpK === order.length) cell(m, n).className = "answer";
+    document.getElementById("dp-caption").textContent = msg;
+    document.getElementById("dp-count").textContent = dpK + " / " + order.length + " cells";
+    document.getElementById("dp-step").disabled = dpK >= order.length;
+  }
+  function dpStop() { clearInterval(dpTimer); dpTimer = null; dpPlay.textContent = "▶ Play"; }
+  document.getElementById("dp-step").onclick = function () { dpStop(); dpStepOnce(); };
+  document.getElementById("dp-reset").onclick = function () { dpStop(); dpInit(); };
+  document.getElementById("dp-all").onclick = function () { dpStop(); while (dpK < order.length) dpStepOnce(); };
+  dpPlay.onclick = function () {
+    if (dpTimer) { dpStop(); return; }
+    if (dpK >= order.length) dpInit();
+    dpPlay.textContent = "❚❚ Pause";
+    dpTimer = setInterval(function () { if (dpK < order.length) dpStepOnce(); else dpStop(); }, 700);
+  };
+  dpInit();
+
+  // ---------- measured sort chart ----------
+  Course.chart("sort-chart", function (c) {
+    var floor = function (v) { return Math.max(v, 0.005); };
+    return {
+      type: "bar",
+      data: {
+        labels: ["insertion", "merge", "naive quicksort", "sort (stable)", "sort_unstable"],
+        datasets: [
+          { label: "random input", data: [9.37, 1.17, 0.38, 0.14, 0.09].map(floor), backgroundColor: c.teal, borderRadius: 5 },
+          { label: "already sorted", data: [0.00, 0.64, 15.58, 0.00, 0.00].map(floor), backgroundColor: c.accent, borderRadius: 5 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + (ctx.parsed.y <= 0.005 ? "≈0" : ctx.parsed.y) + " ms"; } } } },
+        scales: { y: { type: "logarithmic", min: 0.004, title: { display: true, text: "ms for 10,000 numbers (log scale)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

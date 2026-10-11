@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust for the .NET Architect</title>
+<meta name="description" content="A self-contained path from .NET solution architect to Rust expert, ending in a production rule engine and a durable workflow engine.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/course-data.js"></script>
+<script src="assets/app.js"></script>
+</head>
+<body data-page="index">
+<article class="content">
+  <div class="chapter-kicker">Course home</div>
+  <h1>Rust for the .NET Architect</h1>
+  <p class="stamp">🦀 Accurate as of 2026-10-11 · Rust 1.99.0 · Edition 2024</p>
+  <p>This course takes you from an experienced .NET solution architect to someone who can design, build and advise on Rust systems.
+    You start with the computer-science foundations that .NET hides from you, then learn the language in depth,
+    and finish by building two production-grade products: a <strong>pluggable rule engine</strong> and a <strong>durable workflow engine</strong>.</p>
+
+  <div class="callout note"><div class="callout-title">ℹ️ Build status</div>
+    <p>The curriculum is approved and the design system is in place. Chapters appear in the sidebar as they are written; greyed-out entries are not written yet.
+      This page becomes the full overview (learning path, clickable dependency map, time plan, spaced review) in the final assembly phase.</p></div>
+
+  <h2>Modules</h2>
+  <div class="card-grid" id="module-grid"></div>
+
+  <h2>How the modules depend on each other</h2>
+  <figure class="visual">
+    <span class="visual-tag">Diagram · module prerequisites</span>
+    <div class="mermaid">
+flowchart TD
+  M0[M0 Orientation] --> F[M1 Foundations]
+  F --> M2[M2 Core Rust]
+  M2 --> M3[M3 Idiomatic Rust]
+  M3 --> M4[M4 Concurrency and async]
+  M4 --> M5[M5 Advanced Rust]
+  M3 --> M6[M6 Performance and production]
+  M4 --> M7[M7 Building services]
+  M6 --> M7
+  M5 --> M8[M8 Architect and consultant]
+  M7 --> M8
+  M8 --> M9[M9 Rule engine]
+  M8 --> M10[M10 Workflow engine]
+  M9 --> M10
+  M9 --> M11[M11 Synthesis]
+  M10 --> M11
+    </div>
+    <figcaption><strong>Figure.</strong> Read top to bottom. Chapter-level prerequisites are listed at the top of each chapter.</figcaption>
+  </figure>
+
+  <h2>Time plan</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Pace</th><th>Duration</th><th>Milestones</th></tr></thead>
+    <tbody>
+      <tr><td>10 h / week</td><td>≈ 40 weeks</td><td>Core Rust by week 9 · first service by week 22 · rule engine by week 30 · workflow engine by week 39</td></tr>
+      <tr><td>15 h / week</td><td>≈ 27 weeks</td><td>Same milestones, about one third sooner</td></tr>
+    </tbody>
+  </table></div>
+</article>
+</body>
+</html>
