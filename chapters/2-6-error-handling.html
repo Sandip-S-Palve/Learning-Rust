@@ -1,0 +1,1291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.6 Error handling</title>
+<meta name="description" content="Result and panic, the ? operator and From conversions, writing error types, thiserror and anyhow, context and error chains, compared with .NET exceptions, with a measured cost of failure in both languages and every snippet run.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .ef-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+  @media (max-width: 760px) { .ef-controls { grid-template-columns: minmax(0, 1fr); } }
+  .ef-group { min-width: 0; }
+  .ef-group h5 { margin: 0 0 4px; font-size: .78rem; color: var(--muted); font-weight: 600; }
+  .ef-group div { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ef-group button { font: .8rem var(--font-body); padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .ef-group button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ef-sig { font: .8rem var(--font-mono); margin: 12px 0 6px; overflow-wrap: anywhere; }
+  .ef-row { display: grid; grid-template-columns: 4em minmax(0, 1fr); gap: 8px; border-top: 1px solid var(--border); padding: 7px 0; }
+  .ef-row b { font: .8rem var(--font-mono); color: var(--muted); font-weight: 600; }
+  .ef-row pre { margin: 0; font: .8rem var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; background: none; padding: 0; border: 0; border-radius: 0; box-shadow: none; }
+  .ef-note { font-size: .82rem; margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: var(--surface-2); }
+</style>
+</head>
+<body data-chapter="2.6">
+<article class="content">
+<h1>Error handling</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Decide between <code>Result</code> (recoverable errors) and <code>panic!</code> (bugs and broken invariants), and explain what each does at run time</li>
+      <li>Propagate errors with <code>?</code>, and explain the <code>From</code> conversion it performs</li>
+      <li>Write an error type by hand (<code>Display</code>, <code>Error</code>, <code>source</code>, <code>From</code>) and with <code>thiserror</code>, and add context with <code>anyhow</code></li>
+      <li>Print and inspect error chains (<code>{}</code>, <code>{:#}</code>, <code>{:?}</code>, <code>source()</code>, <code>downcast_ref</code>) and choose a strategy for libraries vs applications</li>
+      <li>Compare Rust's errors with .NET exceptions on visibility, cost and control flow, using measurements from both runtimes</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>In C#, any method can throw, and its signature doesn't say so. You learn which exceptions <code>File.ReadAllText</code> throws from the documentation, if you look. The compiler won't tell you that you forgot one, and a <code>catch (Exception)</code> far up the stack catches bugs and expected failures alike. It works, mostly, but the failure paths of a system are invisible in its code, and they're where production incidents live.</p>
+  <p>Rust splits errors in two. Failures a caller can handle (a missing file, a bad rule, a timed-out call) are ordinary return values of type <code>Result</code>, written in the signature and impossible to ignore silently. Bugs (an index out of range, a broken invariant) <em>panic</em>, and the program, or at least that thread, stops. For your rule engine that means a rule that fails to parse is a value you can report to the author, line by line. For your workflow engine it means every step's failure modes are visible in its type, so the retry and compensation logic of chapters 10.3 and 10.5 can be checked by the compiler rather than discovered in an incident review.</p>
+</div>
+
+<h2 id="intuition">Intuition first: the return slip and the fire alarm</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong><code>Result</code> is a delivery that comes back with a slip</strong>: either the parcel (<code>Ok</code>) or a note saying why it couldn't be delivered (<code>Err</code>: "address not found", "refused"). Whoever ordered it must read the slip before using the parcel, because the box can't be opened otherwise.</li>
+    <li><strong><code>?</code> is "send it back up"</strong>: if I got a failure slip, I attach it to my own reply and return immediately. Each manager on the way up can add a line to the slip ("while preparing the March invoice…"): that's context.</li>
+    <li><strong>A panic is the fire alarm.</strong> It isn't for "the customer wasn't home". It's for "the building is on fire": something that should be impossible has happened, and carrying on would be worse than stopping. Everyone leaves (the stack unwinds, running every destructor on the way out) and the building is evacuated, unless a fire wall (a thread boundary, <code>catch_unwind</code>) contains it.</li>
+  </ul>
+  <p>.NET exceptions use the fire alarm for both: a missing file and a null-reference bug travel the same way, and neither appears on the delivery slip.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">// The signature doesn't say it can fail.
+int ParseLimit(string s) =&gt; int.Parse(s.Trim()); // may throw
+
+try {
+    var limit = ParseLimit(input);
+    Use(limit);
+} catch (FormatException e) {
+    Log(e.Message);
+}</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">// The signature says it can fail, and how.
+fn parse_limit(s: &amp;str) -&gt; Result&lt;u32, std::num::ParseIntError&gt; {
+    s.trim().parse::&lt;u32&gt;()
+}
+
+match parse_limit("50x") {
+    Ok(limit) =&gt; println!("limit {limit}"),
+    Err(e) =&gt; println!("bad limit: {e}"),
+}</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="two-kinds">Two kinds of error</h3>
+<p>The Book: "Rust groups errors into two major categories: recoverable and unrecoverable errors." And: "Rust doesn't have exceptions. Instead, it has the type <code>Result&lt;T, E&gt;</code> for recoverable errors and the <code>panic!</code> macro that stops execution when the program encounters an unrecoverable error." The whole chapter follows from choosing the right one, and the question that decides it is <em>who can do something about this?</em></p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · choosing how to fail</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Decision diagram: if the caller can react, return a Result; if it is a bug or broken invariant, panic; libraries use precise error enums, applications use anyhow with context">
+    <defs><marker id="ch-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker></defs>
+    <rect x="230" y="14" width="260" height="46" rx="8" class="svg-box-strong"/>
+    <text x="360" y="34" class="svg-mono" text-anchor="middle">Something went wrong.</text>
+    <text x="360" y="51" class="svg-text-sm" text-anchor="middle">Can a caller reasonably react to it?</text>
+    <path d="M300 60 L170 100" class="svg-line" marker-end="url(#ch-a)"/><text x="215" y="76" class="svg-text-sm">yes</text>
+    <path d="M420 60 L550 100" class="svg-line" marker-end="url(#ch-a)"/><text x="495" y="76" class="svg-text-sm">no: it's a bug</text>
+    <rect x="30" y="102" width="290" height="70" rx="8" class="svg-teal"/>
+    <text x="175" y="125" class="svg-mono" text-anchor="middle">return Result&lt;T, E&gt;</text>
+    <text x="175" y="144" class="svg-text-sm" text-anchor="middle">bad input, missing file, timeout, denied</text>
+    <text x="175" y="161" class="svg-text-sm" text-anchor="middle">propagate with ?, handle with match</text>
+    <rect x="400" y="102" width="290" height="70" rx="8" class="svg-red"/>
+    <text x="545" y="125" class="svg-mono" text-anchor="middle">panic!  /  expect("why")</text>
+    <text x="545" y="144" class="svg-text-sm" text-anchor="middle">index out of range, broken invariant</text>
+    <text x="545" y="161" class="svg-text-sm" text-anchor="middle">unwinds; thread ends; exit code 101</text>
+    <path d="M110 172 L90 214" class="svg-line" marker-end="url(#ch-a)"/>
+    <path d="M240 172 L260 214" class="svg-line" marker-end="url(#ch-a)"/>
+    <rect x="20" y="216" width="150" height="66" rx="8" class="svg-purple"/>
+    <text x="95" y="238" class="svg-mono" text-anchor="middle">library</text>
+    <text x="95" y="256" class="svg-text-sm" text-anchor="middle">precise error enum</text>
+    <text x="95" y="272" class="svg-text-sm" text-anchor="middle">(thiserror)</text>
+    <rect x="190" y="216" width="150" height="66" rx="8" class="svg-amber"/>
+    <text x="265" y="238" class="svg-mono" text-anchor="middle">application</text>
+    <text x="265" y="256" class="svg-text-sm" text-anchor="middle">anyhow::Result</text>
+    <text x="265" y="272" class="svg-text-sm" text-anchor="middle">+ context</text>
+    <text x="545" y="216" class="svg-text-sm" text-anchor="middle">contained at a boundary only:</text>
+    <text x="545" y="234" class="svg-text-sm" text-anchor="middle">a thread's join(), catch_unwind,</text>
+    <text x="545" y="252" class="svg-text-sm" text-anchor="middle">a supervisor restarting a worker</text>
+    <text x="545" y="276" class="svg-text-sm" text-anchor="middle">never for normal control flow (Lab step 5)</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> The two channels. A <code>Result</code> is an ordinary value that the type system makes you look at; a panic is a controlled crash. The bottom row is the Intermediate section's advice: libraries expose errors callers can match on, applications collect context for the person reading the log.</figcaption>
+</figure>
+
+<h3 id="result"><code>Result&lt;T, E&gt;</code></h3>
+<p><dfn data-term="Result" data-def="enum Result&lt;T, E&gt; { Ok(T), Err(E) }: the return type of operations that can fail in a way the caller can handle. It's #[must_use], so ignoring one is a warning.">Result</dfn> is an ordinary enum from the standard library, exactly the kind chapter 2.5 taught: <code>enum Result&lt;T, E&gt; { Ok(T), Err(E) }</code>. A function that can fail returns one, and its signature tells the caller both what success produces (<code>T</code>) and what failure looks like (<code>E</code>). <code>"42".parse::&lt;u32&gt;()</code> returns <code>Result&lt;u32, ParseIntError&gt;</code>; <code>std::fs::read_to_string</code> returns <code>Result&lt;String, std::io::Error&gt;</code>. You can't use the <code>u32</code> inside without dealing with the <code>Err</code> case, whether by <code>match</code>, <code>if let</code>, a method, or <code>?</code>.</p>
+<p><code>Result</code> has the same toolbox as <code>Option</code> (chapter 2.5), plus a few error-specific methods (Lab step 1):</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>You want</th><th>Write</th></tr></thead>
+  <tbody>
+    <tr><td>A fallback value</td><td><code>r.unwrap_or(100)</code>, <code>unwrap_or_default()</code>, <code>unwrap_or_else(|e| …)</code></td></tr>
+    <tr><td>Transform the success value</td><td><code>r.map(|n| n * 2)</code></td></tr>
+    <tr><td>Transform or wrap the error</td><td><code>r.map_err(|e| MyError::Parse(e))</code></td></tr>
+    <tr><td>Chain another fallible step</td><td><code>r.and_then(validate)</code>, or <code>?</code></td></tr>
+    <tr><td>Convert to <code>Option</code> / from <code>Option</code></td><td><code>r.ok()</code>, <code>r.err()</code> / <code>opt.ok_or(err)</code>, <code>ok_or_else(|| …)</code></td></tr>
+    <tr><td>Collect many results</td><td><code>iter.collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</code>: stops at the first error</td></tr>
+    <tr><td>Crash if it failed</td><td><code>r.unwrap()</code>, <code>r.expect("reason it can't fail")</code></td></tr>
+  </tbody>
+</table></div>
+<p><code>Result</code> is marked <code>#[must_use]</code>: calling a fallible function and ignoring the result is a compiler warning (Lab step 2, w3). C# has no equivalent for exceptions. Nothing tells you that you didn't handle one.</p>
+
+<h3 id="question-mark">The <code>?</code> operator</h3>
+<p>Matching every <code>Result</code> by hand would bury the logic. The <dfn data-term="question mark operator" data-def="expr? on a Result: evaluates to the Ok value, or returns Err(From::from(e)) from the enclosing function. On an Option, returns None early. Only usable in functions returning Result, Option or another FromResidual type (E0277).">question mark operator</dfn> does the common thing: on <code>Ok(v)</code> it evaluates to <code>v</code>; on <code>Err(e)</code> it returns from the current function immediately. The Rust Reference states it precisely: "<code>Result::Err(e)</code> returns <code>Result::Err(From::from(e))</code>." That <code>From::from</code> is the important detail. On the way out, <code>?</code> converts the error into the function's own error type, if a conversion exists:</p>
+<pre data-title="? in action"><code class="language-rust">use std::num::ParseIntError;
+
+fn total_limit(a: &amp;str, b: &amp;str) -&gt; Result&lt;u32, ParseIntError&gt; {
+    let x = a.trim().parse::&lt;u32&gt;()?; // on Err: return it now
+    let y = b.trim().parse::&lt;u32&gt;()?;
+    Ok(x + y)
+}
+
+println!("{:?} {:?}", total_limit("40", "2"), total_limit("40", "two"));</code></pre>
+<p>Two rules come with it. <code>?</code> only works inside a function whose return type can carry the failure: a <code>Result</code> (or an <code>Option</code>, where <code>None</code> returns early). Using it in a function that returns <code>()</code>, such as a plain <code>main</code>, is error E0277, and the compiler suggests changing the signature (Lab step 2, e1). And the error types must be convertible; if they aren't, you get "<code>?</code> couldn't convert the error" (e2).</p>
+<p><code>main</code> itself may return <code>Result&lt;(), E&gt;</code>. If it returns <code>Err</code>, the standard library prints <code>Error: </code> followed by the error's <em>Debug</em> form to stderr and exits with code 1. The toolchain's source does exactly <code>attempt_print_to_stderr(format_args_nl!("Error: {err:?}"))</code> and returns <code>ExitCode::FAILURE</code>. That Debug output is meant for developers, which is one reason applications use <code>anyhow</code>, whose Debug form is a readable error chain (Lab step 3).</p>
+
+<h3 id="panic">Panics</h3>
+<p>A <dfn data-term="panic" data-def="Rust's response to an unrecoverable error (a bug or broken invariant): panic!, a failed unwrap/expect, an out-of-range index or integer overflow in debug builds. By default the thread unwinds; an uncaught panic on the main thread exits the process with code 101.">panic</dfn> happens when you call <code>panic!</code>, when <code>unwrap()</code> or <code>expect()</code> meets an <code>Err</code> or <code>None</code>, when an index is out of range, or when arithmetic overflows in a debug build (chapter 2.1). By default the panic <dfn data-term="unwinding" data-def="What a panic does by default: walking back up the stack, running the destructors (Drop) of every live value in every frame, until the thread ends or a catch_unwind boundary is reached. With panic = &quot;abort&quot;, the process stops immediately instead.">unwinds</dfn>: it walks back up the thread's stack, running every live value's destructor, exactly as chapter 2.2 showed. If nothing contains it, the thread ends. If that thread is <code>main</code>, the process exits with code 101 (Lab step 4).</p>
+<p>A panic is not a way to report bad input. It means "the program has a bug or its assumptions are broken". The good uses:</p>
+<ul>
+  <li><strong>Invariants that can't fail if the code is correct</strong>: <code>expect</code> with a message saying <em>why</em> it can't fail, so the panic message documents the broken assumption: <code>config.get("db").expect("validated at startup")</code>.</li>
+  <li><strong>Tests, examples and prototypes</strong>, where <code>unwrap</code> keeps the code short.</li>
+  <li><strong>Unrecoverable startup problems</strong> in an application's <code>main</code>, though returning a <code>Result</code> from <code>main</code> often reads better.</li>
+</ul>
+<p>Panics can be <em>contained</em> at a boundary. A panicking thread reports <code>Err</code> to whoever calls <code>join()</code> (Lab step 4), and <code>std::panic::catch_unwind</code> turns a panic in a closure into an <code>Err</code>. That's how a server keeps one bad request, or a rule engine one faulty plugin, from taking the process down. It's a fire wall, not a control-flow mechanism: Lab step 5 measures a caught panic at about 13 µs, four times the cost of a .NET exception.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: exceptions vs Result</div>
+  <ul>
+    <li><strong>Visibility.</strong> A C# signature never says what it throws (C# has no checked exceptions), so failure handling relies on documentation and discipline. A Rust signature says <code>Result&lt;T, RuleError&gt;</code>, and the compiler checks that callers handle it, or explicitly pass it on with <code>?</code>.</li>
+    <li><strong>Expected failures.</strong> .NET's own guidance points the same way for common cases: "If the performance cost of exceptions is prohibitive, some .NET library methods provide alternative forms of error handling", the <code>Try*</code> pattern (<code>int.TryParse</code>, <code>TryGetValue</code>), and it says to "check for error conditions in code if the event happens routinely". In Rust every fallible API is "the Try pattern", with the error's details included instead of a bare <code>bool</code>.</li>
+    <li><strong>Bugs.</strong> <code>NullReferenceException</code> and <code>IndexOutOfRangeException</code> correspond to panics: both mean the code is wrong. Rust removes the first entirely (no null) and makes the second a panic.</li>
+    <li><strong>Wrapping and chains.</strong> <code>InnerException</code> ↔ <code>Error::source()</code>; "wrap with a more specific exception" ↔ <code>map_err</code> or <code>anyhow</code>'s <code>context</code>; <code>catch (FormatException)</code> ↔ matching an error enum's variant, or <code>downcast_ref</code>.</li>
+    <li><strong>Cleanup.</strong> <code>finally</code>/<code>using</code> ↔ <code>Drop</code>, which runs on <code>?</code> returns and during panics alike (chapter 2.2).</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="error-types">Writing an error type</h3>
+<p>A real operation fails in several ways (the file is missing, a number is malformed, an operator is unknown), and the caller may want to treat them differently. The idiomatic error type is an enum with one variant per failure, carrying the details. To be a well-behaved error it implements three standard traits:</p>
+<p class="small muted">New syntax: <code>impl Display for RuleError { … }</code> is a <dfn data-term="trait implementation" data-def="impl Trait for Type { ... }: provides the methods a trait requires for a specific type, like implementing an interface in C#. Traits were introduced in chapter F8 and are covered fully in chapter 2.9.">trait implementation</dfn>, like implementing an interface in C# (<code>class RuleError : IFormattable</code>). Traits were introduced in chapter F8 and are covered fully in chapter 2.9; here you only need to fill in the methods each one requires.</p>
+<ul>
+  <li><strong><code>Display</code></strong>: the human message, what <code>{}</code> prints: "line 2: value is not a number". Lowercase, no trailing period, and <em>without</em> the underlying cause's text, which belongs in <code>source</code>.</li>
+  <li><strong><dfn data-term="Error trait" data-def="std::error::Error: the trait every error type implements (on top of Debug and Display). Its source() method returns the underlying cause, forming a chain that reporters walk.">std::error::Error</dfn></strong>: marks it as an error and provides <code>source()</code>, the underlying cause (the <code>ParseIntError</code> inside <code>BadNumber</code>), so reporters can walk the whole chain. It's the equivalent of <code>InnerException</code>.</li>
+  <li><strong><dfn data-term="From conversion" data-def="impl From&lt;A&gt; for B: a conversion from A to B. The ? operator calls From::from on the error, so implementing From&lt;io::Error&gt; for your error type lets ? convert io errors automatically.">From</dfn> conversions</strong>: <code>impl From&lt;std::io::Error&gt; for RuleError</code> lets <code>?</code> turn an I/O error into a <code>RuleError</code> automatically.</li>
+</ul>
+<p>Lab step 2 writes all of this by hand for a rule loader. The output shows the two layers ("line 2: value is not a number", "caused by: invalid digit found in string"), produced by walking <code>source()</code>. In the first version of that program, the I/O variant's message also included the cause's text, so the report printed "No such file or directory" twice. The rule that fixes it: <strong>a cause goes either in the message or in <code>source()</code>, never both</strong>.</p>
+
+<h3 id="thiserror-anyhow"><code>thiserror</code> and <code>anyhow</code></h3>
+<p>The hand-written impls are mechanical, and two crates, used by most of the ecosystem, remove the boilerplate. They're published by the same author (David Tolnay, per crates.io) for the two sides of the library/application split.</p>
+<ul>
+  <li><strong><dfn data-term="thiserror" data-def="A crate providing #[derive(thiserror::Error)]: generates Display (from #[error(&quot;...&quot;)]), Error::source (from fields named source or marked #[source]/#[from]) and From impls (#[from]) for your own error enums. Used in libraries.">thiserror</dfn></strong> (crates.io: "derive(Error)"): <code>#[derive(thiserror::Error)]</code> on your enum generates <code>Display</code> from <code>#[error("…")]</code> attributes, <code>source()</code> from fields named <code>source</code> or marked <code>#[source]</code>, and <code>From</code> impls from <code>#[from]</code>. It's the hand-written version from Lab step 2, in a third of the lines (Lab step 3), and callers still get a real enum to <code>match</code>.</li>
+  <li><strong><dfn data-term="anyhow" data-def="A crate providing anyhow::Error, a single error type that can hold any error plus a chain of context messages; anyhow::Result&lt;T&gt;, .context()/.with_context(), bail! and downcast_ref. Used in applications.">anyhow</dfn></strong> (crates.io: "Flexible concrete Error type built on std::error::Error"): <code>anyhow::Result&lt;T&gt;</code> holds <em>any</em> error. <code>?</code> converts into it from every error type. <code>.context("…")</code> and <code>.with_context(|| …)</code> add <dfn data-term="error context" data-def="A message added to an error as it propagates, describing what was being attempted (&quot;loading rules for tenant acme&quot;), producing a chain from the high-level operation down to the root cause.">context</dfn> as the error propagates, and <code>bail!("…")</code> returns an ad-hoc error. Its alternate Display (<code>{:#}</code>) prints the whole chain on one line, and its Debug form (what <code>main</code> prints) is a numbered "Caused by" list.</li>
+</ul>
+<p>Lab step 3 combines them: a <code>rules</code> module with a <code>thiserror</code> enum, and an application layer using <code>anyhow</code> that adds "loading rules for tenant … from …" on top. The typed error isn't lost inside the <code>anyhow::Error</code>: <code>e.downcast_ref::&lt;RuleError&gt;()</code> recovers it when the application needs to react to a specific failure.</p>
+
+<h3 id="strategies">Comparing the strategies</h3>
+<p>There are four common choices for <code>E</code>. The explorer shows exactly what each one gives the person reading the log and the code handling the error. Every output was produced by one Rust program running the same rule loader four ways.</p>
+
+<figure class="visual" id="ef">
+  <span class="visual-tag">Interactive · what each error strategy shows</span>
+  <div class="ef-controls">
+    <div class="ef-group"><h5>Error type</h5><div id="ef-strategy"></div></div>
+    <div class="ef-group"><h5>What goes wrong</h5><div id="ef-scenario"></div></div>
+  </div>
+  <div class="ef-sig" id="ef-sig"></div>
+  <div class="ef-row"><b>{}</b><pre id="ef-display"></pre></div>
+  <div class="ef-row"><b>{:#}</b><pre id="ef-alt"></pre></div>
+  <div class="ef-row"><b>{:?}</b><pre id="ef-debug"></pre></div>
+  <div class="ef-note" id="ef-note"></div>
+  <figcaption><strong>Figure 2.</strong> Outputs are verbatim from a Rust program (rustc 1.99, thiserror 2.0.21, anyhow 1.0.104) that loads the same rule file four ways and prints each error with <code>{}</code>, <code>{:#}</code> and <code>{:?}</code>; 16 combinations, embedded unchanged. The note under the outputs says what calling code can do with each type.</figcaption>
+</figure>
+
+<p>The guideline the explorer illustrates: <strong>libraries return precise error enums</strong> (<code>thiserror</code>), because their callers need to react to specific failures, and an enum makes those failures part of the API. <strong>Applications use <code>anyhow</code></strong> (or a similar type) with context at each layer, because at the top the goal is a good message and a log entry, not a <code>match</code>. A <code>String</code> error loses the cause and any structure, so avoid it beyond prototypes. <dfn data-term="Box&lt;dyn Error&gt;" data-def="Box&lt;dyn std::error::Error&gt;: a heap-allocated trait object holding any error type (dynamic dispatch, chapter F8). ? converts any error into it; callers can only inspect it via Display, source() and downcast_ref.">Box&lt;dyn Error&gt;</dfn> holds any error through dynamic dispatch (chapter F8) and is the standard-library-only middle ground; <code>anyhow::Error</code> is essentially a better version of it, with context and backtraces.</p>
+
+<h3 id="propagation">How an error travels</h3>
+<figure class="visual stepper" data-interval="3200">
+  <span class="visual-tag">Animation · an error propagating with ?</span>
+  <svg viewBox="0 0 720 320" role="img" aria-label="Call stack of four frames; an error starts in parse_line, is wrapped with a line number, passes through rules::load, gains context in load_tenant_rules, and is reported by main">
+    <rect x="20" y="230" width="300" height="50" rx="6" class="svg-box" data-hl="1,2"/>
+    <text x="34" y="252" class="svg-mono">parse_line(2, "vip == yes")</text><text x="34" y="270" class="svg-text-sm">value.parse()?  (after map_err)</text>
+    <rect x="20" y="170" width="300" height="50" rx="6" class="svg-box" data-hl="3"/>
+    <text x="34" y="192" class="svg-mono">rules::load(path)</text><text x="34" y="210" class="svg-text-sm">collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</text>
+    <rect x="20" y="110" width="300" height="50" rx="6" class="svg-box" data-hl="4"/>
+    <text x="34" y="132" class="svg-mono">load_tenant_rules("globex")</text><text x="34" y="150" class="svg-text-sm">rules::load(..).with_context(..)?</text>
+    <rect x="20" y="50" width="300" height="50" rx="6" class="svg-box" data-hl="5"/>
+    <text x="34" y="72" class="svg-mono">main</text><text x="34" y="90" class="svg-text-sm">match / ? → prints the chain</text>
+    <text x="170" y="34" class="svg-title" text-anchor="middle">call stack</text>
+    <text x="520" y="34" class="svg-title" text-anchor="middle">the error value</text>
+
+    <g data-show="=1"><rect x="370" y="230" width="320" height="50" rx="6" class="svg-amber"/><text x="384" y="252" class="svg-mono">ParseIntError</text><text x="384" y="270" class="svg-text-sm">"invalid digit found in string"</text></g>
+    <g data-show="2-3"><rect x="370" y="200" width="320" height="80" rx="6" class="svg-purple"/><text x="384" y="222" class="svg-mono">RuleError::BadNumber</text><text x="384" y="240" class="svg-text-sm">line: 2</text><text x="384" y="262" class="svg-text-sm">source: ParseIntError</text></g>
+    <g data-show="4-"><rect x="370" y="110" width="320" height="170" rx="6" class="svg-teal"/><text x="384" y="132" class="svg-mono">anyhow::Error</text>
+      <text x="384" y="154" class="svg-text-sm">context: "loading rules for tenant "globex"…"</text>
+      <text x="384" y="180" class="svg-text-sm">└ RuleError::BadNumber { line: 2 }</text>
+      <text x="384" y="202" class="svg-text-sm">   └ ParseIntError (source)</text>
+      <text x="384" y="236" class="svg-text-sm" data-show="5-">{:#} → one line, outermost first</text>
+      <text x="384" y="256" class="svg-text-sm" data-show="5-">{:?} → "Caused by:" list (main's output)</text></g>
+    <path d="M320 255 L366 255" class="svg-line-accent" data-show="=1"/>
+    <path d="M320 195 L366 235" class="svg-line-accent" data-show="=3"/>
+    <path d="M320 135 L366 140" class="svg-line-accent" data-show="=4"/>
+    <path d="M320 75 L366 125" class="svg-line-accent" data-show="5-"/>
+    <g data-show="=6"><rect x="20" y="290" width="680" height="26" rx="5" class="svg-red"/><text x="360" y="308" class="svg-text-sm" text-anchor="middle">a panic instead: no value at all, every frame above unwinds (Drop runs) to the nearest boundary, or exit code 101</text></g>
+  </svg>
+  <ol class="stepper-captions">
+    <li>Deep in the stack, <code>"yes".parse::&lt;u32&gt;()</code> returns <code>Err(ParseIntError)</code>. It knows only that the text wasn't a number, not which line or file.</li>
+    <li><code>map_err</code> wraps it with what <code>parse_line</code> knows: <code>RuleError::BadNumber { line: 2, source }</code>. Then <code>?</code> returns it from <code>parse_line</code>.</li>
+    <li><code>collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</code> in <code>rules::load</code> stops at the first <code>Err</code> and returns it unchanged. No conversion is needed, because the types already match.</li>
+    <li><code>with_context</code> in the application layer wraps it in an <code>anyhow::Error</code> with what <em>this</em> layer knows: which tenant and which file. <code>?</code> returns that.</li>
+    <li><code>main</code> receives a chain that reads from the business operation down to the root cause, the same information a .NET stack of inner exceptions gives, but built from values, with no stack walking.</li>
+    <li>Contrast: had <code>parse_line</code> called <code>.unwrap()</code>, there'd be no error value. The thread would unwind, running destructors, until a boundary caught it or the process exited with code 101.</li>
+  </ol>
+  <figcaption><strong>Figure 3.</strong> Each layer adds what only it knows: the parser the line number, the application the tenant. That's the discipline that makes Rust error messages good. Lab step 3 prints the resulting chain in all three formats.</figcaption>
+</figure>
+
+<details class="deep-dive"><summary>Deep dive: how <code>?</code> is defined, and why it works on Option too</summary><div class="body">
+  <p><code>?</code> is defined through two traits, <code>Try</code> and <code>FromResidual</code> (stable to use, still unstable to implement for your own types). For <code>Result</code> the Reference gives it as roughly:</p>
+<pre><code class="language-rust">// `expr?` on a Result is roughly:
+match expr {
+    Ok(val) =&gt; val,
+    Err(e) =&gt; return Err(From::from(e)),
+}</code></pre>
+  <p>For <code>Option</code>, <code>None</code> returns <code>None</code>. You can't mix them in one function: <code>?</code> on an <code>Option</code> inside a function returning <code>Result</code> doesn't compile. Convert explicitly with <code>.ok_or(MyError::Missing)?</code>. Because the conversion is <code>From::from</code>, adding <code>impl From&lt;sqlx::Error&gt; for RepoError</code> once makes every <code>?</code> on a database call convert automatically. And because it's a <code>return</code>, everything in scope is dropped normally: locks released, transactions rolled back by their guards (chapter 2.2).</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: <code>panic = "abort"</code>, backtraces, and what unwinding costs</summary><div class="body">
+  <p>Unwinding needs tables in the binary describing each frame's cleanup, and it runs every destructor. Setting <code>panic = "abort"</code> in a Cargo profile makes any panic stop the process immediately instead: smaller binaries and no unwinding cost, but no destructors, no <code>catch_unwind</code>, and a panicking thread kills the whole process. Embedded systems and some services that prefer a fast crash-and-restart choose it.</p>
+  <p>Setting <code>RUST_BACKTRACE=1</code> makes panics print a stack trace (the note at the end of every panic message in Lab step 4 says so). <code>anyhow</code>'s docs: "If you want panics and errors to both have backtraces, set <code>RUST_BACKTRACE=1</code>; if you want only errors to have backtraces, set <code>RUST_LIB_BACKTRACE=1</code>." The cost measured in Lab step 5 (about 13 µs per caught panic on the lab Mac) comes from formatting the panic message, allocating its payload and walking the unwind tables. It's the right price for a crash and the wrong one for a parse error.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Steps 3 and Exercise 2 need these dependencies in <code>Cargo.toml</code>: <code>thiserror = "2"</code> (2.0.21 resolved) and <code>anyhow = "1"</code> (1.0.104).</p>
+
+<h3 id="lab-1">Step 1 — Result and its methods</h3>
+<pre data-playground data-title="src/bin/result.rs"><code class="language-rust">use std::num::ParseIntError;
+
+// A function that can fail says so in its return type.
+fn parse_limit(s: &amp;str) -&gt; Result&lt;u32, ParseIntError&gt; {
+    s.trim().parse::&lt;u32&gt;()
+}
+
+fn main() {
+    // 1. Handling both outcomes with match.
+    for input in ["500", " 42 ", "-3", "lots", ""] {
+        match parse_limit(input) {
+            Ok(n) =&gt; println!("1. {input:?} -&gt; Ok({n})"),
+            Err(e) =&gt; println!("1. {input:?} -&gt; Err: {e}"),
+        }
+    }
+
+    // 2. Result's methods, the same toolbox as Option's.
+    let good = parse_limit("500");
+    let bad = parse_limit("lots");
+    println!("2. map(x2):        {:?} / {:?}", good.clone().map(|n| n * 2), bad.clone().map(|n| n * 2));
+    println!("   unwrap_or(100): {} / {}", good.clone().unwrap_or(100), bad.clone().unwrap_or(100));
+    println!("   ok():           {:?} / {:?}", good.clone().ok(), bad.clone().ok());
+    println!("   map_err:        {:?}", bad.clone().map_err(|e| format!("limit: {e}")));
+    println!("   is_ok / is_err: {} / {}", good.is_ok(), bad.is_err());
+    println!("   and_then:       {:?}", good.clone().and_then(|n| if n &lt;= 1_000 { Ok(n) } else { parse_limit("x") }));
+
+    // 3. Collecting: the first error stops everything...
+    let all: Result&lt;Vec&lt;u32&gt;, ParseIntError&gt; = ["1", "2", "3"].iter().map(|s| parse_limit(s)).collect();
+    let one_bad: Result&lt;Vec&lt;u32&gt;, ParseIntError&gt; = ["1", "x", "3", "y"].iter().map(|s| parse_limit(s)).collect();
+    println!("3. collect all good: {all:?}");
+    println!("   collect with bad:  {one_bad:?}");
+
+    // ...or keep going and gather every error.
+    let (oks, errs): (Vec&lt;_&gt;, Vec&lt;_&gt;) = ["1", "x", "3", "y"].iter().map(|s| parse_limit(s)).partition(|r| r.is_ok());
+    let oks: Vec&lt;u32&gt; = oks.into_iter().map(Result::unwrap).collect();
+    let errs: Vec&lt;String&gt; = errs.into_iter().map(|r| r.unwrap_err().to_string()).collect();
+    println!("   partition: ok {oks:?}, errors {errs:?}");
+
+    // 4. A Result you ignore is a warning: Result is #[must_use].
+    let _ = parse_limit("ignored on purpose"); // `let _ =` says "I mean it"
+}</code></pre>
+<pre class="output">1. "500" -&gt; Ok(500)
+1. " 42 " -&gt; Ok(42)
+1. "-3" -&gt; Err: invalid digit found in string
+1. "lots" -&gt; Err: invalid digit found in string
+1. "" -&gt; Err: cannot parse integer from empty string
+2. map(x2):        Ok(1000) / Err(ParseIntError { kind: InvalidDigit })
+   unwrap_or(100): 500 / 100
+   ok():           Some(500) / None
+   map_err:        Err("limit: invalid digit found in string")
+   is_ok / is_err: true / true
+   and_then:       Ok(500)
+3. collect all good: Ok([1, 2, 3])
+   collect with bad:  Err(ParseIntError { kind: InvalidDigit })
+   partition: ok [1, 3], errors ["invalid digit found in string", "invalid digit found in string"]</pre>
+<p>Section 3 shows the two collection strategies. <code>collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</code> stops at the first error; <code>partition</code> keeps going and gathers all of them, which is what a rule editor wants (Exercise 2). Notice that <code>"-3"</code> fails for a <code>u32</code> with "invalid digit": the minus sign isn't a digit of an unsigned number.</p>
+
+<h3 id="lab-2">Step 2 — an error type by hand, and ?</h3>
+<pre data-playground data-title="src/bin/question.rs"><code class="language-rust">use std::fmt;
+use std::num::ParseIntError;
+
+// One error type for the whole "load rules" operation: an enum of everything that can go wrong.
+#[derive(Debug)]
+enum RuleError {
+    Io(std::io::Error),
+    BadNumber { line: usize, source: ParseIntError },
+    UnknownOperator { line: usize, op: String },
+}
+
+// Display: the message for humans (what `{}` prints).
+impl fmt::Display for RuleError {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter&lt;'_&gt;) -&gt; fmt::Result {
+        match self {
+            RuleError::Io(_) =&gt; write!(f, "could not read the rules file"), // the cause is in source()
+            RuleError::BadNumber { line, .. } =&gt; write!(f, "line {line}: value is not a number"),
+            RuleError::UnknownOperator { line, op } =&gt; write!(f, "line {line}: unknown operator {op:?}"),
+        }
+    }
+}
+
+// Error: marks it as an error type and exposes the underlying cause, if any.
+impl std::error::Error for RuleError {
+    fn source(&amp;self) -&gt; Option&lt;&amp;(dyn std::error::Error + 'static)&gt; {
+        match self {
+            RuleError::Io(e) =&gt; Some(e),
+            RuleError::BadNumber { source, .. } =&gt; Some(source),
+            RuleError::UnknownOperator { .. } =&gt; None,
+        }
+    }
+}
+
+// From: lets `?` convert an io::Error into a RuleError automatically.
+impl From&lt;std::io::Error&gt; for RuleError {
+    fn from(e: std::io::Error) -&gt; Self {
+        RuleError::Io(e)
+    }
+}
+
+#[derive(Debug)]
+struct Rule {
+    field: String,
+    op: String,
+    value: u32,
+}
+
+fn parse_line(line_no: usize, line: &amp;str) -&gt; Result&lt;Rule, RuleError&gt; {
+    let parts: Vec&lt;&amp;str&gt; = line.split_whitespace().collect();
+    let [field, op, value] = parts[..] else {
+        return Err(RuleError::UnknownOperator { line: line_no, op: line.to_string() });
+    };
+    if !["&gt;", "&gt;=", "==", "&lt;"].contains(&amp;op) {
+        return Err(RuleError::UnknownOperator { line: line_no, op: op.to_string() });
+    }
+    // map_err converts the ParseIntError and adds the line number; `?` returns it early.
+    let value = value
+        .parse::&lt;u32&gt;()
+        .map_err(|source| RuleError::BadNumber { line: line_no, source })?;
+    Ok(Rule { field: field.to_string(), op: op.to_string(), value })
+}
+
+fn load_rules(path: &amp;str) -&gt; Result&lt;Vec&lt;Rule&gt;, RuleError&gt; {
+    let text = std::fs::read_to_string(path)?; // io::Error -&gt; RuleError via From
+    let mut rules = Vec::new();
+    for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        rules.push(parse_line(i + 1, line)?);
+    }
+    Ok(rules)
+}
+
+fn report(path: &amp;str) {
+    match load_rules(path) {
+        Ok(rules) =&gt; {
+            let r = &amp;rules[0];
+            println!("{path}: {} rules, first: {} {} {}", rules.len(), r.field, r.op, r.value);
+        }
+        Err(e) =&gt; {
+            println!("{path}: error: {e}");
+            // Walk the chain of causes through Error::source.
+            let mut cause = std::error::Error::source(&amp;e);
+            while let Some(c) = cause {
+                println!("    caused by: {c}");
+                cause = c.source();
+            }
+        }
+    }
+}
+
+fn main() -&gt; Result&lt;(), RuleError&gt; {
+    std::fs::write("rules_ok.txt", "amount &gt;= 100\ncountry == 31\n")?;
+    std::fs::write("rules_badnum.txt", "amount &gt;= 100\nvip == yes\n")?;
+    std::fs::write("rules_badop.txt", "amount =&gt; 100\n")?;
+    for p in ["rules_ok.txt", "rules_badnum.txt", "rules_badop.txt", "missing.txt"] {
+        report(p);
+    }
+    println!("--- now letting main itself return the error:");
+    load_rules("missing.txt")?;
+    println!("never printed");
+    Ok(())
+}</code></pre>
+<pre class="output">rules_ok.txt: 2 rules, first: amount &gt;= 100
+rules_badnum.txt: error: line 2: value is not a number
+    caused by: invalid digit found in string
+rules_badop.txt: error: line 1: unknown operator "=&gt;"
+missing.txt: error: could not read the rules file
+    caused by: No such file or directory (os error 2)
+--- now letting main itself return the error:
+Error: Io(Os { code: 2, kind: NotFound, message: "No such file or directory" })</pre>
+<pre class="output">$ echo $?
+1</pre>
+<p>Each report walks the <code>source()</code> chain. The last line is <code>main</code> returning <code>Err</code>: the standard library printed the <em>Debug</em> form and the process exited with status 1. Fine for a developer, poor for an operator, which Step 3 improves. What the compiler refuses:</p>
+<pre data-title="e1.rs — ? in a function returning ()"><code class="language-rust">// Using `?` in a function that returns ().
+fn main() {
+    let text = std::fs::read_to_string("rules.txt")?;
+    println!("{text}");
+}</code></pre>
+<pre class="output error">error[E0277]: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)
+ --&gt; e1.rs:3:52
+  |
+2 | fn main() {
+  | --------- this function should return `Result` or `Option` to accept `?`
+3 |     let text = std::fs::read_to_string("rules.txt")?;
+  |                                                    ^ cannot use the `?` operator in a function that returns `()`
+  |
+help: consider adding return type
+  |
+2 ~ fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+3 |     let text = std::fs::read_to_string("rules.txt")?;
+4 |     println!("{text}");
+5 +     Ok(())
+  |</pre>
+<pre data-title="e2.rs — no From conversion"><code class="language-rust">// `?` needs a From conversion between the two error types.
+#[derive(Debug)]
+enum RuleError {
+    Missing(String),
+}
+
+fn limit(s: &amp;str) -&gt; Result&lt;u32, RuleError&gt; {
+    if s.is_empty() {
+        return Err(RuleError::Missing("limit".into()));
+    }
+    let n = s.parse::&lt;u32&gt;()?; // ParseIntError -&gt; RuleError: no conversion exists
+    Ok(n)
+}
+
+fn main() {
+    println!("{:?}", limit("10"));
+}</code></pre>
+<pre class="output error">error[E0277]: `?` couldn't convert the error to `RuleError`
+  --&gt; e2.rs:11:29
+   |
+ 7 | fn limit(s: &amp;str) -&gt; Result&lt;u32, RuleError&gt; {
+   |                      ---------------------- expected `RuleError` because of this
+...
+11 |     let n = s.parse::&lt;u32&gt;()?; // ParseIntError -&gt; RuleError: no conversion exists
+   |               --------------^ the trait `From&lt;ParseIntError&gt;` is not implemented for `RuleError`
+   |               |
+   |               this can't be annotated with `?` because it has type `Result&lt;_, ParseIntError&gt;`
+   |
+note: `RuleError` needs to implement `From&lt;ParseIntError&gt;`
+  --&gt; e2.rs:3:1
+   |
+ 3 | enum RuleError {
+   | ^^^^^^^^^^^^^^
+   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait</pre>
+<pre data-title="w3.rs — ignoring a Result"><code class="language-rust">// Calling a fallible function and ignoring the Result.
+fn save(path: &amp;str) -&gt; Result&lt;(), std::io::Error&gt; {
+    std::fs::write(path, "rules")
+}
+
+fn main() {
+    save("/no/such/dir/rules.txt"); // the failure disappears silently
+    println!("saved?");
+}</code></pre>
+<pre class="output">warning: unused `Result` that must be used
+ --&gt; w3.rs:7:5
+  |
+7 |     save("/no/such/dir/rules.txt"); // the failure disappears silently
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this `Result` may be an `Err` variant, which should be handled
+  = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+  |
+7 |     let _ = save("/no/such/dir/rules.txt"); // the failure disappears silently
+  |     +++++++</pre>
+<pre class="output">saved?</pre>
+<p>w3 is a warning, not an error: the program ran and printed "saved?" although the write failed. Make it an error in CI with <code>-D warnings</code> (chapter 6.5). The equivalent C# bug, calling a method and never learning that it threw, can't happen silently, but the opposite one can: catching too broadly and carrying on.</p>
+
+<h3 id="lab-3">Step 3 — thiserror for the library, anyhow for the application</h3>
+<pre data-playground data-title="src/bin/crates.rs"><code class="language-rust">// ---------- Library layer: a precise error type, generated by thiserror ----------
+mod rules {
+    use std::num::ParseIntError;
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum RuleError {
+        #[error("could not read the rules file")]
+        Io(#[from] std::io::Error), // #[from] writes the From impl and marks the source
+        #[error("line {line}: value is not a number")]
+        BadNumber { line: usize, source: ParseIntError }, // a field named `source` is the cause
+        #[error("line {line}: unknown operator {op:?}")]
+        UnknownOperator { line: usize, op: String },
+    }
+
+    pub struct Rule {
+        pub field: String,
+        pub op: String,
+        pub value: u32,
+    }
+
+    fn parse_line(line: usize, text: &amp;str) -&gt; Result&lt;Rule, RuleError&gt; {
+        let parts: Vec&lt;&amp;str&gt; = text.split_whitespace().collect();
+        let [field, op, value] = parts[..] else {
+            return Err(RuleError::UnknownOperator { line, op: text.to_string() });
+        };
+        if !["&gt;", "&gt;=", "==", "&lt;"].contains(&amp;op) {
+            return Err(RuleError::UnknownOperator { line, op: op.to_string() });
+        }
+        let value = value.parse().map_err(|source| RuleError::BadNumber { line, source })?;
+        Ok(Rule { field: field.into(), op: op.into(), value })
+    }
+
+    pub fn load(path: &amp;str) -&gt; Result&lt;Vec&lt;Rule&gt;, RuleError&gt; {
+        let text = std::fs::read_to_string(path)?;
+        text.lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+            .map(|(i, l)| parse_line(i + 1, l))
+            .collect()
+    }
+}
+
+// ---------- Application layer: anyhow, with context added on the way up ----------
+use anyhow::{Context, Result, bail};
+
+fn load_tenant_rules(tenant: &amp;str) -&gt; Result&lt;usize&gt; {
+    if tenant.is_empty() {
+        bail!("tenant id must not be empty"); // an ad-hoc error, no type needed
+    }
+    let path = format!("rules_{tenant}.txt");
+    let rules = rules::load(&amp;path).with_context(|| format!("loading rules for tenant {tenant:?} from {path}"))?;
+    let first = &amp;rules[0];
+    println!("   {tenant}: first rule {} {} {}", first.field, first.op, first.value);
+    Ok(rules.len())
+}
+
+fn main() -&gt; Result&lt;()&gt; {
+    std::fs::write("rules_acme.txt", "amount &gt;= 100\ncountry == 31\n")?;
+    std::fs::write("rules_globex.txt", "amount &gt;= 100\nvip == yes\n")?;
+
+    for tenant in ["acme", "globex", "initech", ""] {
+        match load_tenant_rules(tenant) {
+            Ok(n) =&gt; println!("1. {tenant:?}: {n} rules"),
+            Err(e) =&gt; {
+                println!("1. {tenant:?} failed");
+                println!("   {{}}   -&gt; {e}");
+                println!("   {{:#}} -&gt; {e:#}");
+                // The typed error is still inside: callers can test for it.
+                if let Some(rules::RuleError::BadNumber { line, .. }) = e.downcast_ref::&lt;rules::RuleError&gt;() {
+                    println!("   downcast_ref: a bad number on line {line}");
+                }
+            }
+        }
+    }
+    println!("2. and the {{:?}} form, which main prints when it returns Err:");
+    load_tenant_rules("initech")?;
+    Ok(())
+}</code></pre>
+<pre class="output error">   acme: first rule amount &gt;= 100
+1. "acme": 2 rules
+1. "globex" failed
+   {}   -&gt; loading rules for tenant "globex" from rules_globex.txt
+   {:#} -&gt; loading rules for tenant "globex" from rules_globex.txt: line 2: value is not a number: invalid digit found in string
+   downcast_ref: a bad number on line 2
+1. "initech" failed
+   {}   -&gt; loading rules for tenant "initech" from rules_initech.txt
+   {:#} -&gt; loading rules for tenant "initech" from rules_initech.txt: could not read the rules file: No such file or directory (os error 2)
+1. "" failed
+   {}   -&gt; tenant id must not be empty
+   {:#} -&gt; tenant id must not be empty
+2. and the {:?} form, which main prints when it returns Err:
+Error: loading rules for tenant "initech" from rules_initech.txt
+
+Caused by:
+    0: could not read the rules file
+    1: No such file or directory (os error 2)</pre>
+<p>Compare <code>RuleError</code> here with Step 2's: the same three variants, messages and causes, without the hand-written <code>Display</code>, <code>Error</code> and <code>From</code> impls. The application layer never names an error type; it adds context and lets <code>?</code> convert. The final block is what an operator sees when <code>main</code> returns the error: the business operation first, then each cause.</p>
+
+<h3 id="lab-4">Step 4 — panics, contained and not</h3>
+<pre data-playground data-title="src/bin/panics.rs"><code class="language-rust">use std::panic;
+use std::thread;
+
+fn rule_at(rules: &amp;[&amp;str], i: usize) -&gt; String {
+    rules[i].to_uppercase() // indexing out of range panics
+}
+
+fn main() {
+    let rules = ["amount &gt;= 100", "vip == 1"];
+
+    // 1. A panic inside a thread doesn't take the process down: join() reports it as an Err.
+    for (name, job) in [
+        ("index", 0usize),
+        ("unwrap", 1),
+        ("expect", 2),
+        ("explicit", 3),
+    ] {
+        let handle = thread::spawn(move || match job {
+            0 =&gt; rule_at(&amp;rules, 5),
+            1 =&gt; "lots".parse::&lt;u32&gt;().unwrap().to_string(),
+            2 =&gt; std::env::var("RULES_PATH_THAT_IS_NOT_SET").expect("RULES_PATH must be set by the deployment"),
+            _ =&gt; panic!("invariant broken: rule {} has no operator", 7),
+        });
+        match handle.join() {
+            Ok(v) =&gt; println!("1. {name}: ok {v}"),
+            Err(payload) =&gt; {
+                let msg = payload
+                    .downcast_ref::&lt;String&gt;()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::&lt;&amp;str&gt;().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                println!("1. {name}: the thread panicked: {msg}");
+            }
+        }
+    }
+
+    // 2. catch_unwind at a boundary (e.g. one plugin rule must not crash the engine).
+    let result = panic::catch_unwind(|| rule_at(&amp;rules, 9));
+    println!("2. catch_unwind returned is_err = {}", result.is_err());
+
+    // 3. An uncaught panic on the main thread ends the process with exit code 101.
+    println!("3. now panicking on the main thread...");
+    let _ = rule_at(&amp;rules, 2);
+}</code></pre>
+<pre class="output error runtime">
+thread '&lt;unnamed&gt;' (1032968) panicked at src/bin/panics.rs:5:5:
+index out of bounds: the len is 2 but the index is 5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1. index: the thread panicked: index out of bounds: the len is 2 but the index is 5
+
+thread '&lt;unnamed&gt;' (1032969) panicked at src/bin/panics.rs:20:40:
+called `Result::unwrap()` on an `Err` value: ParseIntError { kind: InvalidDigit }
+1. unwrap: the thread panicked: called `Result::unwrap()` on an `Err` value: ParseIntError { kind: InvalidDigit }
+
+thread '&lt;unnamed&gt;' (1032970) panicked at src/bin/panics.rs:21:62:
+RULES_PATH must be set by the deployment: NotPresent
+1. expect: the thread panicked: RULES_PATH must be set by the deployment: NotPresent
+
+thread '&lt;unnamed&gt;' (1032971) panicked at src/bin/panics.rs:22:18:
+invariant broken: rule 7 has no operator
+1. explicit: the thread panicked: invariant broken: rule 7 has no operator
+
+thread 'main' (1032964) panicked at src/bin/panics.rs:5:5:
+index out of bounds: the len is 2 but the index is 9
+2. catch_unwind returned is_err = true
+3. now panicking on the main thread...
+
+thread 'main' (1032964) panicked at src/bin/panics.rs:5:5:
+index out of bounds: the len is 2 but the index is 2</pre>
+<pre class="output">$ echo $?
+101</pre>
+<p>Each panic first prints its own message to stderr (the default panic hook), then the program reports it. The four threads panicked and the program carried on, because <code>join()</code> returned the panic as an <code>Err</code>. Note the difference in messages: <code>unwrap</code> says what was wrong but not why it mattered, while <code>expect</code> carries the author's explanation ("RULES_PATH must be set by the deployment"). The uncaught panic at the end exited with 101.</p>
+
+<h3 id="lab-5">Step 5 — the cost of failing: Result vs panics vs exceptions</h3>
+<p>Parse 200,000 strings, of which 0, 1, 10 or 50% are invalid, using each language's two styles: failure as a value (Rust <code>Result</code>, C# <code>TryParse</code>), and failure as unwinding (a Rust panic caught with <code>catch_unwind</code>, a C# exception caught with <code>catch</code>).</p>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::hint::black_box;
+use std::panic;
+use std::time::Instant;
+
+const N: usize = 200_000;
+
+fn inputs(fail_pct: usize) -&gt; Vec&lt;String&gt; {
+    (0..N)
+        .map(|i| if i % 100 &lt; fail_pct { format!("{}x", i % 9_000) } else { format!("{}", i % 9_000) })
+        .collect()
+}
+
+// The Rust way: failure is a value.
+fn with_result(items: &amp;[String]) -&gt; usize {
+    items.iter().filter(|s| s.parse::&lt;u32&gt;().is_ok()).count()
+}
+
+// Exceptions-as-control-flow, imitated: panic on bad input and catch the unwind per item.
+fn with_panics(items: &amp;[String]) -&gt; usize {
+    items
+        .iter()
+        .filter(|s| panic::catch_unwind(|| s.parse::&lt;u32&gt;().unwrap()).is_ok())
+        .count()
+}
+
+fn ns_per_item(items: &amp;[String], f: fn(&amp;[String]) -&gt; usize) -&gt; f64 {
+    (0..3)
+        .map(|_| {
+            let t = Instant::now();
+            black_box(f(black_box(items)));
+            t.elapsed().as_secs_f64() * 1e9 / N as f64
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn main() {
+    panic::set_hook(Box::new(|_| {})); // silence the panic messages for the benchmark
+    println!("{N} parses per run, best of 3, ns per item:");
+    println!("{:&gt;8} {:&gt;10} {:&gt;16}", "failing", "Result", "panic + catch");
+    for pct in [0, 1, 10, 50] {
+        let items = inputs(pct);
+        assert_eq!(with_result(&amp;items), with_panics(&amp;items));
+        println!("{:&gt;7}% {:&gt;10.1} {:&gt;16.1}", pct, ns_per_item(&amp;items, with_result), ns_per_item(&amp;items, with_panics));
+    }
+}</code></pre>
+<pre class="output">200000 parses per run, best of 3, ns per item:
+ failing     Result    panic + catch
+      0%        2.0              2.0
+      1%        2.2            135.8
+     10%        2.2           1324.8
+     50%        2.3           6677.2</pre>
+<pre data-title="l26cs/Program.cs (.NET 10, Release)"><code class="language-csharp">using System.Diagnostics;
+
+const int N = 200_000;
+
+static string[] Inputs(int failPct) =&gt;
+    Enumerable.Range(0, N).Select(i =&gt; i % 100 &lt; failPct ? $"{i % 9_000}x" : $"{i % 9_000}").ToArray();
+
+// The .NET "Try" pattern: failure is a bool, no exception.
+static int WithTryParse(string[] items)
+{
+    int ok = 0;
+    foreach (var s in items) if (int.TryParse(s, out _)) ok++;
+    return ok;
+}
+
+// Exceptions as control flow.
+static int WithExceptions(string[] items)
+{
+    int ok = 0;
+    foreach (var s in items)
+    {
+        try { int.Parse(s); ok++; }
+        catch (FormatException) { }
+    }
+    return ok;
+}
+
+static double NsPerItem(string[] items, Func&lt;string[], int&gt; f)
+{
+    double best = double.MaxValue;
+    for (int r = 0; r &lt; 3; r++)
+    {
+        var sw = Stopwatch.StartNew();
+        f(items);
+        best = Math.Min(best, sw.Elapsed.TotalNanoseconds / N);
+    }
+    return best;
+}
+
+Console.WriteLine($"{N} parses per run, best of 3, ns per item (.NET {Environment.Version}):");
+Console.WriteLine($"{"failing",8} {"TryParse",10} {"exceptions",12}");
+foreach (var pct in new[] { 0, 1, 10, 50 })
+{
+    var items = Inputs(pct);
+    if (WithTryParse(items) != WithExceptions(items)) throw new Exception("mismatch");
+    Console.WriteLine($"{pct,7}% {NsPerItem(items, WithTryParse),10:F1} {NsPerItem(items, WithExceptions),12:F1}");
+}</code></pre>
+<pre class="output">200000 parses per run, best of 3, ns per item (.NET 10.0.5):
+ failing   TryParse   exceptions
+      0%        6.6          7.3
+      1%        6.8         42.2
+     10%        7.2        333.9
+     50%        7.0       1573.2</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · ns per parse as the failure rate grows</span>
+  <div class="chart-box"><canvas id="cost-chart" aria-label="Log-scale chart: Result and TryParse flat at 2 and 7 ns; .NET exceptions rise to 1,573 ns and Rust caught panics to 6,670 ns at 50 percent failures"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Release builds, best of 3 per run, median of 3 program runs in each language. Value-based errors cost the same whether the input is good or bad (Rust <code>Result</code> about 2 ns, <code>TryParse</code> about 7 ns). Unwinding costs grow with the failure rate: about 3.1 µs per .NET exception and about 13 µs per caught Rust panic.</figcaption>
+</figure>
+<p>Two lessons, one expected and one not. Expected: making failure a value removes its cost entirely, which is why Rust APIs never throw. Unexpected if you assume Rust is always faster: a caught panic was about four times as expensive as a .NET exception here. Rust optimises the path it expects you to use and doesn't optimise panics for control flow at all. Never use <code>catch_unwind</code> as <code>try/catch</code>.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">Solutions 1 and 2 were run as programs with <code>assert!</code>s and are Clippy-clean; Exercise 2 uses <code>thiserror</code>.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — a config error type by hand <span class="difficulty">★☆☆</span></div>
+  <p>Write <code>parse_setting(line: &amp;str) -&gt; Result&lt;(String, u32), ConfigError&gt;</code> for lines like <code>max_retries = 3</code>, with a hand-written <code>ConfigError</code> enum (missing <code>=</code>, empty key, bad value with its <code>ParseIntError</code> as the source) implementing <code>Display</code> and <code>Error</code>. Use <code>?</code> at least twice.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::fmt;
+use std::num::ParseIntError;
+
+#[derive(Debug, PartialEq)]
+enum ConfigError {
+    MissingEquals(String),
+    EmptyKey,
+    BadValue { key: String, source: ParseIntError },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter&lt;'_&gt;) -&gt; fmt::Result {
+        match self {
+            ConfigError::MissingEquals(line) =&gt; write!(f, "expected key=value, got {line:?}"),
+            ConfigError::EmptyKey =&gt; write!(f, "key is empty"),
+            ConfigError::BadValue { key, .. } =&gt; write!(f, "value of {key:?} is not a number"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&amp;self) -&gt; Option&lt;&amp;(dyn std::error::Error + 'static)&gt; {
+        match self {
+            ConfigError::BadValue { source, .. } =&gt; Some(source),
+            _ =&gt; None,
+        }
+    }
+}
+
+fn parse_setting(line: &amp;str) -&gt; Result&lt;(String, u32), ConfigError&gt; {
+    let (key, value) = line.split_once('=').ok_or_else(|| ConfigError::MissingEquals(line.to_string()))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(ConfigError::EmptyKey);
+    }
+    let value = value
+        .trim()
+        .parse()
+        .map_err(|source| ConfigError::BadValue { key: key.to_string(), source })?;
+    Ok((key.to_string(), value))
+}
+
+fn main() {
+    for line in ["max_retries = 3", "timeout", " = 5", "workers = many"] {
+        match parse_setting(line) {
+            Ok((k, v)) =&gt; println!("{line:?} -&gt; {k} = {v}"),
+            Err(e) =&gt; {
+                let cause = std::error::Error::source(&amp;e).map(|c| format!(" (caused by: {c})")).unwrap_or_default();
+                println!("{line:?} -&gt; error: {e}{cause}");
+            }
+        }
+    }
+    assert_eq!(parse_setting("a=1"), Ok(("a".to_string(), 1)));
+    assert_eq!(parse_setting("=1"), Err(ConfigError::EmptyKey));
+    assert!(matches!(parse_setting("a"), Err(ConfigError::MissingEquals(_))));
+    assert!(matches!(parse_setting("a=x"), Err(ConfigError::BadValue { .. })));
+    println!("ok");
+}</code></pre>
+<pre class="output">"max_retries = 3" -&gt; max_retries = 3
+"timeout" -&gt; error: expected key=value, got "timeout"
+" = 5" -&gt; error: key is empty
+"workers = many" -&gt; error: value of "workers" is not a number (caused by: invalid digit found in string)
+ok</pre>
+  <p><code>ok_or_else</code> turns the <code>Option</code> from <code>split_once</code> into a <code>Result</code> so <code>?</code> can use it; <code>map_err</code> wraps the <code>ParseIntError</code> with the key that failed. Deriving <code>PartialEq</code> lets tests compare errors directly. <code>ParseIntError</code> implements it too. Many error types (like <code>io::Error</code>) don't, which is why tests usually use <code>matches!</code>.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — report every bad rule <span class="difficulty">★★☆ product skill</span></div>
+  <p>A rule author pastes twenty rules into the editor. Write <code>validate(text: &amp;str) -&gt; Result&lt;Vec&lt;Rule&gt;, Vec&lt;RuleError&gt;&gt;</code> that returns <em>all</em> the errors with their line numbers, not just the first, using a <code>thiserror</code> enum.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::num::ParseIntError;
+
+#[derive(Debug, thiserror::Error)]
+enum RuleError {
+    #[error("line {line}: expected `field op value`")]
+    Shape { line: usize },
+    #[error("line {line}: unknown operator {op:?}")]
+    UnknownOperator { line: usize, op: String },
+    #[error("line {line}: value is not a number")]
+    BadNumber { line: usize, source: ParseIntError },
+}
+
+#[derive(Debug)]
+struct Rule {
+    field: String,
+    op: String,
+    value: u32,
+}
+
+fn parse_line(line: usize, text: &amp;str) -&gt; Result&lt;Rule, RuleError&gt; {
+    let parts: Vec&lt;&amp;str&gt; = text.split_whitespace().collect();
+    let [field, op, value] = parts[..] else {
+        return Err(RuleError::Shape { line });
+    };
+    if !["&gt;", "&gt;=", "==", "&lt;"].contains(&amp;op) {
+        return Err(RuleError::UnknownOperator { line, op: op.into() });
+    }
+    let value = value.parse().map_err(|source| RuleError::BadNumber { line, source })?;
+    Ok(Rule { field: field.into(), op: op.into(), value })
+}
+
+// Report every bad line, not just the first: an editor or API caller wants all of them at once.
+fn validate(text: &amp;str) -&gt; Result&lt;Vec&lt;Rule&gt;, Vec&lt;RuleError&gt;&gt; {
+    let mut rules = Vec::new();
+    let mut errors = Vec::new();
+    for (i, l) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        match parse_line(i + 1, l) {
+            Ok(r) =&gt; rules.push(r),
+            Err(e) =&gt; errors.push(e),
+        }
+    }
+    if errors.is_empty() { Ok(rules) } else { Err(errors) }
+}
+
+fn main() {
+    let good = "amount &gt;= 100\ncountry == 31\n";
+    let bad = "amount &gt;= 100\nvip == yes\n\ntier\nage =&gt; 18\n";
+    match validate(good) {
+        Ok(rules) =&gt; println!("good: {} rules, last {} {} {}", rules.len(), rules[1].field, rules[1].op, rules[1].value),
+        Err(errs) =&gt; println!("unexpected: {errs:?}"),
+    }
+    match validate(bad) {
+        Ok(_) =&gt; println!("unexpected success"),
+        Err(errs) =&gt; {
+            println!("bad: {} errors", errs.len());
+            for e in &amp;errs {
+                println!("  - {e}");
+            }
+        }
+    }
+    assert_eq!(validate(bad).unwrap_err().len(), 3);
+    assert!(matches!(validate(bad).unwrap_err()[0], RuleError::BadNumber { line: 2, .. }));
+    println!("ok");
+}</code></pre>
+<pre class="output">good: 2 rules, last country == 31
+bad: 3 errors
+  - line 2: value is not a number
+  - line 4: expected `field op value`
+  - line 5: unknown operator "=&gt;"
+ok</pre>
+  <p><code>?</code> and <code>collect</code> stop at the first failure, which is right for "load and run" and wrong for "validate and report". Here each line's <code>Result</code> is matched and errors are accumulated; the function's own <code>Result</code> type, <code>Vec&lt;RuleError&gt;</code> as the error, says "possibly many errors". Chapter 9.2 extends this with source spans for editor underlines.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — panic or Result? <span class="difficulty">★★☆</span></div>
+  <p>For each situation in the workflow engine, decide: return a <code>Result</code>, or panic (<code>expect</code>/<code>unreachable!</code>)? Then check.</p>
+  <ol>
+    <li>A step's JSON payload from a client fails to deserialize.</li>
+    <li>The database is unreachable while saving a step's state.</li>
+    <li>After <code>if queue.is_empty() { return; }</code>, the code calls <code>queue.pop()</code>.</li>
+    <li>A state machine <code>match</code> reaches an arm that the transition table says can't happen.</li>
+    <li>A required environment variable is missing when the service starts.</li>
+    <li>A plugin rule supplied by a customer divides by zero.</li>
+  </ol>
+  <details class="solution"><summary>Show solution</summary>
+  <ol>
+    <li><strong>Result.</strong> Bad input from outside is expected; report it to the client (HTTP 400).</li>
+    <li><strong>Result.</strong> It's transient and recoverable: retry, back off, or fail the step (chapters 6.6 and 10.5).</li>
+    <li><strong>expect</strong> is fine: <code>queue.pop().expect("checked non-empty above")</code>. The <code>None</code> case is impossible if the code is correct, and the message documents why. (Better still, restructure with <code>while let Some(job) = queue.pop()</code> or <code>let Some(job) = queue.pop() else { return };</code>, which removes the question.)</li>
+    <li><strong>panic</strong> (<code>unreachable!("…")</code>), if it truly can't happen: it's a bug in the engine. If persisted data could ever contain that combination, for example from an older version, it's input, and it should be a <code>Result</code> (chapter 10.7).</li>
+    <li><strong>Result from <code>main</code></strong> (or a clear <code>expect</code>). It's unrecoverable for the process but not a bug; with <code>anyhow</code> and context the operator gets a readable message and exit code 1.</li>
+    <li><strong>Contain it.</strong> Customer code panicking must not take down the engine: run plugins behind a boundary (<code>catch_unwind</code>, a separate thread, or a WebAssembly sandbox, chapter 9.6) and convert the panic into an error for that rule only.</li>
+  </ol>
+  </details>
+</div>
+
+<h2 id="decision">Which error approach?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Use</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>A library or reusable module</td><td>Your own error enum (<code>thiserror</code>)</td><td>Callers match on variants; errors are part of the API</td></tr>
+    <tr><td>An application, CLI or service's top layers</td><td><code>anyhow::Result</code> + <code>.context()</code></td><td>Good messages and chains; no type ceremony</td></tr>
+    <tr><td>Standard library only, many error types</td><td><code>Box&lt;dyn Error&gt;</code></td><td>Any error converts; inspection only by <code>downcast_ref</code></td></tr>
+    <tr><td>Prototype or test</td><td><code>unwrap</code>/<code>expect</code>, or <code>String</code> errors</td><td>Quick; replace before production</td></tr>
+    <tr><td>A value may simply be absent</td><td><code>Option</code></td><td>Absence isn't an error (chapter 2.5)</td></tr>
+    <tr><td>Many independent failures to report</td><td><code>Result&lt;T, Vec&lt;E&gt;&gt;</code> or a report type</td><td>Validation wants all errors at once (Exercise 2)</td></tr>
+    <tr><td>An invariant the code guarantees</td><td><code>expect("why")</code>, <code>unreachable!</code></td><td>A failure is a bug; the message documents the assumption</td></tr>
+    <tr><td>Untrusted code that may panic</td><td><code>catch_unwind</code>, a thread or a sandbox boundary</td><td>Contain the crash; never for normal flow</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: failure</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Expected failures</td><td>Exceptions (or the <code>Try*</code> pattern)</td><td><code>Result&lt;T, E&gt;</code></td></tr>
+    <tr><td>Bugs</td><td>Exceptions (<code>NullReference</code>, <code>IndexOutOfRange</code>)</td><td>Panic</td></tr>
+    <tr><td>Visible in the signature</td><td>No</td><td>Yes</td></tr>
+    <tr><td>Ignoring a failure</td><td>Unnoticed until it propagates</td><td><code>#[must_use]</code> warning</td></tr>
+    <tr><td>Propagation</td><td>Automatic (stack unwinding)</td><td>Explicit <code>?</code> (a return)</td></tr>
+    <tr><td>Conversion between error types</td><td>Catch and wrap (<code>InnerException</code>)</td><td><code>From</code> (automatic with <code>?</code>), <code>map_err</code>, <code>context</code></td></tr>
+    <tr><td>Cause chain</td><td><code>InnerException</code></td><td><code>Error::source()</code></td></tr>
+    <tr><td>Handling a specific kind</td><td><code>catch (FormatException)</code>, filters</td><td><code>match</code> on variants, <code>downcast_ref</code></td></tr>
+    <tr><td>Cleanup</td><td><code>finally</code>, <code>using</code></td><td><code>Drop</code> (on <code>?</code> and on panics)</td></tr>
+    <tr><td>Cost of a failure (Lab step 5)</td><td>About 3.1 µs per exception; <code>TryParse</code> about 7 ns</td><td><code>Result</code> about 2 ns; a caught panic about 13 µs</td></tr>
+    <tr><td>Unhandled at top level</td><td>Process crashes, stack trace</td><td><code>main</code> returns <code>Err</code> (exit 1) or panics (exit 101)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>unwrap()</code> on input from outside</div>
+  <p>Files, requests, environment variables and databases fail in production. Use <code>?</code> with context; reserve <code>unwrap</code> for tests and <code>expect</code> for real invariants, with a message saying why it holds.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Using panics as exceptions</div>
+  <p><code>catch_unwind</code> around normal logic is slow (Lab step 5), doesn't catch aborts, and hides bugs. Return <code>Result</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Errors without context</div>
+  <p>"No such file or directory (os error 2)" with no file name is a support ticket. Add context where the information exists: <code>.with_context(|| format!("reading {path}"))</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Printing the cause twice</div>
+  <p>If <code>Display</code> includes the inner error's text <em>and</em> <code>source()</code> returns it, every reporter shows it twice (the first version of Lab step 2 did). Put the cause in one place: <code>source()</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>anyhow</code> in a library's public API</div>
+  <p>Callers can't match on <code>anyhow::Error</code> without downcasting to types they may not know about. Libraries expose enums; applications convert them into <code>anyhow</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>let _ = fallible();</code> to silence the warning</div>
+  <p>It silences the warning and the failure. Handle it, log it, or propagate it; use <code>let _ =</code> only when the failure truly doesn't matter, and say so in a comment.</p></div>
+
+<h2 id="real-world">Real-world view: failure in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine:</strong> parsing returns all errors with locations (Exercise 2); evaluation returns <code>Result&lt;Value, EvalError&gt;</code> for type mismatches and missing facts. Customer-supplied rule code runs behind a panic boundary so one bad rule can't stop the engine (chapter 9.6).</li>
+    <li><strong>Workflow engine:</strong> a step's error type distinguishes <em>retryable</em> (timeout, unavailable) from <em>permanent</em> (validation, denied) failures, and the retry policy matches on that, which makes it explicit and compiler-checked (chapters 10.3, 10.5). Panics in step code are caught at the worker boundary and recorded as step failures, not process crashes.</li>
+    <li><strong>Error layers:</strong> crates in the workspace define <code>thiserror</code> enums; the service binary uses <code>anyhow</code> with context, and maps errors to HTTP status codes or gRPC statuses at the edge (chapter 7.2).</li>
+    <li><strong>Observability:</strong> log the error chain with <code>{:#}</code> or as structured fields, and attach the error to the tracing span (chapter 6.3), so each log line tells the whole story.</li>
+    <li><strong>Review checklist:</strong> <code>unwrap</code> on external data; <code>expect</code> without a reason; <code>String</code> errors in library APIs; missing context on I/O; causes duplicated in <code>Display</code>; <code>catch_unwind</code> used for flow; ignored <code>Result</code>s.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.6">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>let n = s.parse::&lt;u32&gt;()?;</code> do when the parse fails?</div>
+    <ol class="options">
+      <li data-key="a">It panics</li>
+      <li data-key="b">It returns <code>Err(From::from(e))</code> from the enclosing function immediately</li>
+      <li data-key="c">It sets <code>n</code> to 0</li>
+      <li data-key="d">It throws an exception to the nearest catch</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>unwrap()</code>.</p>
+      <p data-for="b">Correct (the Reference's definition).</p>
+      <p data-for="c">That's <code>unwrap_or(0)</code>.</p>
+      <p data-for="d">Rust has no exceptions; <code>?</code> is a return.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does <code>fn main() { let t = std::fs::read_to_string("r.txt")?; }</code> fail to compile?</div>
+    <ol class="options">
+      <li data-key="a"><code>read_to_string</code> doesn't return a <code>Result</code></li>
+      <li data-key="b"><code>?</code> only works in async functions</li>
+      <li data-key="c">The file doesn't exist</li>
+      <li data-key="d"><code>main</code> returns <code>()</code>, which can't carry an error; give it a <code>Result</code> return type (E0277)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It returns <code>Result&lt;String, io::Error&gt;</code>.</p>
+      <p data-for="b">It works in any function returning <code>Result</code> or <code>Option</code>.</p>
+      <p data-for="c">That's a run-time matter; this is a compile error.</p>
+      <p data-for="d">Correct (e1).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A function returning <code>Result&lt;u32, RuleError&gt;</code> uses <code>s.parse::&lt;u32&gt;()?</code> and gets "<code>?</code> couldn't convert the error to <code>RuleError</code>". What are the fixes?</div>
+    <ol class="options">
+      <li data-key="a">Implement <code>From&lt;ParseIntError&gt; for RuleError</code> (or <code>#[from]</code> with thiserror), or wrap explicitly with <code>map_err</code> before <code>?</code></li>
+      <li data-key="b">Replace <code>?</code> with <code>unwrap()</code></li>
+      <li data-key="c">Make the function return <code>()</code></li>
+      <li data-key="d">Derive <code>Debug</code> on <code>RuleError</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (e2). <code>map_err</code> is better when you want to add the line number.</p>
+      <p data-for="b">That turns bad input into a crash.</p>
+      <p data-for="c">Then <code>?</code> can't be used at all.</p>
+      <p data-for="d">Debug isn't the missing piece; the conversion is.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">When <code>main</code> returns <code>Err(e)</code>, what happens?</div>
+    <ol class="options">
+      <li data-key="a">The process panics with exit code 101</li>
+      <li data-key="b">Nothing is printed and the exit code is 0</li>
+      <li data-key="c">"Error: " plus <code>e</code>'s Debug form is printed to stderr, and the exit code is 1</li>
+      <li data-key="d">The Display form is printed to stdout</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">101 is for an uncaught panic.</p>
+      <p data-for="b">It reports the error and fails.</p>
+      <p data-for="c">Correct (the std source, Lab step 2).</p>
+      <p data-for="d">Debug, on stderr; hence <code>anyhow</code>'s readable Debug.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You're writing a reusable crate that parses rule files. Which error type do you expose?</div>
+    <ol class="options">
+      <li data-key="a"><code>anyhow::Error</code></li>
+      <li data-key="b">Your own enum (e.g. with <code>thiserror</code>) whose variants callers can match on</li>
+      <li data-key="c"><code>String</code></li>
+      <li data-key="d">Panic on bad input</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Fine inside applications; callers of a library can't match on it.</p>
+      <p data-for="b">Correct (Figure 2's guideline).</p>
+      <p data-for="c">That loses structure and the cause.</p>
+      <p data-for="d">Bad input isn't a bug.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>.with_context(|| format!("loading rules for {tenant}"))</code> add?</div>
+    <ol class="options">
+      <li data-key="a">A stack trace</li>
+      <li data-key="b">A retry</li>
+      <li data-key="c">A new error type the caller must match</li>
+      <li data-key="d">An outer message describing what was being attempted, on top of the original error, which stays in the chain</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Backtraces are separate (<code>RUST_BACKTRACE</code>).</p>
+      <p data-for="b">It doesn't change control flow.</p>
+      <p data-for="c">The result is still <code>anyhow::Error</code>.</p>
+      <p data-for="d">Correct (Figure 3, Lab step 3).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A colleague proposes wrapping each rule evaluation in <code>catch_unwind</code> and panicking on invalid facts "like exceptions". What does Lab step 5 suggest?</div>
+    <ol class="options">
+      <li data-key="a">Don't: a caught panic cost about 13 µs against about 2 ns for a <code>Result</code>, more than a .NET exception; return <code>Result</code> and keep <code>catch_unwind</code> as a boundary for untrusted code</li>
+      <li data-key="b">It's fine: Rust panics are zero-cost</li>
+      <li data-key="c">It's faster than Result when failures are rare</li>
+      <li data-key="d">catch_unwind doesn't work in Rust</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct.</p>
+      <p data-for="b">Only the non-panicking path is cheap.</p>
+      <p data-for="c">At 0% failures they tie (about 2 ns); <code>Result</code> never loses.</p>
+      <p data-for="d">It works (Lab step 4); it's just the wrong tool here.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which is the right use of <code>expect</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>user_input.parse::&lt;u32&gt;().expect("number")</code></li>
+      <li data-key="b"><code>db.query(...).expect("db ok")</code></li>
+      <li data-key="c"><code>CONFIG.get("timeout").expect("validated during startup")</code>, where startup really validated it</li>
+      <li data-key="d">Everywhere, instead of <code>?</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">User input can be wrong; that's a <code>Result</code>.</p>
+      <p data-for="b">Databases fail; that's a <code>Result</code>.</p>
+      <p data-for="c">Correct: an invariant, with the reason documented in the message.</p>
+      <p data-for="d">That turns every failure into a crash.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What's the .NET equivalent of <code>Error::source()</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>Exception.Message</code></li>
+      <li data-key="b"><code>Exception.InnerException</code></li>
+      <li data-key="c"><code>Exception.StackTrace</code></li>
+      <li data-key="d"><code>Exception.HResult</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>Display</code>.</p>
+      <p data-for="b">Correct: both point at the underlying cause.</p>
+      <p data-for="c">That's closer to a backtrace.</p>
+      <p data-for="d">A numeric code, unrelated.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A rule editor should show every invalid line of a pasted rule set. Why isn't <code>lines.map(parse).collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()</code> enough?</div>
+    <ol class="options">
+      <li data-key="a">It doesn't compile</li>
+      <li data-key="b">It panics on the first error</li>
+      <li data-key="c">It returns the last error</li>
+      <li data-key="d">It stops at the first error; to report all of them, match each line's <code>Result</code> and accumulate errors (<code>Result&lt;Vec&lt;Rule&gt;, Vec&lt;RuleError&gt;&gt;</code>)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It compiles and is right for "load or fail".</p>
+      <p data-for="b">It returns <code>Err</code>; no panic.</p>
+      <p data-for="c">It returns the first.</p>
+      <p data-for="d">Correct (Exercise 2, Lab step 1).</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Rust has no exceptions: recoverable failures are <code>Result&lt;T, E&gt;</code> values, written in the signature and <code>#[must_use]</code>; bugs and broken invariants panic.</li>
+  <li><code>?</code> returns <code>Err(From::from(e))</code> early, converting error types through <code>From</code>; it needs a function returning <code>Result</code>/<code>Option</code>. <code>main</code> can return <code>Result</code> (Debug to stderr, exit 1).</li>
+  <li>An error type is an enum implementing <code>Display</code> (message), <code>Error</code> (<code>source()</code> = the cause) and <code>From</code>; <code>thiserror</code> derives all three. Put a cause in <code>source()</code> or the message, never both.</li>
+  <li>Libraries expose precise enums; applications use <code>anyhow</code> with context at each layer, printed as <code>{:#}</code> or a "Caused by" list; <code>downcast_ref</code> recovers the typed error.</li>
+  <li>Panics unwind (running <code>Drop</code>) and end the thread (exit code 101 on main); contain them at boundaries only. Measured: <code>Result</code> about 2 ns per failure, a .NET exception about 3.1 µs, a caught Rust panic about 13 µs.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">Result</li><li class="chip">question mark operator</li><li class="chip">panic</li><li class="chip">unwinding</li><li class="chip">trait implementation</li><li class="chip">Error trait</li>
+  <li class="chip">From conversion</li><li class="chip">thiserror</li><li class="chip">anyhow</li><li class="chip">error context</li><li class="chip">Box&lt;dyn Error&gt;</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch09-00-error-handling.html">The Rust Programming Language — Error Handling</a> (chapter 9)<span class="why">The source of the two-category framing and the "no exceptions" quote; includes "To panic! or Not to panic!".</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/expressions/operator-expr.html#the-question-mark-operator">The Rust Reference — the question mark operator</a>, <a href="https://doc.rust-lang.org/std/error/trait.Error.html"><code>std::error::Error</code></a>, <a href="https://doc.rust-lang.org/std/result/enum.Result.html"><code>Result</code></a><span class="why">The exact definition of <code>?</code>, the Error trait's contract, and every Result method.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://docs.rs/thiserror/latest/thiserror/"><code>thiserror</code></a> and <a href="https://docs.rs/anyhow/latest/anyhow/"><code>anyhow</code></a><span class="why">The attribute reference for <code>#[error]</code>, <code>#[from]</code> and <code>#[source]</code>; context, <code>bail!</code>, downcasting and backtraces.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/standard/exceptions/best-practices-for-exceptions">Best practices for exceptions</a><span class="why">.NET's own advice to use the <code>Try*</code> pattern for routine failures, the same idea Rust makes universal.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/361227.361230">“Exception Handling: Issues and a Proposed Notation”</a> — John B. Goodenough, Communications of the ACM 18(12), 1975<span class="why">The classic paper that framed exception handling: what a failure signal should carry and how control should flow.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/1330017.1330019">“Exceptional Situations and Program Reliability”</a> — Westley Weimer, George C. Necula, ACM TOPLAS, 2008<span class="why">An empirical study of how often exception-handling code is wrong, especially cleanup on error paths: the problem <code>Drop</code> and explicit <code>Result</code>s address.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=wM6o70NAWUI">“Error Handling in Rust”</a> — Let's Get Rusty<span class="why">The Book's chapter 9 walked through: panic vs Result and the <code>?</code> operator.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=j-VQCYP7wyw">“Rust Error Handling - Best Practices”</a> — Jeremy Chone<span class="why">A practitioner's approach to structuring error types across a real application, a good complement to the library/application split.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- error strategy explorer (Figure 2) ----------
+  var DATA = [{"scenario":"ok","strategy":"string","display":"Ok(101)","alternate":"Ok(101)","debug":"Ok(101)"},{"scenario":"ok","strategy":"typed","display":"Ok(101)","alternate":"Ok(101)","debug":"Ok(101)"},{"scenario":"ok","strategy":"boxed","display":"Ok(101)","alternate":"Ok(101)","debug":"Ok(101)"},{"scenario":"ok","strategy":"anyhow","display":"Ok(101)","alternate":"Ok(101)","debug":"Ok(101)"},{"scenario":"badnum","strategy":"string","display":"line 2: value is not a number","alternate":"line 2: value is not a number","debug":"\"line 2: value is not a number\""},{"scenario":"badnum","strategy":"typed","display":"line 2: value is not a number","alternate":"line 2: value is not a number","debug":"BadNumber { line: 2, source: ParseIntError { kind: InvalidDigit } }"},{"scenario":"badnum","strategy":"boxed","display":"line 2: value is not a number","alternate":"line 2: value is not a number","debug":"BadNumber { line: 2, source: ParseIntError { kind: InvalidDigit } }"},{"scenario":"badnum","strategy":"anyhow","display":"checking rule 2","alternate":"checking rule 2: line 2: value is not a number: invalid digit found in string","debug":"checking rule 2\n\nCaused by:\n    0: line 2: value is not a number\n    1: invalid digit found in string"},{"scenario":"badop","strategy":"string","display":"line 1: unknown operator \"=>\"","alternate":"line 1: unknown operator \"=>\"","debug":"\"line 1: unknown operator \\\"=>\\\"\""},{"scenario":"badop","strategy":"typed","display":"line 1: unknown operator \"=>\"","alternate":"line 1: unknown operator \"=>\"","debug":"UnknownOperator { line: 1, op: \"=>\" }"},{"scenario":"badop","strategy":"boxed","display":"line 1: unknown operator \"=>\"","alternate":"line 1: unknown operator \"=>\"","debug":"UnknownOperator { line: 1, op: \"=>\" }"},{"scenario":"badop","strategy":"anyhow","display":"checking rule 1","alternate":"checking rule 1: line 1: unknown operator \"=>\"","debug":"checking rule 1\n\nCaused by:\n    line 1: unknown operator \"=>\""},{"scenario":"missing","strategy":"string","display":"could not read m_missing.txt: No such file or directory (os error 2)","alternate":"could not read m_missing.txt: No such file or directory (os error 2)","debug":"\"could not read m_missing.txt: No such file or directory (os error 2)\""},{"scenario":"missing","strategy":"typed","display":"could not read the rules file","alternate":"could not read the rules file","debug":"Io(Os { code: 2, kind: NotFound, message: \"No such file or directory\" })"},{"scenario":"missing","strategy":"boxed","display":"No such file or directory (os error 2)","alternate":"No such file or directory (os error 2)","debug":"Os { code: 2, kind: NotFound, message: \"No such file or directory\" }"},{"scenario":"missing","strategy":"anyhow","display":"reading m_missing.txt","alternate":"reading m_missing.txt: No such file or directory (os error 2)","debug":"reading m_missing.txt\n\nCaused by:\n    No such file or directory (os error 2)"}];
+  var STRATEGIES = [
+    ["string", "String", "fn load(path: &str) -> Result<u32, String>", "Callers get text only: no variants to match, no cause to walk, no way to tell a missing file from a bad rule except by parsing the message."],
+    ["typed", "enum (thiserror)", "fn load(path: &str) -> Result<u32, RuleError>", "Callers can match on RuleError::BadNumber { line, .. } and react; source() gives the cause. Debug shows the structure. Best for libraries."],
+    ["boxed", "Box<dyn Error>", "fn load(path: &str) -> Result<u32, Box<dyn Error>>", "Any error converts with ?, so it's convenient, but callers can only print it, walk source(), or downcast_ref to a type they guess."],
+    ["anyhow", "anyhow + context", "fn load(path: &str) -> anyhow::Result<u32>", "Each layer adds context; {:#} gives the chain on one line and {:?} the 'Caused by' list main prints. downcast_ref still recovers RuleError. Best for applications."]
+  ];
+  var SCENARIOS = [["ok", "nothing (success)"], ["badnum", "bad number on line 2"], ["badop", "unknown operator"], ["missing", "file missing"]];
+  var state = { strategy: "typed", scenario: "badnum" };
+  function el(id) { return document.getElementById(id); }
+  function buttons(box, items, key) {
+    items.forEach(function (it) {
+      var b = document.createElement("button"); b.type = "button"; b.textContent = it[1]; b.dataset.v = it[0];
+      b.onclick = function () { state[key] = it[0]; render(); };
+      el(box).appendChild(b);
+    });
+  }
+  buttons("ef-strategy", STRATEGIES, "strategy");
+  buttons("ef-scenario", SCENARIOS, "scenario");
+  function render() {
+    var row = DATA.filter(function (r) { return r.strategy === state.strategy && r.scenario === state.scenario; })[0];
+    var s = STRATEGIES.filter(function (x) { return x[0] === state.strategy; })[0];
+    el("ef-sig").textContent = s[2];
+    el("ef-display").textContent = row.display;
+    el("ef-alt").textContent = row.alternate;
+    el("ef-debug").textContent = row.debug;
+    el("ef-note").textContent = s[3];
+    ["ef-strategy", "ef-scenario"].forEach(function (id, i) {
+      Array.prototype.forEach.call(el(id).children, function (b) { b.setAttribute("aria-pressed", String(b.dataset.v === state[i ? "scenario" : "strategy"])); });
+    });
+  }
+  render();
+  window.__ef = { data: DATA };
+
+  // ---------- cost of failure (Figure 4) ----------
+  Course.chart("cost-chart", function (c) {
+    return {
+      type: "line",
+      data: {
+        labels: ["0%", "1%", "10%", "50%"],
+        datasets: [
+          { label: "Rust Result", data: [2.0, 2.2, 2.2, 2.3], borderColor: c.teal, backgroundColor: c.teal },
+          { label: "C# TryParse", data: [6.6, 6.7, 7.2, 7.1], borderColor: c.green, backgroundColor: c.green, borderDash: [6, 4] },
+          { label: "C# exceptions", data: [7.2, 41.7, 333.6, 1573.2], borderColor: c.purple, backgroundColor: c.purple },
+          { label: "Rust panic + catch_unwind", data: [2.0, 137.0, 1326.2, 6669.8], borderColor: c.red, backgroundColor: c.red }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { title: { display: true, text: "share of inputs that fail" } },
+          y: { type: "logarithmic", title: { display: true, text: "ns per parse (log scale)" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

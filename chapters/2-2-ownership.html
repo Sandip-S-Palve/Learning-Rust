@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.2 Ownership and moves</title>
+<meta name="description" content="The three ownership rules, moves, Copy and Clone, Drop and drop order, and RAII compared with IDisposable and finalizers, with an animated ownership walk-through, measured move vs clone costs and every snippet run.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+</head>
+<body data-chapter="2.2">
+<article class="content">
+<h1>Ownership and moves</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>State the three ownership rules and use them to predict when a value is freed</li>
+      <li>Explain what a <em>move</em> does in memory, recognise every place one happens, and read error E0382</li>
+      <li>Distinguish <code>Copy</code>, <code>Clone</code> and plain moves, and decide which a type of yours should support</li>
+      <li>Implement <code>Drop</code>, predict drop order, and use RAII guards for resources such as connections and locks</li>
+      <li>Compare Rust's ownership with .NET's garbage collector, <code>IDisposable</code>/<code>using</code> and finalizers, and explain what each guarantees</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Every program has to answer "who frees this, and when?" for every piece of memory and every resource. .NET answers it twice. For memory, the garbage collector frees objects at some later point it chooses (chapter F1). For everything else (files, sockets, database connections, locks, leases) it hands the job back to you: implement <code>IDisposable</code>, remember the <code>using</code>, and hope nobody uses the object after it's disposed. Forgotten disposals are among the most common production leaks in .NET services, and analyzers like CA2000 exist because the compiler can't enforce them.</p>
+  <p>Rust answers the question once, for memory and resources alike, at compile time: <strong>every value has exactly one owner, and the value is cleaned up the moment its owner goes away</strong>. There's no collector, no forgotten <code>using</code>, and no use-after-dispose, because using a value whose ownership has moved elsewhere doesn't compile. This is the idea everything else in Rust builds on: borrowing (2.3), lifetimes (2.11), smart pointers (2.12), and thread safety (4.1). For your workflow engine it means a worker's lease on a step, a database connection or a lock is released on <em>every</em> exit path, including errors and panics, without a single <code>finally</code>.</p>
+</div>
+
+<h2 id="intuition">Intuition first: one original document</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Think of a value as a <strong>signed original contract</strong>, filed in exactly one cabinet.</p>
+  <ul>
+    <li><strong>Ownership:</strong> the cabinet it's in is responsible for it. One cabinet at a time.</li>
+    <li><strong>Move:</strong> you hand the original to a colleague. Now <em>their</em> cabinet owns it. You can't read it any more. You don't have it, and you certainly mustn't shred it.</li>
+    <li><strong>Clone:</strong> you make a certified photocopy. It costs time and paper, and you do it on purpose. Now there are two independent originals.</li>
+    <li><strong>Copy:</strong> some things are so small that copying is free and nobody cares which one is "original": a phone number on a sticky note. Those are copied without ceremony.</li>
+    <li><strong>Drop:</strong> when a cabinet is cleared out (its owner leaves scope), whatever is still in it goes to the shredder, immediately and exactly once.</li>
+  </ul>
+  <p>In .NET, by contrast, everyone holds a pointer to the same document and a cleaner eventually removes documents nobody points at. That's convenient, but you never know <em>when</em>, and if the document was holding a meeting room booked, the room stays booked until the cleaner comes.</p>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="rules">The three ownership rules</h3>
+<p>The Rust Book states them exactly:</p>
+<ol>
+  <li><strong>Each value in Rust has an <dfn data-term="owner" data-def="The variable (or field, or collection slot) responsible for a value; when the owner goes out of scope, the value is dropped. Every value has exactly one owner at a time.">owner</dfn>.</strong></li>
+  <li><strong>There can only be one owner at a time.</strong></li>
+  <li><strong>When the owner goes out of scope, the value will be dropped.</strong></li>
+</ol>
+<p>An owner is usually a variable, but it can also be a struct field, an element of a <code>Vec</code>, or a function parameter. Scopes are the blocks <code>{ … }</code> you met in chapter 2.1. "Dropped" means the value's cleanup runs: for a <code>String</code> that frees its heap buffer; for a file, it closes the handle; for a lock guard, it unlocks. Everything else in this chapter follows from these three sentences.</p>
+
+<h3 id="moves">Moves</h3>
+<p>Recall from chapter F1 that a <code>String</code> is three words on the stack (a pointer, a length and a capacity, 24 bytes in total) pointing at a buffer on the heap. What should <code>let s2 = s1;</code> do?</p>
+<ul>
+  <li>Copying the heap bytes too (a deep copy) would make every assignment potentially expensive. Rust never does that implicitly.</li>
+  <li>Copying only the three words and keeping both variables valid would give the buffer <em>two</em> owners. When both went out of scope, both would free it: a <em>double free</em>, one of the classic memory-safety bugs (chapter 0.1).</li>
+</ul>
+<p>Rust's answer is a <dfn data-term="move" data-def="Transferring ownership of a value: the bits (e.g. a String's pointer/length/capacity) are copied to the new owner and the old variable becomes unusable, so the value still has exactly one owner and is dropped exactly once.">move</dfn>. The three words are copied to <code>s2</code>, and <strong><code>s1</code> stops being usable</strong>: it is now <dfn data-term="moved-from" data-def="The state of a variable whose value has been moved elsewhere: the compiler forbids reading it (E0382) until it is assigned a new value, and nothing is dropped for it.">moved-from</dfn>. The heap buffer still has exactly one owner, so it will be freed exactly once. Use <code>s1</code> afterwards and you get error E0382, "borrow of moved value", at compile time (Lab step 1).</p>
+
+<figure class="visual stepper" data-interval="2800">
+  <span class="visual-tag">Animation · ownership on the stack and heap</span>
+  <svg viewBox="0 0 720 330" role="img" aria-label="A String moved from s1 to s2, cloned into s3, moved into a function and freed, then s3 freed at the end of main">
+    <defs>
+      <marker id="ow-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="ow-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="130" y="22" class="svg-title" text-anchor="middle">stack (main's frame)</text>
+    <text x="540" y="22" class="svg-title" text-anchor="middle">heap</text>
+
+    <g data-show="-6">
+      <rect x="20" y="40" width="220" height="50" rx="5" class="svg-box-strong" data-show="=1"/>
+      <rect x="20" y="40" width="220" height="50" rx="5" class="svg-box" stroke-dasharray="5 4" data-show="2"/>
+      <text x="32" y="60" class="svg-mono">s1</text>
+      <text x="32" y="80" class="svg-text-sm" data-show="=1">ptr · len 11 · cap 11</text>
+      <text x="32" y="80" class="svg-text-sm" data-show="2">moved-from: can't be used</text>
+    </g>
+    <g data-show="2-4">
+      <rect x="20" y="104" width="220" height="50" rx="5" class="svg-box-strong" data-hl="2"/>
+      <text x="32" y="124" class="svg-mono">s2</text><text x="32" y="144" class="svg-text-sm">ptr · len 11 · cap 11</text>
+    </g>
+    <g data-show="4-">
+      <rect x="20" y="168" width="220" height="50" rx="5" class="svg-box-strong" data-hl="4"/>
+      <text x="32" y="188" class="svg-mono">s3 (clone)</text><text x="32" y="208" class="svg-text-sm">ptr · len 11 · cap 11</text>
+    </g>
+    <g data-show="=5">
+      <rect x="20" y="246" width="220" height="56" rx="5" class="svg-purple"/>
+      <text x="32" y="266" class="svg-mono">archive(doc) frame</text><text x="32" y="288" class="svg-text-sm">doc: ptr · len · cap (moved in)</text>
+    </g>
+
+    <g data-show="-5">
+      <rect x="420" y="56" width="240" height="44" rx="6" class="svg-teal" data-show="-4"/>
+      <rect x="420" y="56" width="240" height="44" rx="6" class="svg-red" data-show="=5"/>
+      <text x="540" y="83" class="svg-mono" text-anchor="middle" data-show="-4">"rule-set v7"</text>
+      <text x="540" y="83" class="svg-mono" text-anchor="middle" data-show="=5">freed when doc's scope ends</text>
+    </g>
+    <g data-show="4-6">
+      <rect x="420" y="176" width="240" height="44" rx="6" class="svg-purple" data-show="-5"/>
+      <rect x="420" y="176" width="240" height="44" rx="6" class="svg-red" data-show="=6"/>
+      <text x="540" y="203" class="svg-mono" text-anchor="middle" data-show="-5">"rule-set v7" (copy)</text>
+      <text x="540" y="203" class="svg-mono" text-anchor="middle" data-show="=6">freed at end of main</text>
+    </g>
+
+    <path d="M240 65 L416 75" class="svg-line" marker-end="url(#ow-a)" data-show="=1"/>
+    <path d="M240 129 L416 85" class="svg-line-accent" marker-end="url(#ow-b)" data-show="2-4"/>
+    <path d="M240 193 L416 198" class="svg-line" marker-end="url(#ow-a)" data-show="4-5"/>
+    <path d="M240 274 L416 92" class="svg-line-accent" marker-end="url(#ow-b)" data-show="=5"/>
+
+    <g data-show="=3">
+      <path d="M240 65 L416 70" class="svg-line-dash"/>
+      <text x="330" y="190" class="svg-text-sm" text-anchor="middle">if s1 stayed valid too:</text>
+      <text x="330" y="208" class="svg-text-sm" text-anchor="middle">two owners → freed twice (double free)</text>
+      <text x="330" y="226" class="svg-text-sm" text-anchor="middle">so Rust forbids using s1: error E0382</text>
+    </g>
+    <text x="360" y="322" class="svg-text-sm" text-anchor="middle" data-show="=6">every buffer had one owner at all times, and was freed exactly once</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>let s1 = String::from("rule-set v7");</code>. <code>s1</code>, on the stack, owns an 11-byte buffer on the heap.</li>
+    <li><code>let s2 = s1;</code> copies the 24-byte header (pointer, length, capacity) into <code>s2</code>. The heap bytes don't move at all; Lab step 1 prints the buffer's address before and after to prove it. <code>s1</code> is now <em>moved-from</em>.</li>
+    <li>Why not leave <code>s1</code> usable? Both variables would point at one buffer and both would free it at the end of the scope. Rust prevents that at compile time: any later use of <code>s1</code> is error E0382.</li>
+    <li><code>let s3 = s2.clone();</code> is an explicit deep copy: a <em>new</em> heap buffer, a different address, its own owner. It costs an allocation and a copy, and you can see it in the code.</li>
+    <li><code>archive(s2);</code> moves <code>s2</code> into the function's parameter <code>doc</code>. When <code>archive</code> returns, <code>doc</code> goes out of scope and the original buffer is freed, inside the function, right then.</li>
+    <li>At the end of <code>main</code>, <code>s3</code> goes out of scope and its buffer is freed. <code>s1</code> and <code>s2</code> own nothing, so nothing else is freed. No collector ran; every free happened at a point you can read in the source.</li>
+  </ol>
+  <figcaption><strong>Figure 1.</strong> A move is a shallow copy of the stack part <em>plus</em> a compile-time rule that the old name is dead. That's why moves are cheap whatever the size of the heap data (Lab step 5), and why ownership needs no runtime bookkeeping.</figcaption>
+</figure>
+
+<p>Moves happen in more places than assignment, and you need to recognise all of them:</p>
+<ul>
+  <li><strong>Passing an argument by value:</strong> <code>archive(doc)</code> moves <code>doc</code> into the function. Inside a loop, that's error E0382 "value moved here, in previous iteration of loop" (Lab step 1).</li>
+  <li><strong>Returning a value</strong> moves it out to the caller. That's how a function can create a <code>String</code> and hand it back without copying.</li>
+  <li><strong>Storing a value</strong> in a struct field, a <code>Vec</code> (<code>v.push(s)</code>), a <code>HashMap</code>, or a closure that captures by <code>move</code>.</li>
+  <li><strong><code>for x in collection</code></strong> moves each element out and consumes the collection; afterwards the collection is gone. (<code>for x in &amp;collection</code> borrows instead: chapter 2.3.)</li>
+  <li><strong>Pattern matching</strong> and <code>let (a, b) = pair;</code> move the parts out.</li>
+</ul>
+<p>The compiler tracks moves through <code>if</code>/<code>else</code> branches and loops. If a value is moved on <em>some</em> path, it's treated as unusable afterwards on <em>all</em> paths. It also refuses moves that would leave a hole: <code>let first = names[0];</code> on a <code>Vec&lt;String&gt;</code> is error E0507 "cannot move out of index", because the vector would then contain an element it no longer owns. The fixes are to borrow (<code>&amp;names[0]</code>), clone, take the element out properly (<code>names.remove(0)</code>, <code>swap_remove</code>, <code>into_iter</code>), or swap something in its place (<code>std::mem::take</code>, below).</p>
+
+<h3 id="copy">Copy: types that are just bits</h3>
+<p>Some types have no owned resources at all: their value <em>is</em> their bits. For them a move is pointless ceremony, so they're <dfn data-term="Copy" data-def="Marker trait for types that can be duplicated by copying their bits (integers, floats, bool, char, &amp;T, and tuples/arrays/structs of Copy types). Assignment copies instead of moving; the original stays usable. Incompatible with Drop.">Copy</dfn>: assignment duplicates the bits and both variables stay usable. All the scalar types from chapter 2.1 are <code>Copy</code> (integers, floats, <code>bool</code>, <code>char</code>), as are shared references <code>&amp;T</code>, and tuples and arrays whose elements are all <code>Copy</code>. Your own struct can be <code>Copy</code> too, by writing <code>#[derive(Clone, Copy)]</code>, but only if every field is <code>Copy</code>. A struct containing a <code>String</code> can't be (error E0204, Lab step 2).</p>
+<p>The deeper rule: a type can't be both <code>Copy</code> and implement <code>Drop</code>. The Book states it directly: "Rust won't let us annotate a type with <code>Copy</code> if the type, or any of its parts, has implemented the <code>Drop</code> trait." If copying the bits created a second value with cleanup duties, the cleanup would run twice. So <code>Copy</code> is exactly the set of types for which "two owners" is harmless.</p>
+<p>Note what <code>Copy</code> does <em>not</em> mean: it doesn't make a type a "value type" in the C# sense, and non-<code>Copy</code> types aren't "reference types". Every Rust type has value semantics (chapter F8). <code>Copy</code> only decides whether the source stays usable after a move. Both a move and a copy are the same bitwise copy of the stack representation.</p>
+
+<h3 id="clone">Clone: explicit duplication</h3>
+<p><dfn data-term="Clone" data-def="Trait for explicit duplication via .clone(); may be expensive (String/Vec allocate and copy their heap data). Implemented with #[derive(Clone)] or by hand. Every Copy type is also Clone.">Clone</dfn> is how you ask for an independent duplicate of a non-<code>Copy</code> value: <code>let s3 = s2.clone();</code>. For a <code>String</code> or <code>Vec</code> that means a new heap allocation and a copy of every byte, so its cost grows with the size of the data (Lab step 5 measured 2 ms to clone a 10-million-element <code>Vec&lt;u64&gt;</code>, while the move was too small to measure). Making that cost visible in the code, instead of hiding it in an assignment, is the point. <code>#[derive(Clone)]</code> generates a field-by-field clone.</p>
+<p>Clone isn't always a deep copy. For <code>Rc</code> and <code>Arc</code> (chapter 2.12) <code>.clone()</code> just increments a reference count and shares the same data. The trait means "give me another owner-able value", and each type documents what that costs. A useful review heuristic: a <code>.clone()</code> on a large collection inside a loop, or one added just to silence the compiler, deserves a second look (chapter 3.2 calls it the "clone everywhere" anti-pattern).</p>
+
+<div class="table-wrap"><table>
+  <thead><tr><th></th><th>Move</th><th>Copy</th><th>Clone</th></tr></thead>
+  <tbody>
+    <tr><td>Written as</td><td><code>let b = a;</code>, <code>f(a)</code></td><td>The same syntax, for <code>Copy</code> types</td><td><code>let b = a.clone();</code></td></tr>
+    <tr><td>What happens in memory</td><td>Bitwise copy of the stack part</td><td>Bitwise copy of the stack part</td><td>Whatever the type defines (a new heap buffer for <code>String</code>/<code>Vec</code>)</td></tr>
+    <tr><td><code>a</code> usable afterwards?</td><td class="no">No (E0382)</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+    <tr><td>Cost</td><td>Constant, small</td><td>Constant, small</td><td>Can be O(size of data)</td></tr>
+    <tr><td>Which types</td><td>All types (the default)</td><td>Plain data with no <code>Drop</code>: scalars, <code>&amp;T</code>, structs of those</td><td>Types that implement <code>Clone</code> (most standard types)</td></tr>
+    <tr><td>C# analogy</td><td>None: C# has no ownership transfer</td><td>Copying a struct</td><td><code>ICloneable</code>, a copy constructor, <code>with</code> on a record (shallow)</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="drop">Drop and RAII</h3>
+<p>When a value is dropped, Rust first runs the type's <code>Drop</code> implementation, if it has one, then drops each of its fields. You implement <dfn data-term="Drop" data-def="Trait with one method, drop(&amp;mut self), run automatically exactly once when a value's owner goes out of scope (Rust's destructor). It can't be called directly; use std::mem::drop(value) to drop early.">Drop</dfn> for types that own something outside Rust's memory, or that must do something when they end:</p>
+<pre data-title="a Drop implementation"><code class="language-rust">struct Connection { id: u32 }
+
+impl Drop for Connection {
+    fn drop(&amp;mut self) {
+        println!("closing connection {}", self.id); // runs exactly once
+    }
+}</code></pre>
+<p>Tying a resource's lifetime to an owner's scope like this is called <dfn data-term="RAII" data-def="Resource Acquisition Is Initialization: acquiring a resource in a value's constructor and releasing it in its destructor, so the resource lives exactly as long as its owner's scope. Rust's Drop; C++ destructors.">RAII</dfn>, "Resource Acquisition Is Initialization", a name inherited from C++: acquire the resource when the value is created, release it when the value is dropped. The standard library uses it everywhere. A <code>File</code> closes its handle on drop. A <code>MutexGuard</code> (chapter F9) unlocks on drop. A <code>Vec</code> frees its buffer and drops each element. A <code>JoinHandle</code> detaches. You'll write your own <dfn data-term="guard" data-def="A value whose only job is to perform an action when dropped: unlock a mutex, return a lease, roll back a transaction, log elapsed time. Keep it in a named binding (let _guard), not let _.">guards</dfn>: a pool lease that returns its slot (Lab step 4), a timer that logs elapsed time (Exercise 1), a transaction that rolls back unless committed (chapter 7.4).</p>
+<p>The rules you need:</p>
+<ul>
+  <li><strong><dfn data-term="drop order" data-def="The defined order of destruction: locals in reverse order of declaration; struct fields in declaration order; array/Vec elements first to last; a moved value is dropped by its final owner.">Drop order</dfn>.</strong> Variables in a scope are dropped in <em>reverse</em> order of declaration, so later values, which may depend on earlier ones, go first. Struct fields are dropped in declaration order, and array and <code>Vec</code> elements first to last. Figure 2 and Lab step 3 show all of these.</li>
+  <li><strong>A move moves the duty to drop.</strong> A value is dropped where its <em>final</em> owner's scope ends: inside the function it was moved into, in the struct it was stored in, or never, if ownership is returned to the caller.</li>
+  <li><strong>Drop early with <code>drop(value)</code></strong> (that's <code>std::mem::drop</code>, a function in the prelude that simply takes ownership and lets it go). You can't call <code>value.drop()</code> yourself: that's error E0040, because the compiler would still drop it again at the end of the scope.</li>
+  <li><strong>Panics run drops.</strong> When a panic unwinds the stack, every live value in every frame it passes through is dropped (Lab step 3). Cleanup happens on the error path too, without <code>finally</code>.</li>
+</ul>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · drop order</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Locals drop in reverse declaration order; struct fields and array elements drop in order; a moved value is dropped by its new owner">
+    <rect x="20" y="36" width="215" height="204" rx="8" class="svg-box-strong"/>
+    <text x="127" y="20" class="svg-title" text-anchor="middle">locals in one scope</text>
+    <text x="36" y="66" class="svg-mono">let a = …;</text><circle cx="205" cy="61" r="13" class="svg-accent"/><text x="205" y="66" class="svg-mono" text-anchor="middle">3</text>
+    <text x="36" y="106" class="svg-mono">let b = …;</text><circle cx="205" cy="101" r="13" class="svg-accent"/><text x="205" y="106" class="svg-mono" text-anchor="middle">2</text>
+    <text x="36" y="146" class="svg-mono">let c = …;</text><circle cx="205" cy="141" r="13" class="svg-accent"/><text x="205" y="146" class="svg-mono" text-anchor="middle">1</text>
+    <text x="36" y="196" class="svg-mono">}  // end of scope</text>
+    <text x="127" y="226" class="svg-text-sm" text-anchor="middle">reverse order of declaration</text>
+
+    <rect x="252" y="36" width="215" height="204" rx="8" class="svg-box-strong"/>
+    <text x="360" y="20" class="svg-title" text-anchor="middle">inside one value</text>
+    <text x="268" y="66" class="svg-mono">struct Pair {</text>
+    <text x="284" y="96" class="svg-mono">first,</text><circle cx="437" cy="91" r="13" class="svg-teal"/><text x="437" y="96" class="svg-mono" text-anchor="middle">1</text>
+    <text x="284" y="126" class="svg-mono">second,</text><circle cx="437" cy="121" r="13" class="svg-teal"/><text x="437" y="126" class="svg-mono" text-anchor="middle">2</text>
+    <text x="268" y="156" class="svg-mono">}</text>
+    <text x="268" y="196" class="svg-mono">[x0, x1, x2]</text><text x="400" y="196" class="svg-text-sm">→ 0, 1, 2</text>
+    <text x="360" y="226" class="svg-text-sm" text-anchor="middle">fields: declaration order</text>
+
+    <rect x="484" y="36" width="215" height="204" rx="8" class="svg-box-strong"/>
+    <text x="592" y="20" class="svg-title" text-anchor="middle">after a move</text>
+    <text x="500" y="66" class="svg-mono">let v = …;</text>
+    <text x="500" y="96" class="svg-mono">consume(v);</text>
+    <text x="516" y="126" class="svg-text-sm">↳ dropped at the end</text>
+    <text x="516" y="144" class="svg-text-sm">   of consume()</text>
+    <text x="500" y="196" class="svg-mono">}  // nothing for v</text>
+    <text x="592" y="226" class="svg-text-sm" text-anchor="middle">the final owner drops it</text>
+
+    <text x="360" y="270" class="svg-text-sm" text-anchor="middle">1. Drop::drop runs (if implemented), 2. then the value's fields are dropped, recursively.</text>
+    <text x="360" y="290" class="svg-text-sm" text-anchor="middle">A panic unwinding through a frame drops its live locals in the same order.</text>
+  </svg>
+  <figcaption><strong>Figure 2.</strong> The rules from the Rust Reference's "Destructors" chapter, all demonstrated by Lab step 3. Reverse order for locals matters: if <code>b</code> was built from <code>a</code> (a transaction from a connection, say), <code>b</code> is cleaned up first, while <code>a</code> still exists.</figcaption>
+</figure>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: RAII vs IDisposable and finalizers</div>
+  <p>C#'s closest equivalent is <code>IDisposable</code> plus <code>using</code>, and it differs on every guarantee that matters:</p>
+  <ul>
+    <li><strong>Opt-in vs automatic.</strong> Forget the <code>using</code> and <code>Dispose</code> never runs; only a finalizer, if the class has one, cleans up eventually, "the garbage collector decides when to call it". Since .NET 5, finalizers <em>don't</em> run at application exit at all, per Microsoft's docs. In Rust, the drop runs when the owner's scope ends, with nothing to remember.</li>
+    <li><strong>Use after cleanup.</strong> In C# a disposed object is still reachable through every other reference to it, and using it throws <code>ObjectDisposedException</code> at runtime, if the class remembered to check. In Rust, after a move or <code>drop(x)</code>, any use of <code>x</code> is a compile error.</li>
+    <li><strong>Double cleanup.</strong> <code>Dispose</code> must be written to tolerate being called twice. Rust's <code>drop</code> runs exactly once, by construction.</li>
+    <li><strong>Memory vs resources.</strong> .NET uses one mechanism for memory (GC) and another for resources (<code>Dispose</code>). Rust uses ownership for both, so a <code>Vec&lt;File&gt;</code> going out of scope frees the memory <em>and</em> closes every file.</li>
+  </ul>
+  <p>Lab step 4 runs a C# <code>IDisposable</code> through each of these cases next to the Rust equivalent.</p>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="moves-in-memory">What a move costs</h3>
+<p>A move copies the value's stack representation (24 bytes for a <code>String</code> or <code>Vec</code>, whatever the size of its heap data) and often not even that, because the optimiser frequently builds the value directly in its final location. Lab step 1 prints the heap buffer's address before and after <code>let s2 = s1;</code>: identical. Lab step 5 times moving a <code>Vec</code> of up to 10 million elements: below the timer's ~0.04 µs resolution at every size, while cloning grew from 0.1 µs to about 2 ms. So "pass and return owned values" is cheap in Rust, and that's the idiom. A function that builds a big result returns it by value; there's nothing to gain from out-parameters. The exception is very large types stored <em>inline</em> (a struct holding a 64 KB array), whose moves really do copy every byte. Keep those behind a <code>Box</code>.</p>
+
+<h3 id="temporaries">The <code>let _</code> trap and temporaries</h3>
+<p>A value that's never bound to a name is a <em>temporary</em>, and it's dropped at the end of the statement that created it. That makes two lines that look alike behave very differently (Lab step 3):</p>
+<pre data-title="let _ vs let _lease"><code class="language-rust">let _ = pool.acquire(7);      // `_` binds nothing: the lease is returned HERE, at the end of this statement
+let _lease = pool.acquire(8); // a real binding (merely unused): held until the end of the scope</code></pre>
+<p>The first line is a real bug when the lease was meant to be held: the step runs without a slot. The same applies to any guard of your own, such as a timer, a lease or a transaction. Use a named binding with a leading underscore whenever the guard's lifetime is the whole point. (<code>let _ = existing_variable;</code>, by contrast, neither moves nor drops anything; <code>_</code> only matters for values created in that statement.)</p>
+<p>The compiler protects the most dangerous case for you. For the standard library's lock guards, the deny-by-default lint <code>let_underscore_lock</code> turns <code>let _ = mutex.lock().unwrap();</code> into a compile error:</p>
+<pre data-title="e6.rs"><code class="language-rust">use std::sync::Mutex;
+
+fn main() {
+    let state = Mutex::new(0);
+    let _ = state.lock().unwrap(); // meant to hold the lock for the next lines
+}</code></pre>
+<pre class="output error">error: non-binding let on a synchronization lock
+ --&gt; errs/e6.rs:5:9
+  |
+5 |     let _ = state.lock().unwrap(); // meant to hold the lock for the next lines
+  |         ^ this lock is not assigned to a binding and is immediately dropped
+  |
+  = note: `#[deny(let_underscore_lock)]` (part of `#[deny(let_underscore)]`) on by default
+help: consider binding to an unused variable to avoid immediately dropping the value
+  |
+5 |     let _unused = state.lock().unwrap(); // meant to hold the lock for the next lines
+  |          ++++++
+help: consider immediately dropping the value
+  |
+5 -     let _ = state.lock().unwrap(); // meant to hold the lock for the next lines
+5 +     drop(state.lock().unwrap()); // meant to hold the lock for the next lines
+  |</pre>
+<p>For <em>your</em> guard types, the related lint <code>let_underscore_drop</code> exists but is allow-by-default, because many types with destructors are harmless to drop at once. In crates that define RAII guards, switch it on, at the top of <code>lib.rs</code>/<code>main.rs</code> or in <code>Cargo.toml</code>'s <code>[lints]</code> table:</p>
+<pre data-title="w7.rs"><code class="language-rust">#![warn(let_underscore_drop)] // opt in: catch `let _ =` on ANY type with a destructor
+
+struct Lease(u32);
+
+impl Drop for Lease {
+    fn drop(&amp;mut self) {
+        println!("lease {} returned", self.0);
+    }
+}
+
+fn main() {
+    let _ = Lease(7); // returned immediately
+    let _lease = Lease(8);
+    println!("working with lease 8");
+}</code></pre>
+<pre class="output">warning: non-binding let on a type that has a destructor
+  --&gt; errs/w7.rs:12:5
+   |
+12 |     let _ = Lease(7); // returned immediately
+   |     ^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --&gt; errs/w7.rs:1:9
+   |
+ 1 | #![warn(let_underscore_drop)] // opt in: catch `let _ =` on ANY type with a destructor
+   |         ^^^^^^^^^^^^^^^^^^^
+help: consider binding to an unused variable to avoid immediately dropping the value
+   |
+12 |     let _unused = Lease(7); // returned immediately
+   |          ++++++
+help: consider immediately dropping the value
+   |
+12 -     let _ = Lease(7); // returned immediately
+12 +     drop(Lease(7)); // returned immediately
+   |</pre>
+<pre class="output">lease 7 returned
+working with lease 8
+lease 8 returned</pre>
+
+<h3 id="moving-out">Moving out of places you don't fully own</h3>
+<p>Sometimes you want to move a value out of a struct field or a collection while keeping the container usable. The compiler allows a <em>partial move</em> of a field from a local struct, after which only the remaining fields are usable. For containers and anything behind a reference, the standard tools swap a valid value in as you take the old one out:</p>
+<pre data-title="moving out cleanly"><code class="language-rust">struct Job { id: u64, payload: String }
+
+let job = Job { id: 7, payload: String::from("data") };
+let payload = job.payload;           // partial move: job.payload is gone…
+println!("job {} moved out {payload}", job.id); // …but job.id (Copy) is still usable
+
+let mut buffer = vec![1, 2, 3];
+let batch = std::mem::take(&amp;mut buffer);   // take the Vec, leave an empty one behind
+let mut slot: Option&lt;String&gt; = Some(String::from("lease-9"));
+let taken = slot.take();                    // Some(..) out, None left in the slot
+let old = std::mem::replace(&amp;mut buffer, vec![9]); // swap in a specific value
+println!("{batch:?} {taken:?} {old:?} {buffer:?} {slot:?}");</code></pre>
+<p><code>mem::take</code>, <code>mem::replace</code> and <code>Option::take</code> come up constantly in state machines: "take the old state out, compute the new one, put it back", a pattern chapter 10.3 builds on.</p>
+
+<details class="deep-dive"><summary>Deep dive: drop flags — how Rust knows whether to drop after a conditional move</summary><div class="body">
+  <p>If a value is moved on one branch of an <code>if</code> and not the other, should the end of the scope drop it? The compiler can't always know statically, so, as the Rustonomicon puts it, "Rust actually tracks whether a type should be dropped or not at runtime. As a variable becomes initialized and uninitialized, a <dfn data-term="drop flag" data-def="A hidden runtime boolean the compiler adds for a variable that is moved on only some paths, recording whether it still needs dropping at the end of its scope.">drop flag</dfn> for that variable is toggled." In straight-line code the state is known at compile time and no flag exists. Only conditionally moved values pay for a hidden boolean on the stack.</p>
+<pre><code class="language-rust">let conn = Connection { id: 1 };
+if send_to_worker {
+    worker.take(conn);   // moved on this path only
+}
+// end of scope: drop `conn` only if it wasn't moved, decided by a hidden flag</code></pre>
+  <p>This is the whole runtime cost of ownership: occasionally one byte and one branch. There's no reference counting, no tracing, and no pause.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: what ownership does not guarantee — leaks are "safe"</summary><div class="body">
+  <p>Rust guarantees that a value is never freed <em>twice</em> and never used <em>after</em> it's freed. It does <strong>not</strong> guarantee that every destructor runs. The standard library says so explicitly: <code>mem::forget</code> "is not marked as unsafe, because Rust's safety guarantees do not include a guarantee that destructors will always run". Ways to skip a drop:</p>
+  <ul>
+    <li><code>std::mem::forget(value)</code>, or <code>Box::leak</code>, deliberately.</li>
+    <li>A reference cycle of <code>Rc</code>s (chapter 2.12), the one way to leak by accident in safe code.</li>
+    <li><code>std::process::exit</code>, or a build with <code>panic = "abort"</code>: the process ends without unwinding, so no destructors run.</li>
+  </ul>
+  <p>The design consequence: never rely on <code>Drop</code> for <em>correctness</em> across a process boundary. A workflow engine that releases a database lease in a <code>Drop</code> impl must <em>also</em> give the lease a timeout in the database, because the process can be killed. RAII makes the common paths, including errors and panics, correct; durable systems still need expiry for the uncommon ones (chapter 10.5). .NET is in the same position, more so: its finalizers don't run at exit since .NET 5.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac; outputs are verbatim. Put each Rust program in <code>src/bin/</code> of one Cargo project and run <code>cargo run --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — moves, clones, and what the compiler refuses</h3>
+<pre data-playground data-title="src/bin/moves.rs"><code class="language-rust">/// Takes ownership of `doc`: when this function ends, the String is dropped.
+fn archive(doc: String) -&gt; usize {
+    let n = doc.len();
+    println!("  archived {n} bytes");
+    n
+} // `doc` goes out of scope here and its heap buffer is freed
+
+/// Takes ownership and gives it back (with a change) through the return value.
+fn stamp(mut doc: String) -&gt; String {
+    doc.push_str(" [approved]");
+    doc
+}
+
+fn main() {
+    let s1 = String::from("rule-set v7");
+    let s2 = s1; // MOVE: s2 now owns the heap buffer; s1 is no longer usable
+    println!("s2 = {s2}");
+
+    let copy = s2.clone(); // CLONE: a second, independent heap buffer
+    archive(s2); // MOVE into the function: s2 is gone after this line
+    println!("copy still usable: {copy}");
+
+    let doc = stamp(copy); // moved in, moved back out
+    println!("doc = {doc}");
+
+    let ids = vec![String::from("a"), String::from("b")];
+    for id in ids {
+        // `for x in vec` moves each element out; `ids` is consumed by the loop
+        print!("{id} ");
+    }
+    println!();
+
+    let n: u64 = 42;
+    let m = n; // u64 is Copy: both remain usable
+    println!("n = {n}, m = {m}");
+}</code></pre>
+<pre class="output">s2 = rule-set v7
+  archived 11 bytes
+copy still usable: rule-set v7
+doc = rule-set v7 [approved]
+a b 
+n = 42, m = 42</pre>
+<p>Now watch the heap buffer during a move and a clone:</p>
+<pre data-playground data-title="src/bin/layout.rs"><code class="language-rust">use std::mem::size_of;
+
+fn main() {
+    let s1 = String::from("hello, ownership");
+    let heap_before = s1.as_ptr();
+    let s2 = s1; // copies 24 bytes on the stack; the heap bytes don't move
+    println!("size_of::&lt;String&gt;() = {} bytes (pointer + length + capacity)", size_of::&lt;String&gt;());
+    println!("heap buffer before move: {heap_before:p}");
+    println!("heap buffer after move : {:p}", s2.as_ptr());
+
+    let s3 = s2.clone(); // allocates a NEW heap buffer and copies the bytes
+    println!("heap buffer of clone   : {:p}", s3.as_ptr());
+    println!("len {} / capacity {}", s3.len(), s3.capacity());
+}</code></pre>
+<pre class="output">size_of::&lt;String&gt;() = 24 bytes (pointer + length + capacity)
+heap buffer before move: 0x100a61330
+heap buffer after move : 0x100a61330
+heap buffer of clone   : 0x100a613a0
+len 16 / capacity 16</pre>
+<p>The move left the buffer exactly where it was, at the same address; only the 24-byte header changed hands. The clone has a different address: a new allocation. (Addresses differ from run to run.) The three mistakes everyone makes in week one:</p>
+<pre data-title="e1.rs — using a value after moving it"><code class="language-rust">fn main() {
+    let s1 = String::from("rule-set v7");
+    let s2 = s1;
+    println!("{s1} / {s2}");
+}</code></pre>
+<pre class="output error">error[E0382]: borrow of moved value: `s1`
+ --&gt; errs/e1.rs:4:16
+  |
+2 |     let s1 = String::from("rule-set v7");
+  |         -- move occurs because `s1` has type `String`, which does not implement the `Copy` trait
+3 |     let s2 = s1;
+  |              -- value moved here
+4 |     println!("{s1} / {s2}");
+  |                ^^ value borrowed here after move
+  |
+help: consider cloning the value if the performance cost is acceptable
+  |
+3 |     let s2 = s1.clone();
+  |                ++++++++</pre>
+<pre data-title="e2.rs — moving inside a loop"><code class="language-rust">fn audit(entry: String) {
+    println!("audited {entry}");
+}
+
+fn main() {
+    let entry = String::from("login failed");
+    for _ in 0..3 {
+        audit(entry); // moved on the first iteration
+    }
+}</code></pre>
+<pre class="output error">error[E0382]: use of moved value: `entry`
+ --&gt; errs/e2.rs:8:15
+  |
+6 |     let entry = String::from("login failed");
+  |         ----- move occurs because `entry` has type `String`, which does not implement the `Copy` trait
+7 |     for _ in 0..3 {
+  |     ------------- inside of this loop
+8 |         audit(entry); // moved on the first iteration
+  |               ^^^^^ value moved here, in previous iteration of loop
+  |
+note: consider changing this parameter type in function `audit` to borrow instead if owning the value isn't necessary
+ --&gt; errs/e2.rs:1:17
+  |
+1 | fn audit(entry: String) {
+  |    -----        ^^^^^^ this parameter takes ownership of the value
+  |    |
+  |    in this function
+help: consider cloning the value if the performance cost is acceptable
+  |
+8 |         audit(entry.clone()); // moved on the first iteration
+  |                    ++++++++</pre>
+<pre data-title="e3.rs — moving out of a Vec by index"><code class="language-rust">fn main() {
+    let names = vec![String::from("acme"), String::from("globex")];
+    let first = names[0]; // try to move one element out of the Vec
+    println!("{first}");
+}</code></pre>
+<pre class="output error">error[E0507]: cannot move out of index of `Vec&lt;String&gt;`
+ --&gt; errs/e3.rs:3:17
+  |
+3 |     let first = names[0]; // try to move one element out of the Vec
+  |                 ^^^^^^^^ move occurs because value has type `String`, which does not implement the `Copy` trait
+  |
+help: consider borrowing here
+  |
+3 |     let first = &amp;names[0]; // try to move one element out of the Vec
+  |                 +
+help: consider cloning the value if the performance cost is acceptable
+  |
+3 |     let first = names[0].clone(); // try to move one element out of the Vec
+  |                         ++++++++</pre>
+<p>Read the suggestions. Each error offers <code>.clone()</code>, and e2 and e3 also point at the better fix: <em>borrowing</em> instead of owning (<code>&amp;names[0]</code>; a parameter of type <code>&amp;str</code>). That's chapter 2.3, and it's the answer in most real code. Reach for <code>clone</code> only when you genuinely need a second independent value.</p>
+
+<h3 id="lab-2">Step 2 — Copy and Clone on your own types</h3>
+<pre data-playground data-title="src/bin/copy_clone.rs"><code class="language-rust">/// Small, plain data: every field is Copy, so the whole struct can be Copy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Money {
+    cents: i64,
+    currency: [u8; 3],
+}
+
+/// Owns a heap String, so it can be Clone but never Copy.
+#[derive(Debug, Clone)]
+struct Customer {
+    name: String,
+    limit: Money,
+}
+
+fn main() {
+    let price = Money { cents: 1_999, currency: *b"EUR" };
+    let discounted = price; // implicit bitwise copy; `price` is still valid
+    println!("{price:?} / {discounted:?}");
+
+    let c1 = Customer { name: "Acme".to_string(), limit: price };
+    let c2 = c1.clone(); // explicit: allocates a new String
+    let c3 = c1; // move: no allocation, c1 is now unusable
+    println!("{} {} {}", c2.name, c3.name, c3.limit == c2.limit);
+}</code></pre>
+<pre class="output">Money { cents: 1999, currency: [69, 85, 82] } / Money { cents: 1999, currency: [69, 85, 82] }
+Acme Acme true</pre>
+<p><code>Money</code> is plain data (an <code>i64</code> and three bytes), so <code>Copy</code> is correct and convenient. <code>Customer</code> owns a <code>String</code>, so it can be <code>Clone</code> but not <code>Copy</code>, and the compiler enforces that:</p>
+<pre data-title="e4.rs"><code class="language-rust">#[derive(Clone, Copy)]
+struct Customer {
+    name: String,
+    limit: u32,
+}
+
+fn main() {}</code></pre>
+<pre class="output error">error[E0204]: the trait `Copy` cannot be implemented for this type
+ --&gt; errs/e4.rs:2:8
+  |
+1 | #[derive(Clone, Copy)]
+  |                 ---- in this derive macro expansion
+2 | struct Customer {
+  |        ^^^^^^^^
+3 |     name: String,
+  |     ------------ this field does not implement `Copy`</pre>
+
+<h3 id="lab-3">Step 3 — drop order, early drops, and panics</h3>
+<pre data-playground data-title="src/bin/drop_order.rs"><code class="language-rust">struct Noisy(&amp;'static str);
+
+impl Drop for Noisy {
+    fn drop(&amp;mut self) {
+        println!("  drop {}", self.0);
+    }
+}
+
+#[allow(dead_code)] // the fields exist only so we can watch them being dropped
+struct Pair {
+    first: Noisy,
+    second: Noisy,
+}
+
+fn make(name: &amp;'static str) -&gt; Noisy {
+    Noisy(name)
+}
+
+fn main() {
+    println!("1. locals: reverse order of declaration");
+    {
+        let _a = Noisy("a");
+        let _b = Noisy("b");
+        let _c = Noisy("c");
+    }
+
+    println!("2. struct fields: declaration order; array elements: first to last");
+    {
+        let _p = Pair { first: Noisy("pair.first"), second: Noisy("pair.second") };
+        let _arr = [Noisy("arr[0]"), Noisy("arr[1]")];
+    }
+
+    println!("3. moving a value moves the responsibility to drop it");
+    {
+        let outer = Noisy("moved value");
+        {
+            let _inner = outer; // moved into the inner scope
+            println!("  end of inner scope");
+        }
+        println!("  end of outer scope (nothing left to drop)");
+    }
+
+    println!("4. drop early with std::mem::drop");
+    {
+        let conn = Noisy("connection");
+        drop(conn);
+        println!("  ...still in the scope, connection already closed");
+    }
+
+    println!("5. `let _ = make(..)` drops at once; `let _g = make(..)` lives to the end of scope");
+    {
+        let _ = make("let _ (temporary)");
+        let _g = make("let _g (binding)");
+        println!("  end of scope");
+    }
+}</code></pre>
+<pre class="output">1. locals: reverse order of declaration
+  drop c
+  drop b
+  drop a
+2. struct fields: declaration order; array elements: first to last
+  drop arr[0]
+  drop arr[1]
+  drop pair.first
+  drop pair.second
+3. moving a value moves the responsibility to drop it
+  end of inner scope
+  drop moved value
+  end of outer scope (nothing left to drop)
+4. drop early with std::mem::drop
+  drop connection
+  ...still in the scope, connection already closed
+5. `let _ = make(..)` drops at once; `let _g = make(..)` lives to the end of scope
+  drop let _ (temporary)
+  end of scope
+  drop let _g (binding)</pre>
+<p>Check each section against Figure 2. In section 2, notice that <code>_arr</code> is dropped <em>before</em> <code>_p</code>: the two locals go in reverse order, and then each value's insides go in forward order. Section 5 is the <code>let _</code> trap from the Intermediate section, made visible. Calling the destructor yourself, the C# <code>Dispose()</code> habit, doesn't compile:</p>
+<pre data-title="e5.rs"><code class="language-rust">struct Connection;
+
+impl Drop for Connection {
+    fn drop(&amp;mut self) {
+        println!("closing");
+    }
+}
+
+fn main() {
+    let conn = Connection;
+    conn.drop(); // C# habit: call Dispose() yourself
+}</code></pre>
+<pre class="output error">error[E0040]: explicit use of destructor method
+  --&gt; errs/e5.rs:11:10
+   |
+11 |     conn.drop(); // C# habit: call Dispose() yourself
+   |          ^^^^ explicit destructor calls not allowed
+   |
+help: consider using `drop` function
+   |
+11 -     conn.drop(); // C# habit: call Dispose() yourself
+11 +     drop(conn); // C# habit: call Dispose() yourself
+   |</pre>
+<p>And cleanup during a panic:</p>
+<pre data-playground data-title="src/bin/unwind.rs"><code class="language-rust">struct Guard(&amp;'static str);
+
+impl Drop for Guard {
+    fn drop(&amp;mut self) {
+        eprintln!("cleanup: {}", self.0);
+    }
+}
+
+fn process(step: u32) {
+    let _lock = Guard("release step lock");
+    let _tmp = Guard("delete temp file");
+    if step == 3 {
+        panic!("step {step} failed");
+    }
+}
+
+fn main() {
+    for step in 1..=3 {
+        eprintln!("running step {step}");
+        process(step);
+    }
+}</code></pre>
+<pre class="output error">running step 1
+cleanup: delete temp file
+cleanup: release step lock
+running step 2
+cleanup: delete temp file
+cleanup: release step lock
+running step 3
+
+thread 'main' (762056) panicked at src/bin/unwind.rs:13:9:
+step 3 failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+cleanup: delete temp file
+cleanup: release step lock</pre>
+<p>Step 3 panicked, and both guards still ran, in reverse order, as the panic unwound through <code>process</code>. Chapter 2.6 explains when a panic is the right response at all; the point here is that it doesn't leak.</p>
+
+<h3 id="lab-4">Step 4 — an RAII lease pool, and the same in C#</h3>
+<p>A workflow worker takes a slot from a fixed-size pool for the duration of a step. The slot must come back however the step ends:</p>
+<pre data-playground data-title="src/bin/pool.rs"><code class="language-rust">use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// A fixed number of connection slots. `acquire` hands out a Lease;
+/// dropping the Lease gives the slot back, whatever path the code takes.
+struct Pool {
+    free: Arc&lt;AtomicUsize&gt;,
+}
+
+struct Lease {
+    free: Arc&lt;AtomicUsize&gt;,
+    id: usize,
+}
+
+impl Pool {
+    fn new(size: usize) -&gt; Pool {
+        Pool { free: Arc::new(AtomicUsize::new(size)) }
+    }
+    fn acquire(&amp;self, id: usize) -&gt; Option&lt;Lease&gt; {
+        let left = self.free.load(Ordering::Acquire);
+        if left == 0 {
+            return None;
+        }
+        self.free.fetch_sub(1, Ordering::AcqRel); // single-threaded demo; see F9 for CAS
+        Some(Lease { free: Arc::clone(&amp;self.free), id })
+    }
+    fn available(&amp;self) -&gt; usize {
+        self.free.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&amp;mut self) {
+        self.free.fetch_add(1, Ordering::AcqRel);
+        println!("  lease {} returned", self.id);
+    }
+}
+
+/// Uses a lease and may fail half-way. No `finally`, no `using`: the slot comes back anyway.
+fn run_step(pool: &amp;Pool, id: usize, fail: bool) -&gt; Result&lt;(), String&gt; {
+    let _lease = pool.acquire(id).ok_or("pool exhausted")?;
+    if fail {
+        return Err(format!("step {id} failed"));
+    }
+    println!("  step {id} ok");
+    Ok(())
+}
+
+fn main() {
+    let pool = Pool::new(2);
+    println!("available: {}", pool.available());
+    let a = pool.acquire(1).unwrap();
+    let b = pool.acquire(2).unwrap();
+    println!("available after two acquires: {}", pool.available());
+    println!("third acquire: {}", if pool.acquire(3).is_none() { "None (exhausted)" } else { "Some" });
+    drop(a);
+    drop(b);
+    println!("available after drops: {}", pool.available());
+    println!("{:?}", run_step(&amp;pool, 4, false));
+    println!("{:?}", run_step(&amp;pool, 5, true));
+    println!("available at the end: {}", pool.available());
+}</code></pre>
+<pre class="output">available: 2
+available after two acquires: 0
+third acquire: None (exhausted)
+  lease 1 returned
+  lease 2 returned
+available after drops: 2
+  step 4 ok
+  lease 4 returned
+Ok(())
+  lease 5 returned
+Err("step 5 failed")
+available at the end: 2</pre>
+<p><code>run_step</code> has three exits (the pool is exhausted, the step fails, the step succeeds) and no cleanup code at all. The lease is returned on each, including the early <code>return Err(…)</code> and the <code>?</code> (chapter 2.6). The C# version of the same pattern, exercised through each failure mode:</p>
+<pre data-title="l22cs/Program.cs (.NET 10, Release)"><code class="language-csharp">using System.Runtime.CompilerServices;
+
+// 1. With `using`: disposed deterministically at the end of the scope.
+{
+    using var lease = new Lease("A");
+    Console.WriteLine($"inside using:        open = {Lease.Open}");
+}
+Console.WriteLine($"after using:         open = {Lease.Open}");
+
+// 2. Forgot to dispose: nothing happens until the GC decides to finalize.
+Forget();
+Console.WriteLine($"after Forget():      open = {Lease.Open}");
+GC.Collect();
+GC.WaitForPendingFinalizers();
+Console.WriteLine($"after forced GC:     open = {Lease.Open}");
+
+// 3. Two references to one object: dispose through one, use through the other.
+var first = new Lease("C");
+var alias = first;
+first.Dispose();
+first.Dispose();                       // must be harmless: Dispose has to be idempotent
+try { alias.Use(); }
+catch (ObjectDisposedException e) { Console.WriteLine($"use after dispose:   {e.GetType().Name}"); }
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+static void Forget() =&gt; new Lease("B").Use();
+
+class Lease : IDisposable
+{
+    public static int Open;
+    private readonly string _name;
+    private bool _disposed;
+    public Lease(string name) { _name = name; Open++; }
+    public void Use() =&gt; ObjectDisposedException.ThrowIf(_disposed, this);
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Open--;
+        GC.SuppressFinalize(this);
+    }
+    ~Lease()
+    {
+        Console.WriteLine($"  finalizer ran for {_name} (on the GC's schedule)");
+        Open--;
+    }
+}</code></pre>
+<pre class="output">inside using:        open = 1
+after using:         open = 0
+after Forget():      open = 1
+  finalizer ran for B (on the GC's schedule)
+after forced GC:     open = 0
+use after dispose:   ObjectDisposedException</pre>
+<p>Line by line: with <code>using</code>, C# is as deterministic as Rust. Forgetting it leaves the lease "open" until a garbage collection happens to finalize it; here we had to force one, and in production that might be minutes away, or, at exit, never. The class must make <code>Dispose</code> idempotent by hand. And an alias can still reach the disposed object, so the mistake surfaces at runtime as <code>ObjectDisposedException</code>. In the Rust pool, each of those mistakes is either impossible or a compile error.</p>
+
+<h3 id="lab-5">Step 5 — the cost of moving vs cloning</h3>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+fn main() {
+    for &amp;n in &amp;[1_000usize, 100_000, 1_000_000, 10_000_000] {
+        let v: Vec&lt;u64&gt; = (0..n as u64).collect();
+        // best of 5 for each
+        let mut t_move = f64::MAX;
+        let mut t_clone = f64::MAX;
+        let mut v = v;
+        for _ in 0..5 {
+            let t = Instant::now();
+            let moved = black_box(v); // moves the 24-byte Vec header
+            t_move = t_move.min(t.elapsed().as_secs_f64() * 1e6);
+            v = moved;
+
+            let t = Instant::now();
+            let cloned = black_box(v.clone()); // allocates and copies n * 8 bytes
+            t_clone = t_clone.min(t.elapsed().as_secs_f64() * 1e6);
+            drop(cloned);
+        }
+        // A move copies 24 bytes: usually below the ~0.04 µs resolution of the timer.
+        let mv = if t_move &lt; 0.05 { "&lt; 0.05 µs".to_string() } else { format!("{t_move:.2} µs") };
+        println!("{n:&gt;10} elements: move {mv:&gt;10}   clone {t_clone:&gt;8.1} µs");
+    }
+}</code></pre>
+<pre class="output">      1000 elements: move  &lt; 0.05 µs   clone      0.1 µs
+    100000 elements: move  &lt; 0.05 µs   clone     14.2 µs
+   1000000 elements: move  &lt; 0.05 µs   clone    225.0 µs
+  10000000 elements: move  &lt; 0.05 µs   clone   2017.8 µs</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · move vs clone of a Vec&lt;u64&gt;</span>
+  <div class="chart-box"><canvas id="cost-chart" aria-label="Log-scale chart of clone time growing with Vec size while move time stays below timer resolution"></canvas></div>
+  <figcaption><strong>Figure 3.</strong> Release build, best of 5 per size, median of 3 program runs (the 10-million clone varied between 1.5 and 2.2 ms across runs). Clone time grows roughly linearly with the data, about 2 ms for 80 MB. The move line is drawn at the timer's resolution, 0.05 µs, because every measurement was below it: moving costs the same 24 bytes whatever the size.</figcaption>
+</figure>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs (Exercise 2 with <code>assert!</code>s), and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — a scope timer <span class="difficulty">★☆☆ product skill</span></div>
+  <p>Write a <code>ScopeTimer</code> guard that records <code>Instant::now()</code> when created and prints its label and the elapsed time when dropped. Use it in a function with an early <code>return</code>, and confirm it reports on both paths.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::time::Instant;
+
+/// Prints how long its scope took when it is dropped: like a C# Stopwatch in a `using`,
+/// except nobody can forget the `using`.
+struct ScopeTimer {
+    label: &amp;'static str,
+    start: Instant,
+}
+
+impl ScopeTimer {
+    fn new(label: &amp;'static str) -&gt; ScopeTimer {
+        ScopeTimer { label, start: Instant::now() }
+    }
+}
+
+impl Drop for ScopeTimer {
+    fn drop(&amp;mut self) {
+        println!("{} took {:?}", self.label, self.start.elapsed());
+    }
+}
+
+fn evaluate(rules: u32) -&gt; Result&lt;u32, String&gt; {
+    let _t = ScopeTimer::new("evaluate"); // named binding: lives to the end of the function
+    if rules == 0 {
+        return Err("no rules".into()); // the timer still reports on this path
+    }
+    Ok((0..rules).map(|r| r % 7).sum()) // like LINQ's Select(r =&gt; r % 7).Sum(); closures: chapter 2.10
+}
+
+fn main() {
+    println!("{:?}", evaluate(1_000_000));
+    println!("{:?}", evaluate(0));
+}</code></pre>
+<pre class="output">evaluate took 550.167µs
+Ok(2999997)
+evaluate took 83ns
+Err("no rules")</pre>
+  <p>This is the C# <code>using (var sw = …)</code> idiom, except the caller can't forget it: creating the guard <em>is</em> the <code>using</code>. Note <code>let _t</code>, not <code>let _</code>: with <code>let _ = ScopeTimer::new(…)</code> the timer would drop immediately and always report about 0 ns. Chapter 6.3 turns this idea into <code>tracing</code> spans.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — the longest name, without cloning <span class="difficulty">★★☆</span></div>
+  <p>Write <code>longest_owned(names: Vec&lt;String&gt;) -&gt; Option&lt;String&gt;</code> that returns the longest name <em>by value</em>, with no <code>.clone()</code> anywhere. Why does the signature take <code>Vec&lt;String&gt;</code> rather than <code>&amp;Vec&lt;String&gt;</code>?</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Return the longest name, by value, without cloning any String.
+/// Taking `Vec&lt;String&gt;` by value means we own every element and may move one out.
+fn longest_owned(names: Vec&lt;String&gt;) -&gt; Option&lt;String&gt; {
+    let mut best: Option&lt;String&gt; = None;
+    for name in names {
+        // `name` is moved out of the vector, one element per iteration
+        let longer = match &amp;best {
+            Some(b) =&gt; name.len() &gt; b.len(),
+            None =&gt; true,
+        };
+        if longer {
+            best = Some(name); // move into `best`; the previous best is dropped here
+        }
+    }
+    best
+}
+
+fn main() {
+    let names = vec!["acme".to_string(), "initech".to_string(), "globex".to_string()];
+    let winner = longest_owned(names);
+    // println!("{names:?}"); // E0382: `names` was moved into longest_owned
+    println!("{winner:?}");
+    assert_eq!(winner.as_deref(), Some("initech"));
+    assert_eq!(longest_owned(Vec::new()), None);
+}</code></pre>
+<pre class="output">Some("initech")</pre>
+  <p>Owning the vector is what makes it legal to move an element out and return it: <code>for name in names</code> moves each <code>String</code> out in turn, and the winner is moved into <code>best</code>. Each loser is dropped at the end of its iteration, and the old best when it's replaced. With <code>&amp;Vec&lt;String&gt;</code> you could only <em>look</em> at the strings, so returning an owned one would require a clone (or returning a reference: chapter 2.11). The trade-off is visible at the call site: the caller gives up <code>names</code>. That's the right design when the caller doesn't need the list afterwards.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — predict the output <span class="difficulty">★★☆</span></div>
+  <p>Without running it, write down the exact output of this program. Then check against the solution.</p>
+<pre data-title="puzzle.rs"><code class="language-rust">struct Noisy(&amp;'static str);
+
+impl Drop for Noisy {
+    fn drop(&amp;mut self) {
+        println!("drop {}", self.0);
+    }
+}
+
+fn consume(n: Noisy) {
+    println!("consume got {}", n.0);
+}
+
+fn main() {
+    let a = Noisy("a");
+    let b = Noisy("b");
+    println!("made {} and {}", a.0, b.0);
+    let a = Noisy("a2"); // shadows `a`; the first `a` is NOT dropped here
+    consume(b);
+    {
+        let _c = Noisy("c");
+    }
+    println!("end of main ({})", a.0);
+}</code></pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">made a and b
+consume got b
+drop b
+drop c
+end of main (a2)
+drop a2
+drop a</pre>
+  <p>Step by step: <code>b</code> is moved into <code>consume</code> and dropped when <code>consume</code> returns, so "drop b" comes straight after "consume got b". <code>c</code> is dropped at the end of its inner block. At the end of <code>main</code> the remaining locals are dropped in reverse order of declaration: <code>a2</code> (declared last), then the original <code>a</code>. Shadowing <code>a</code> did <em>not</em> drop the first value; it only hid its name (chapter 2.1). If you predicted "drop a" right after the shadowing line, you've just learned the most common drop-order surprise.</p>
+  </details>
+</div>
+
+<h2 id="decision">Should my type be Copy, Clone, or neither?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Your type…</th><th>Derive</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Is small plain data (no heap, no handles), and copying it is semantically fine</td><td><code>Clone, Copy</code></td><td><code>Money</code>, <code>Point</code>, <code>TenantId(u64)</code>, small enums without data</td></tr>
+    <tr><td>Owns heap data, and independent duplicates make sense</td><td><code>Clone</code> only</td><td><code>Customer</code>, a <code>RuleSet</code>, a config struct</td></tr>
+    <tr><td>Represents a unique resource or capability (a connection, lease, lock, file, "the" instance)</td><td>Neither</td><td><code>Lease</code>, <code>Connection</code>, a transaction</td></tr>
+    <tr><td>Is plain data, but its identity must be unique (a one-time token)</td><td>Neither, deliberately</td><td>An approval token that must be used once: chapter 3.2's typestate</td></tr>
+  </tbody>
+</table></div>
+<p>Adding <code>Copy</code> later is easy; removing it breaks every caller that relied on implicit copies. For public types, add <code>Copy</code> only when the type will stay small and plain forever.</p>
+
+<h2 id="compare">C# vs Rust: who cleans up</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Freeing memory</td><td>Garbage collector, non-deterministic</td><td>Owner's scope ends, deterministic</td></tr>
+    <tr><td>Releasing resources</td><td><code>IDisposable</code> + <code>using</code> (opt-in)</td><td><code>Drop</code> (automatic)</td></tr>
+    <tr><td>If you forget</td><td>Finalizer eventually, or never (not run at exit since .NET 5)</td><td>Can't forget: the drop runs when the owner ends</td></tr>
+    <tr><td>Use after cleanup</td><td><code>ObjectDisposedException</code> at runtime (if checked)</td><td>Compile error (E0382)</td></tr>
+    <tr><td>Cleanup twice</td><td>Must make <code>Dispose</code> idempotent</td><td>Impossible: runs exactly once</td></tr>
+    <tr><td>Cleanup on exceptions or panics</td><td><code>using</code>/<code>finally</code></td><td>Automatic during unwinding</td></tr>
+    <tr><td>Who may reference an object</td><td>Anyone, any number of references</td><td>One owner; others borrow (chapter 2.3)</td></tr>
+    <tr><td>Assignment of a class instance</td><td>Copies the reference (aliasing)</td><td>Moves (or copies, for <code>Copy</code> types)</td></tr>
+    <tr><td>Explicit deep copy</td><td>Hand-written / <code>ICloneable</code></td><td><code>.clone()</code>, usually <code>#[derive(Clone)]</code></td></tr>
+    <tr><td>Static check for missing cleanup</td><td>Analyzer warnings (CA2000)</td><td>Not needed</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Moves are expensive, so I'll clone or use references everywhere"</div>
+  <p>A move copies a few machine words; the heap data never moves (Lab steps 1 and 5). Returning owned values is idiomatic and cheap. It's <code>.clone()</code> that costs.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Adding <code>.clone()</code> until it compiles</div>
+  <p>The compiler suggests it because it always works, but usually the right fix is to borrow (<code>&amp;T</code>, chapter 2.3) or to restructure so one owner does the work. Treat each <code>clone</code> on non-trivial data as a decision.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>let _ = guard()</code></div>
+  <p>Drops the guard immediately: the lease is returned, the timer reports 0, the transaction ends at once. The compiler rejects this for standard lock guards (<code>let_underscore_lock</code>), but not for your own types unless you enable <code>let_underscore_drop</code>. Use <code>let _guard = …</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Expecting shadowing to drop the old value</div>
+  <p>The shadowed value lives until the end of its scope (Exercise 3). If it holds a large buffer or a lock, call <code>drop(old)</code> explicitly, or shadow inside a smaller block.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Relying on <code>Drop</code> for cross-process correctness</div>
+  <p>Drops don't run on <code>process::exit</code>, <code>panic = "abort"</code> or a killed process. Database leases and distributed locks need timeouts as well as RAII.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Thinking <code>Copy</code> means "C# value type"</div>
+  <p>All Rust types are values. <code>Copy</code> only means "the source stays usable after assignment", and it's allowed only for plain data without <code>Drop</code>.</p></div>
+
+<h2 id="real-world">Real-world view: ownership in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Workflow engine leases:</strong> a <code>Lease</code> guard returns a worker slot or a step lease on drop (Lab step 4), backed by a database expiry for crashes. Error paths and panics release it automatically.</li>
+    <li><strong>Connections and transactions:</strong> pool connections (chapter 7.4) are RAII guards that return to the pool on drop; a transaction guard rolls back on drop unless <code>commit(self)</code> <em>consumed</em> it. A method taking <code>self</code> by value makes "use after commit" a compile error.</li>
+    <li><strong>Ownership as API design:</strong> a function that takes <code>RuleSet</code> by value says "I keep this"; one that takes <code>&amp;RuleSet</code> says "I only look". Signatures document the data flow that C# leaves to comments.</li>
+    <li><strong>Hand-off between components:</strong> sending a value into a channel or a spawned task moves it, so the sender can't keep mutating what the receiver now owns. That's a whole class of concurrency bugs ruled out (chapter 4.1).</li>
+    <li><strong>Review checklist:</strong> clones in hot loops; <code>let _ =</code> on guards; <code>Copy</code> derived on types that may grow a <code>String</code>; <code>Drop</code> impls doing slow I/O (they run on the caller's thread, including during unwinding); resources whose release must survive a crash.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.2">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">After <code>let s2 = s1;</code> where <code>s1: String</code>, what happened in memory?</div>
+    <ol class="options">
+      <li data-key="a">The heap bytes were copied into a new buffer for <code>s2</code></li>
+      <li data-key="b">The 24-byte header (pointer, length, capacity) was copied to <code>s2</code>, the heap buffer stayed put, and <code>s1</code> became unusable</li>
+      <li data-key="c"><code>s1</code> and <code>s2</code> now share the buffer, with a reference count of 2</li>
+      <li data-key="d">Nothing; <code>s2</code> is an alias for <code>s1</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>.clone()</code>.</p>
+      <p data-for="b">Correct (Figure 1, Lab step 1).</p>
+      <p data-for="c">That's <code>Rc</code>/<code>Arc</code>, not plain ownership.</p>
+      <p data-for="d">Aliasing an owner would mean two owners; Rust forbids it.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does Rust invalidate <code>s1</code> instead of letting both variables use the buffer?</div>
+    <ol class="options">
+      <li data-key="a">To save memory</li>
+      <li data-key="b">Because strings are immutable</li>
+      <li data-key="c">To make assignment faster</li>
+      <li data-key="d">Both would free the same buffer when they went out of scope (a double free); one owner means exactly one free</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Memory use is the same either way.</p>
+      <p data-for="b"><code>String</code> is mutable through a <code>mut</code> binding.</p>
+      <p data-for="c">Speed is unchanged; the copy happens regardless.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>for _ in 0..3 { audit(entry); }</code> fails with "value moved here, in previous iteration of loop", where <code>fn audit(entry: String)</code>. What's the best fix if <code>audit</code> only reads the entry?</div>
+    <ol class="options">
+      <li data-key="a">Change <code>audit</code> to borrow (<code>entry: &amp;str</code>) and call <code>audit(&amp;entry)</code></li>
+      <li data-key="b">Call <code>audit(entry.clone())</code></li>
+      <li data-key="c">Make <code>String</code> <code>Copy</code></li>
+      <li data-key="d">Declare <code>entry</code> as <code>mut</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. The compiler's own note points at the parameter (Lab step 1, e2).</p>
+      <p data-for="b">This works, but allocates three times for nothing.</p>
+      <p data-for="c">Impossible: it owns heap memory.</p>
+      <p data-for="d">Mutability isn't the issue.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which struct can derive <code>Copy</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>struct A { name: String }</code></li>
+      <li data-key="b"><code>struct B { items: Vec&lt;u8&gt; }</code></li>
+      <li data-key="c"><code>struct C { x: i32, y: i32, active: bool }</code></li>
+      <li data-key="d">A struct with a <code>Drop</code> impl and only <code>u8</code> fields</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>String</code> isn't <code>Copy</code> (E0204).</p>
+      <p data-for="b"><code>Vec</code> isn't <code>Copy</code>.</p>
+      <p data-for="c">Correct. Every field is <code>Copy</code> and there's no <code>Drop</code>.</p>
+      <p data-for="d"><code>Copy</code> and <code>Drop</code> are mutually exclusive.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In <code>{ let a = X("a"); let b = X("b"); let c = X("c"); }</code>, in what order are they dropped?</div>
+    <ol class="options">
+      <li data-key="a">a, b, c</li>
+      <li data-key="b">c, b, a</li>
+      <li data-key="c">Unspecified</li>
+      <li data-key="d">Whenever the garbage collector runs</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the order for struct fields, not locals.</p>
+      <p data-for="b">Correct: reverse order of declaration (Figure 2).</p>
+      <p data-for="c">The Reference specifies it.</p>
+      <p data-for="d">There's no garbage collector.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A step does <code>let _ = pool.acquire(id).unwrap();</code> (your own <code>Lease</code> guard type) and then runs the step's work. What's wrong?</div>
+    <ol class="options">
+      <li data-key="a">Nothing</li>
+      <li data-key="b">It deadlocks</li>
+      <li data-key="c">It doesn't compile</li>
+      <li data-key="d"><code>_</code> binds nothing, so the lease is dropped (returned) at the end of that statement: the work runs without holding a slot. Use <code>let _lease = …</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">The slot is returned before the work starts.</p>
+      <p data-for="b">The lease is released immediately; nothing waits.</p>
+      <p data-for="c">It compiles. Only standard lock guards are rejected (<code>let_underscore_lock</code>); for your own types you must opt in to <code>let_underscore_drop</code>.</p>
+      <p data-for="d">Correct (Lab step 3, section 5, and the temporaries section).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How do you release a resource before the end of its scope?</div>
+    <ol class="options">
+      <li data-key="a"><code>drop(resource);</code> (<code>std::mem::drop</code>), which takes ownership so the value is dropped right there</li>
+      <li data-key="b"><code>resource.drop();</code></li>
+      <li data-key="c"><code>resource = null;</code></li>
+      <li data-key="d">You can't</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 3, section 4).</p>
+      <p data-for="b">Error E0040: explicit destructor calls aren't allowed.</p>
+      <p data-for="c">Rust has no <code>null</code>.</p>
+      <p data-for="d">You can, with <code>drop</code>, or with a smaller block.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A function acquires a pool lease, then returns early with <code>Err</code> before reaching the end. In Rust, what happens to the lease? And in C# without <code>using</code>?</div>
+    <ol class="options">
+      <li data-key="a">Leaked in both</li>
+      <li data-key="b">Rust: leaked until the GC runs. C#: released</li>
+      <li data-key="c">Rust: the lease is dropped as the function returns, so the slot comes back. C#: it stays taken until (and unless) a finalizer runs</li>
+      <li data-key="d">Both return it immediately</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Rust drops the lease on every exit path.</p>
+      <p data-for="b">Reversed: Rust has no GC.</p>
+      <p data-for="c">Correct (Lab step 4).</p>
+      <p data-for="d">Only C# with <code>using</code>/<code>finally</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which statement about destructors in safe Rust is true?</div>
+    <ol class="options">
+      <li data-key="a">Every destructor is guaranteed to run before the process exits</li>
+      <li data-key="b">A value is never dropped twice or used after drop, but a destructor may not run at all (<code>mem::forget</code>, <code>Rc</code> cycles, <code>process::exit</code>, <code>panic = "abort"</code>)</li>
+      <li data-key="c"><code>mem::forget</code> requires <code>unsafe</code></li>
+      <li data-key="d">Destructors don't run during panics</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That isn't guaranteed; leaks are "safe".</p>
+      <p data-for="b">Correct (the leaks deep dive).</p>
+      <p data-for="c">It's a safe function, by design.</p>
+      <p data-for="d">They run during unwinding (Lab step 3).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A <code>Transaction</code> type should make "use after commit" impossible. Which signature for <code>commit</code> does that?</div>
+    <ol class="options">
+      <li data-key="a"><code>fn commit(&amp;self)</code></li>
+      <li data-key="b"><code>fn commit(&amp;mut self)</code></li>
+      <li data-key="c">Make <code>Transaction</code> <code>Copy</code></li>
+      <li data-key="d"><code>fn commit(self)</code>: taking <code>self</code> by value moves the transaction in, so the caller's variable is unusable afterwards (E0382)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">The caller keeps a usable transaction.</p>
+      <p data-for="b">Same: the caller keeps it.</p>
+      <p data-for="c">That makes it worse: there'd be copies.</p>
+      <p data-for="d">Correct. Consuming methods are ownership used as API design.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Every value has one owner; when the owner's scope ends, the value is dropped. That single rule manages memory <em>and</em> resources, deterministically, with no garbage collector.</li>
+  <li>Assignment, passing by value, returning, storing and <code>for x in v</code> <strong>move</strong>: the stack header is copied, the heap data stays put, and the old name becomes unusable (E0382). Moving out of a collection by index is refused (E0507); use <code>remove</code>, <code>into_iter</code>, <code>mem::take</code> or a borrow.</li>
+  <li><code>Copy</code> types (scalars, <code>&amp;T</code>, plain structs of them) are duplicated implicitly and can't implement <code>Drop</code>; <code>Clone</code> is explicit and may be expensive (about 2 ms for 80 MB, against a move too small to measure).</li>
+  <li><code>Drop</code> runs exactly once: locals in reverse declaration order, fields in declaration order, also during panic unwinding. Drop early with <code>drop(x)</code> (never <code>x.drop()</code>, E0040), and beware <code>let _ = guard()</code>, which drops at once.</li>
+  <li>RAII beats <code>IDisposable</code> on every guarantee: it can't be forgotten, there's no use-after-dispose (compile error, not <code>ObjectDisposedException</code>), and no double dispose. But destructors aren't guaranteed to run on <code>process::exit</code>, aborts or leaks, so durable leases still need timeouts.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">owner</li><li class="chip">move</li><li class="chip">Copy</li><li class="chip">Clone</li><li class="chip">Drop</li><li class="chip">RAII</li>
+  <li class="chip">moved-from</li><li class="chip">drop order</li><li class="chip">drop flag</li><li class="chip">guard</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html">The Rust Programming Language — “What Is Ownership?”</a><span class="why">The source of the three rules and the double-free explanation quoted here.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/destructors.html">The Rust Reference — Destructors</a><span class="why">The normative drop-order rules behind Figure 2, including temporaries.</span></li>
+  <li><span class="ref-type doc">Doc</span>Standard library: <a href="https://doc.rust-lang.org/std/marker/trait.Copy.html"><code>Copy</code></a>, <a href="https://doc.rust-lang.org/std/clone/trait.Clone.html"><code>Clone</code></a>, <a href="https://doc.rust-lang.org/std/ops/trait.Drop.html"><code>Drop</code></a>, <a href="https://doc.rust-lang.org/std/mem/fn.forget.html"><code>mem::forget</code></a>, <a href="https://doc.rust-lang.org/std/mem/fn.take.html"><code>mem::take</code></a><span class="why">When a type can be Copy, what Drop may and may not do, and why forgetting is safe.</span></li>
+  <li><span class="ref-type doc">Doc</span>The Rustonomicon: <a href="https://doc.rust-lang.org/nomicon/drop-flags.html">Drop Flags</a> and <a href="https://doc.rust-lang.org/nomicon/leaking.html">Leaking</a><span class="why">The runtime side of conditional moves, and the full argument for why leaks are memory-safe.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/standard/garbage-collection/implementing-dispose">Implement a Dispose method</a>, <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/finalizers">Finalizers</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/statements/using"><code>using</code> statement</a>, <a href="https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca2000">CA2000</a>, <a href="https://learn.microsoft.com/dotnet/standard/garbage-collection/fundamentals">GC fundamentals</a><span class="why">The .NET side: the dispose pattern, finalizer timing (and not running at exit since .NET 5), and the analyzer that tries to catch forgotten disposals.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/286936.286947">“Ownership types for flexible alias protection”</a> — David G. Clarke, John M. Potter, James Noble, OOPSLA 1998<span class="why">The academic origin of "every object has an owner": the idea Rust turned into everyday syntax.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/3158154">“RustBelt: Securing the Foundations of the Rust Programming Language”</a> — Ralf Jung, Jacques-Henri Jourdan, Robbert Krebbers, Derek Dreyer, POPL 2018<span class="why">A machine-checked proof that ownership and borrowing, together with key standard-library types, really are memory-safe.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://en.cppreference.com/w/cpp/language/raii">cppreference — RAII</a><span class="why">The C++ origin of the idiom Rust adopted and made automatic.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=VFIOSWy93H0">“Understanding Ownership in Rust”</a> — Let's Get Rusty<span class="why">A walk through the Book's ownership chapter with stack/heap diagrams, a good second explanation of Figure 1.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=8M0QfLUDaaA">“Learning Rust: Memory, Ownership and Borrowing”</a> — YouCodeThings<span class="why">Another visual take on ownership, and a preview of borrowing in chapter 2.3.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  Course.chart("cost-chart", function (c) {
+    var sizes = ["1,000", "100,000", "1,000,000", "10,000,000"];
+    return {
+      type: "line",
+      data: {
+        labels: sizes,
+        datasets: [
+          { label: "clone (median, µs)", data: [0.1, 14.2, 224.5, 2017.8], borderColor: c.accent, backgroundColor: c.accent, tension: 0.15 },
+          { label: "move (below 0.05 µs timer resolution)", data: [0.05, 0.05, 0.05, 0.05], borderColor: c.teal, backgroundColor: c.teal, borderDash: [6, 4] }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { title: { display: true, text: "Vec<u64> elements (each step ×10 or ×100)" } },
+          y: { type: "logarithmic", min: 0.01, title: { display: true, text: "µs (log scale)" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

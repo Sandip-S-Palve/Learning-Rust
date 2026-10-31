@@ -40,7 +40,8 @@
     "body": "<body data-chapter=\"<id>\"><article class=\"content\"> \u2026 </article>",
     "auto_generated": "breadcrumb, h1 (from data if absent), stamp, prereqs + time in [data-meta], TOC, mark-complete, pager, footer",
     "components": "see styleguide.html: callout.(why|analogy|dotnet|pitfall|verify|tip|note|architecture), .compare, details.deep-dive>.body, .layer-label.(basic|intermediate|advanced), pre[data-playground][data-title]>code.language-*, pre.output(.error), figure.visual(.stepper with data-show/data-hl + ol.stepper-captions), .chart-box>canvas + Course.chart(), .mermaid, $$\u2026$$ / \\( \\), .table-wrap>table, dfn[data-term][data-def], .exercise + details.solution, .quiz[data-quiz]>.q[data-answer], ul.refs>li>.ref-type.(doc|paper|video|book)",
-    "on_publish": "set chapter status to \"written\" in assets/course-data.js, add glossary entries there, run python3 tools/build_search_index.py"
+    "on_publish": "set chapter status to \"written\" in assets/course-data.js, add glossary entries there, run python3 tools/build_search_index.py",
+    "checklist": "Per chapter: 12 template sections; >=2 built visuals incl. 1 interactive/animated; all code compiled from built page; C# comparisons run; Go further = docs + key papers (title, authors, venue/year, why; Crossref-verified) + 1-3 videos (oEmbed-verified); no term or syntax used before taught (else a 'read as \u2026 for now' note + glossary entry); Verify callouts for uncertain/fast-moving facts; manifest + glossary + search index + verification-log updated"
   },
   "chapters_written": [
     {
@@ -280,9 +281,366 @@
           "memo": 0.007
         }
       }
+    },
+    {
+      "id": "F8",
+      "file": "chapters/f8-type-concepts.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201: 16 Rust blocks extracted from the built page (8 programs run, 4 intentional-error files fail with the shown E0308/E0308/E0308/E0004, 4 fragments compile with a stub main); 3 exercise unit tests pass; clippy clean; C# program built (CS8509, CS8524) and run",
+      "visuals": [
+        "svg product vs sum memory + niche",
+        "stepper value vs reference (C# class vs Rust clone/&mut)",
+        "svg static vs dynamic dispatch (fat pointer, vtable)",
+        "interactive illegal-state explorer (64 states, cross-checked vs Rust enum)",
+        "tbl C# vs Rust type features",
+        "tbl which modelling tool"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "size_of": {
+          "(u8,u64)": 16,
+          "Money": 16,
+          "()": 0,
+          "Shape": 24,
+          "Payment": 16,
+          "Option<u64>": 16,
+          "Option<&u64>": 8,
+          "Option<Box<u64>>": 8,
+          "Option<NonZeroU32>": 4,
+          "Option<bool>": 1,
+          "&dyn Rule": 16
+        }
+      }
+    },
+    {
+      "id": "F9",
+      "file": "chapters/f9-concurrency-concepts.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + tokio 1.54.1 + .NET SDK 10.0.201: 12 Rust blocks extracted from the built page (9 programs compile, 2 intentional errors fail with the shown E0499/E0277, 1 fragment compiles with a stub main); 3 exercises pass their asserts (ex2 x5); clippy clean; C# racy counter run 3x",
+      "visuals": [
+        "svg concurrency vs parallelism timeline",
+        "svg processes vs threads",
+        "interactive 'you are the scheduler' (20 interleavings, cross-checked vs Rust enumeration)",
+        "svg deadlock wait-for graph",
+        "stepper event loop with readiness I/O",
+        "chart counter strategies (measured)",
+        "chart CPU scaling vs threads (measured)",
+        "tbl readiness vs completion",
+        "tbl which concurrency model",
+        "tbl C# vs Rust primitives"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "machine": "Apple M2 Pro, 6P+4E cores, available_parallelism 10",
+        "counters_4x1M_ms_median": {
+          "load+store (wrong)": 2.5,
+          "fetch_add": 51.0,
+          "mutex": 77.7,
+          "per_thread": 0.4
+        },
+        "csharp_plain_increment_lost": "2.94-2.99M of 4M",
+        "cpu_speedup": {
+          "1": 1.0,
+          "2": 2.0,
+          "4": 3.9,
+          "6": 5.7,
+          "8": 6.1,
+          "10": 6.4,
+          "16": 6.4,
+          "2_fixed_halves": 1.6
+        },
+        "io_1000x20ms_ms": {
+          "sequential_extrapolated": 23900,
+          "pool10": 2389,
+          "threads1000": 56,
+          "tokio_tasks_1thread": 27
+        },
+        "spawn_us": {
+          "thread": 19.5,
+          "tokio_task": 0.19
+        },
+        "false_sharing_ms_median": {
+          "same_line": 253,
+          "padded": 40
+        }
+      }
+    },
+    {
+      "id": "2.1",
+      "file": "chapters/2-1-syntax-basics.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201: 20 Rust blocks extracted from the built page (12 programs compile and run, 6 intentional errors fail with the shown E0384/E0308/E0308+E0277/arithmetic_overflow/E0381/E0308, 2 fragments compile with a stub main); 3 exercises pass asserts; clippy clean; overflow program run in debug and release; C# comparison + CS0128 captured",
+      "visuals": [
+        "stepper shadowing vs mutation",
+        "svg scalar sizes with C# equivalents",
+        "interactive integer overflow explorer (2,400 cases cross-checked vs Rust, 0 mismatches)",
+        "chart overflow-check cost (measured)",
+        "tbl overflow methods",
+        "tbl which arithmetic",
+        "tbl C# <-> Rust syntax"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "overflow_checks_sum_50M_u32_ms": {
+          "off_plus": 3.3,
+          "off_wrapping": 3.3,
+          "on_plus": 15.4,
+          "on_wrapping": 3.3
+        }
+      }
+    },
+    {
+      "id": "2.2",
+      "file": "chapters/2-2-ownership.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201: 21 Rust blocks extracted from the built page (11 programs compile and run, 6 intentional errors fail with the shown E0382/E0382/E0507/E0204/E0040/let_underscore_lock, 4 fragments compile with stub harnesses); w7 opt-in let_underscore_drop warning captured; 3 exercises run (ex2 asserts); clippy clean; C# IDisposable demo run in Release",
+      "visuals": [
+        "stepper ownership on stack/heap (move, double-free, clone, move into fn, drops)",
+        "svg drop order",
+        "chart move vs clone (measured)",
+        "tbl move/copy/clone",
+        "tbl Copy/Clone/neither",
+        "tbl C# vs Rust cleanup"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "clone_vec_u64_us_median": {
+          "1k": 0.1,
+          "100k": 14.2,
+          "1M": 224.5,
+          "10M": 2017.8
+        },
+        "move": "< 0.05 us at all sizes (below timer resolution)"
+      }
+    },
+    {
+      "id": "2.3",
+      "file": "chapters/2-3-borrowing.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + rustc 1.30.0 (x86_64 under Rosetta, lexical borrowck) + .NET SDK 10.0.201: 27 Rust blocks extracted from the built page (11 programs compile (10 binaries run + alias.rs lib), 13 intentional errors fail with the shown E0502/E0499/E0506/E0505/E0597/E0106/E0596/E0382 and pc3 E0502, 3 fragments compile with stub main); explorer logic matches 522 rustc 1.99 + 522 rustc 1.30 results (0 mismatches); exercises run (asserts), Exercise 3 verdicts from rustc; clippy clean; C# aliasing demo + JIT disasm + CS8168 captured",
+      "visuals": [
+        "svg what a reference is (stack/heap, sizes)",
+        "stepper borrow timeline (NLL vs lexical, conflict)",
+        "interactive borrow checker explorer (NLL / rustc 1.30 modes, verified)",
+        "chart programs accepted lexical vs NLL (measured)",
+        "chart &mut vs RefCell vs Mutex cost (measured)",
+        "tbl borrow error codes",
+        "tbl parameter type decision",
+        "tbl C# vs Rust references"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "explorer_programs": 522,
+        "accepted_nll_rustc_1_99": 219,
+        "accepted_lexical_rustc_1_30": 30,
+        "ns_per_increment_median_12_runs": {
+          "&mut": 0.5,
+          "RefCell": 0.4,
+          "Mutex": 6.57
+        },
+        "ranges": {
+          "&mut": "0.39-0.58",
+          "RefCell": "0.40-0.41",
+          "Mutex": "6.55-6.58"
+        },
+        "asm": "add_twice(&mut,&) 1 load each + 1 store (a+2b); raw-pointer version reloads b; .NET 10 JIT AddTwice(ref,ref) reloads both"
+      }
+    },
+    {
+      "id": "2.4",
+      "file": "chapters/2-4-strings-slices.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + unicode-segmentation 1.13.3 + .NET SDK 10.0.201: 17 Rust blocks extracted from the built page (8 programs compile and run incl. utf8 with the crate, 6 intentional errors fail with the shown E0308/E0277/E0369/E0382/E0502/E0515, 3 fragments compile with stub main); boundary.rs panic captured; 3 exercises run (asserts); clippy clean; C# UTF-16/culture/Span demo run in Release",
+      "visuals": [
+        "svg String / &str / literal in memory",
+        "interactive UTF-8 explorer (counts, byte map, slice tester with exact panic text)",
+        "stepper String growth (measured capacities, in-place vs move, dangling view)",
+        "chart allocations + time for 4 tokenizer designs (measured)",
+        "tbl other string types",
+        "tbl which string type where",
+        "tbl C# vs Rust strings"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "sizes": {
+          "String": 24,
+          "&str": 16,
+          "Box<str>": 16,
+          "Arc<str>": 16,
+          "&[i64]": 16,
+          "&[i64;4]": 8
+        },
+        "string_growth_caps": [
+          0,
+          8,
+          16,
+          32
+        ],
+        "tokenizer_10k_lines": {
+          "allocs": {
+            "A": 170000,
+            "B": 60000,
+            "C": 31000,
+            "D": 1003
+          },
+          "ms_median": {
+            "A": 4.17,
+            "B": 2.17,
+            "C": 1.45,
+            "D": 0.55
+          }
+        },
+        "csharp": {
+          "Substring(18) bytes": 48,
+          "AsSpan bytes": 0,
+          "thumbs Length": 4
+        }
+      },
+      "verification": {
+        "explorer_analyze": "38 strings, 0 mismatches vs Rust (Node ICU 78.3 and Chrome 156)",
+        "explorer_slices": "1568 ranges, 0 mismatches incl. exact panic text",
+        "rust_debug_escape": "JS predicate vs Rust {:?} on all 1,111,936 scalar values above 0x7F: 0 mismatches"
+      }
+    },
+    {
+      "id": "2.5",
+      "file": "chapters/2-5-structs-enums.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201: 21 Rust blocks extracted from the built page (9 programs compile and run incl. jt.rs lib, 8 intentional errors/warnings fail as shown: E0072, 2024 binding-mode error, E0063, E0594, E0382, E0004, E0005, E0308 let-else, plus unreachable-pattern warning w8; 3 fragments compile with harnesses); 3 exercises run (asserts), ex2 'add Paused' E0004 verified; clippy clean; C# records/switch demo built (CS8509) and run (SwitchExpressionException)",
+      "visuals": [
+        "svg impl block receivers",
+        "stepper match arm selection with guards",
+        "interactive exhaustiveness explorer (512 arm subsets, exact rustc E0004 text + unreachable warnings)",
+        "chart String vs enum operator dispatch (measured)",
+        "tbl derive",
+        "tbl Option methods",
+        "tbl pattern syntax",
+        "tbl which construct",
+        "tbl C# vs Rust"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "operator_dispatch_10M_ms_median": {
+          "String": 13.2,
+          "enum": 8.5
+        },
+        "condition_size_bytes": {
+          "String": 32,
+          "enum": 16
+        },
+        "unit_struct_size": 0,
+        "enum_match_asm": "branch-free cset/csel on arm64"
+      },
+      "verification": {
+        "exhaustiveness_explorer": "512 subsets vs rustc 1.99: 0 mismatches (Node and Chrome); models rustc's two-stage witness reporting"
+      }
+    },
+    {
+      "id": "2.6",
+      "file": "chapters/2-6-error-handling.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + thiserror 2.0.21 + anyhow 1.0.104 + .NET SDK 10.0.201: 13 Rust blocks extracted from the built page (7 programs compile and run, 3 intentional diagnostics shown: E0277 ? in (), E0277 ? couldn't convert, unused Result warning; 3 fragments compile with harnesses incl. the ? desugaring checked equal to ?); main returning Err verified (Debug to stderr, exit 1, std source read); panic exit 101; 2 exercises run with asserts; clippy clean; C# TryParse vs exceptions benchmark run 3x",
+      "visuals": [
+        "svg choosing how to fail (Result vs panic, library vs application)",
+        "interactive error strategy explorer (16 verbatim outputs: String/thiserror/Box<dyn Error>/anyhow x 4 scenarios x {} {:#} {:?})",
+        "stepper error propagation with ? and context",
+        "chart cost of failure Rust vs .NET (measured)",
+        "tbl Result methods",
+        "tbl which error approach",
+        "tbl C# vs Rust failure"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "ns_per_parse_median": {
+          "rust_result": {
+            "0": 2.0,
+            "1": 2.2,
+            "10": 2.2,
+            "50": 2.3
+          },
+          "rust_panic_catch": {
+            "0": 2.0,
+            "1": 137.0,
+            "10": 1326.2,
+            "50": 6669.8
+          },
+          "cs_tryparse": {
+            "0": 6.6,
+            "1": 6.7,
+            "10": 7.2,
+            "50": 7.1
+          },
+          "cs_exceptions": {
+            "0": 7.2,
+            "1": 41.7,
+            "10": 333.6,
+            "50": 1573.2
+          }
+        },
+        "per_failure": "Rust caught panic ~13.3 us; .NET 10 exception ~3.1 us"
+      }
+    },
+    {
+      "id": "2.7",
+      "file": "chapters/2-7-modules-crates.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + Cargo + .NET SDK 10.0.201: 19 Rust blocks; the 7 package files were reassembled from the built page into a fresh Cargo package, built, run (outputs identical) and clippy-clean; 4 cross-crate errors checked inside that package (E0603, E0451, E0624+E0616, E0433); E0761/E0583 from a layout package; 3 fragments + forms program + 2 exercise solutions compiled and run; broken exercise and puzzle give exactly the shown errors; C# two-project internal demo built (CS0122, CS1729)",
+      "visuals": [
+        "svg package/crates/modules with .NET mapping",
+        "stepper mod declarations to module tree",
+        "interactive visibility explorer (60 item x site pairs incl. external crate, exact rustc messages)",
+        "tbl pub levels",
+        "tbl which visibility",
+        "tbl C# vs Rust organisation"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "cargo_build_v": "3 rustc invocations: lib, 2 bins with --extern ruleset",
+        "rustdoc_public_items": "Engine, Verdict, ParseError, parse_rule at root; model::{Op, Rule}; prelude"
+      },
+      "verification": {
+        "visibility_explorer": "60/60 vs rustc 1.99 (Node and Chrome)"
+      }
+    },
+    {
+      "id": "2.8",
+      "file": "chapters/2-8-collections.html",
+      "date": "2026-10-31",
+      "code_tested": "rustc 1.99.0 + .NET SDK 10.0.201: 13 Rust blocks extracted from the built page (6 programs compile and run, 5 intentional errors: E0502 x2, E0382, E0599, E0277; 2 fragments compile with harness); two-phase variant of e1 and the retain fix for e5 checked; extract_if (Vec, HashMap) and total_cmp checked on 1.99; 2 exercises run with asserts; clippy clean; C# Dictionary counting benchmark run 3x",
+      "visuals": [
+        "svg collection memory shapes",
+        "stepper iter/iter_mut/into_iter/drain",
+        "interactive collection chooser (std docs costs + guidance, .NET mapping)",
+        "chart counting cost Rust vs C# (measured)",
+        "tbl the family",
+        "tbl which operation",
+        "tbl C# vs Rust"
+      ],
+      "quiz_questions": 10,
+      "exercises": 3,
+      "measurements": {
+        "ns_per_token_median": {
+          "rust_entry_owned": 38.8,
+          "rust_get_mut_then_insert": 16.7,
+          "rust_contains_then_get": 27.9,
+          "rust_entry_borrowed": 22.1,
+          "cs_trygetvalue_indexer": 25.2,
+          "cs_collectionsmarshal": 12.7
+        },
+        "open_question": "borrowed-key entry slower than get_mut path; locality and run order ruled out; cause not established (Verify callout)"
+      }
     }
   ],
-  "glossary_count": 104,
+  "glossary_count": 236,
   "references": [
     "https://doc.rust-lang.org/book/ch00-00-introduction.html",
     "https://doc.rust-lang.org/book/appendix-07-nightly-rust.html",
@@ -386,12 +744,147 @@
     "https://en.wikipedia.org/wiki/Levenshtein_distance",
     "https://www.youtube.com/watch?v=oS9aPzUNG-s",
     "https://www.youtube.com/watch?v=yndgIDO0zQQ",
-    "https://www.youtube.com/watch?v=r4-cftqTcdI"
+    "https://www.youtube.com/watch?v=r4-cftqTcdI",
+    "https://doc.rust-lang.org/book/ch06-00-enums.html",
+    "https://doc.rust-lang.org/book/ch18-00-oop.html",
+    "https://doc.rust-lang.org/reference/types.html",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/value-types",
+    "https://learn.microsoft.com/dotnet/csharp/nullable-references",
+    "https://learn.microsoft.com/dotnet/csharp/programming-guide/generics/generics-in-the-run-time",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union",
+    "https://doi.org/10.1023/A:1010000313106",
+    "https://doi.org/10.1145/6041.6042",
+    "https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt",
+    "https://blog.janestreet.com/effective-ml-revisited/",
+    "https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/",
+    "https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/",
+    "https://www.youtube.com/watch?v=IcgmSRJHu_8",
+    "https://www.youtube.com/watch?v=2JB1_e5wZmU",
+    "https://doc.rust-lang.org/nomicon/races.html",
+    "https://doc.rust-lang.org/book/ch16-00-concurrency.html",
+    "https://doc.rust-lang.org/std/sync/struct.Mutex.html",
+    "https://doc.rust-lang.org/std/sync/atomic/index.html",
+    "https://learn.microsoft.com/dotnet/standard/threading/managed-threading-best-practices",
+    "https://learn.microsoft.com/dotnet/api/system.threading.lock",
+    "https://learn.microsoft.com/dotnet/api/system.threading.interlocked",
+    "https://man7.org/linux/man-pages/man7/epoll.7.html",
+    "https://man.freebsd.org/cgi/man.cgi?query=kqueue",
+    "https://man7.org/linux/man-pages/man7/io_uring.7.html",
+    "https://learn.microsoft.com/windows/win32/fileio/i-o-completion-ports",
+    "https://github.com/tokio-rs/mio",
+    "https://source.dot.net/System.Net.Sockets/System/Net/Sockets/SocketAsyncEngine.Unix.cs.html",
+    "https://doi.org/10.1145/356586.356588",
+    "https://doi.org/10.1145/1465482.1465560",
+    "https://doi.org/10.1145/365559.365617",
+    "https://www.youtube.com/watch?v=oV9rvDllKEg",
+    "https://www.youtube.com/watch?v=8aGhZQkoFbQ",
+    "https://doc.rust-lang.org/book/ch03-00-common-programming-concepts.html",
+    "https://doc.rust-lang.org/reference/expressions/operator-expr.html",
+    "https://doc.rust-lang.org/std/primitive.u8.html",
+    "https://doc.rust-lang.org/std/primitive.f64.html",
+    "https://doc.rust-lang.org/std/primitive.char.html",
+    "https://doc.rust-lang.org/std/fmt/index.html",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/statements/checked-and-unchecked",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/integral-numeric-types",
+    "https://learn.microsoft.com/en-us/dotnet/core/compatibility/jit/9.0/fp-to-integer",
+    "https://microsoft.github.io/rust-for-dotnet-devs/latest/",
+    "https://doc.rust-lang.org/rust-by-example/",
+    "https://docs.rs/rust_decimal/latest/rust_decimal/",
+    "https://doi.org/10.1145/103162.103163",
+    "https://www.youtube.com/watch?v=BpPEoZW5IiY",
+    "https://www.youtube.com/watch?v=5C_HPTJg5ek",
+    "https://doc.rust-lang.org/reference/destructors.html",
+    "https://doc.rust-lang.org/std/marker/trait.Copy.html",
+    "https://doc.rust-lang.org/std/clone/trait.Clone.html",
+    "https://doc.rust-lang.org/std/ops/trait.Drop.html",
+    "https://doc.rust-lang.org/std/mem/fn.forget.html",
+    "https://doc.rust-lang.org/std/mem/fn.take.html",
+    "https://doc.rust-lang.org/nomicon/drop-flags.html",
+    "https://doc.rust-lang.org/nomicon/leaking.html",
+    "https://learn.microsoft.com/dotnet/standard/garbage-collection/implementing-dispose",
+    "https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/finalizers",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/statements/using",
+    "https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca2000",
+    "https://en.cppreference.com/w/cpp/language/raii",
+    "https://www.youtube.com/watch?v=VFIOSWy93H0",
+    "https://www.youtube.com/watch?v=8M0QfLUDaaA",
+    "https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html",
+    "https://rust-lang.github.io/rfcs/2094-nll.html",
+    "https://blog.rust-lang.org/2022/08/05/nll-by-default/",
+    "https://blog.rust-lang.org/2026/08/04/enabling-polonius-alpha-on-nightly/",
+    "https://rustc-dev-guide.rust-lang.org/borrow-check/two-phase-borrows.html",
+    "https://doc.rust-lang.org/std/cell/struct.RefCell.html",
+    "https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut",
+    "https://learn.microsoft.com/dotnet/csharp/advanced-topics/performance/",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/compiler-messages/ref-safety-errors",
+    "https://learn.microsoft.com/dotnet/api/system.collections.generic.list-1.getenumerator",
+    "https://doc.rust-lang.org/book/ch08-02-strings.html",
+    "https://doc.rust-lang.org/book/ch04-03-slices.html",
+    "https://doc.rust-lang.org/std/primitive.str.html",
+    "https://doc.rust-lang.org/std/string/struct.String.html",
+    "https://doc.rust-lang.org/std/primitive.slice.html",
+    "https://doc.rust-lang.org/std/borrow/enum.Cow.html",
+    "https://docs.rs/unicode-segmentation/latest/unicode_segmentation/",
+    "https://www.unicode.org/reports/tr29/",
+    "https://www.rfc-editor.org/rfc/rfc3629",
+    "https://utf8everywhere.org/",
+    "https://learn.microsoft.com/dotnet/api/system.string.length",
+    "https://learn.microsoft.com/dotnet/standard/base-types/character-encoding-introduction",
+    "https://learn.microsoft.com/dotnet/standard/base-types/best-practices-strings",
+    "https://learn.microsoft.com/dotnet/standard/memory-and-spans/",
+    "https://www.youtube.com/watch?v=MijmeoH9LT4",
+    "https://doi.org/10.1145/286936.286947",
+    "https://doi.org/10.1145/3371109",
+    "https://doi.org/10.1145/3735592",
+    "https://9p.io/sys/doc/utf.html",
+    "https://doc.rust-lang.org/book/ch05-00-structs.html",
+    "https://doc.rust-lang.org/book/ch05-03-method-syntax.html",
+    "https://doc.rust-lang.org/book/ch19-00-patterns.html",
+    "https://doc.rust-lang.org/reference/patterns.html",
+    "https://doc.rust-lang.org/edition-guide/rust-2024/match-ergonomics.html",
+    "https://doc.rust-lang.org/std/option/enum.Option.html",
+    "https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/",
+    "https://learn.microsoft.com/dotnet/csharp/fundamentals/functional/pattern-matching",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/operators/switch-expression",
+    "https://doi.org/10.1017/S0956796807006223",
+    "https://www.youtube.com/watch?v=n3bPhdiJm9I",
+    "https://doc.rust-lang.org/book/ch09-00-error-handling.html",
+    "https://doc.rust-lang.org/reference/expressions/operator-expr.html#the-question-mark-operator",
+    "https://doc.rust-lang.org/std/error/trait.Error.html",
+    "https://doc.rust-lang.org/std/result/enum.Result.html",
+    "https://docs.rs/thiserror/latest/thiserror/",
+    "https://docs.rs/anyhow/latest/anyhow/",
+    "https://learn.microsoft.com/dotnet/standard/exceptions/best-practices-for-exceptions",
+    "https://doi.org/10.1145/361227.361230",
+    "https://doi.org/10.1145/1330017.1330019",
+    "https://www.youtube.com/watch?v=wM6o70NAWUI",
+    "https://www.youtube.com/watch?v=j-VQCYP7wyw",
+    "https://doc.rust-lang.org/book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html",
+    "https://doc.rust-lang.org/reference/visibility-and-privacy.html",
+    "https://doc.rust-lang.org/reference/items/modules.html",
+    "https://doc.rust-lang.org/reference/items/use-declarations.html",
+    "https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html",
+    "https://doc.rust-lang.org/cargo/reference/cargo-targets.html",
+    "https://rust-lang.github.io/api-guidelines/",
+    "https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/accessibility-levels",
+    "https://doi.org/10.1145/361598.361623",
+    "https://www.youtube.com/watch?v=5RPXgDQrjio",
+    "https://www.youtube.com/watch?v=969j0qnJGi8",
+    "https://doc.rust-lang.org/std/collections/hash_map/enum.Entry.html",
+    "https://doc.rust-lang.org/book/ch08-00-common-collections.html",
+    "https://learn.microsoft.com/dotnet/api/system.runtime.interopservices.collectionsmarshal.getvaluereforadddefault",
+    "https://doi.org/10.1145/512274.3734138",
+    "https://www.youtube.com/watch?v=Zs-pS-egQSs",
+    "https://www.youtube.com/watch?v=KYw3Lnf0nSY"
   ],
   "verify_queue": [
     "async closures / AFIT Send bounds status (4.6)",
     "case studies primary sources (8.5)",
-    "crate major versions (per chapter)"
+    "crate major versions (per chapter)",
+    "C# 15 union types: preview in .NET 11 as of 2026-10-31; confirm GA and final syntax (F8 verify note)",
+    "Polonius alpha stabilization (expected before end of 2026): re-test pc3.rs in chapter 2.3 deep dive and update",
+    "2.8: why HashMap<&str,_>.entry is slower than HashMap<String,_>.get_mut in the counting benchmark (locality and order ruled out)"
   ],
   "environment": {
     "rust_toolchain_installed": true,
@@ -414,9 +907,164 @@
       "item": "std sort algorithms",
       "answer": "slice::sort = driftsort-based (stable, linear on sorted/reversed); sort_unstable = ipnsort-based; select_nth_unstable = introselect on ipnsort. .NET Array.Sort/List.Sort = introsort (unstable); LINQ OrderBy stable",
       "source": "Rust slice docs 'Current implementation'; Microsoft Learn Array.Sort & Enumerable.OrderBy"
+    },
+    {
+      "item": "C# discriminated unions status",
+      "answer": "C# 15 `union` (e.g. `public union Pet(Cat, Dog, Bird);`) documented as public preview for .NET 11; cases are case types, not named variants; generated form is a struct storing object?, boxing value-type cases; exhaustive switch over case types",
+      "source": "Microsoft Learn 'Union types - C# reference' (updated 2026-10-23)"
+    },
+    {
+      "item": "Rust default thread stack size",
+      "answer": "std::thread docs: platform-dependent, currently 2 MiB on all Tier-1 platforms",
+      "source": "doc.rust-lang.org/std/thread"
+    },
+    {
+      "item": ".NET socket I/O mechanism per OS",
+      "answer": "Unix: SocketAsyncEngine gets notifications from epoll|kqueue and schedules work to the ThreadPool; Windows: IOCP",
+      "source": "source.dot.net SocketAsyncEngine.Unix.cs"
+    },
+    {
+      "item": "mio backends",
+      "answer": "I/O event queue backed by epoll, kqueue and IOCP; Windows sockets via AFD (wepoll strategy); mio 1.2.4",
+      "source": "tokio-rs/mio README, docs.rs"
+    },
+    {
+      "item": "Rust integer overflow + as-cast semantics",
+      "answer": "Reference: overflow panics with debug assertions/overflow-checks, else may wrap; MIN/-1 and /0 always panic; float->int rounds toward zero, saturates, NaN->0",
+      "source": "Rust Reference, Operator expressions"
+    },
+    {
+      "item": "Cargo overflow-checks defaults",
+      "answer": "dev: overflow-checks = true; release: false",
+      "source": "Cargo Book, Profiles"
+    },
+    {
+      "item": ".NET float->int conversions",
+      "answer": ".NET 9+: saturating on x86/x64, NaN->0 for int/long; .NET 11 extends to small types (CoreCLR/NativeAOT); verified on .NET 10 arm64: (int)NaN=0, (int)1e10=int.MaxValue, (uint)-1.5=0",
+      "source": "Microsoft Learn breaking-change page + local run"
+    },
+    {
+      "item": "let _ = guard behaviour and lints",
+      "answer": "`let _ = expr` drops a temporary at end of statement; rustc lint let_underscore_lock is deny-by-default (std Mutex/RwLock guards \u2192 error); let_underscore_drop is allow-by-default (opt in to catch custom guards)",
+      "source": "rustc -W help + local compile"
+    },
+    {
+      "item": ".NET finalizers at exit",
+      "answer": ".NET 5+ do not call finalizers on application termination; programmer has no control over when finalizers run",
+      "source": "Microsoft Learn: Finalizers (C#)"
+    },
+    {
+      "item": "NLL history",
+      "answer": "NLL shipped with the 2018 edition (Rust 1.31); the old borrowck's migrate mode was removed in 1.63 ('Remove migrate borrowck mode for pre-NLL errors'); rustc 1.30 (2018-10-25) verified locally to use lexical borrowck ('immutable borrow ends here' at the closing brace)",
+      "source": "Rust blog 2022-08-05, 1.63.0 release notes, local rustc 1.30 run"
+    },
+    {
+      "item": "Polonius status",
+      "answer": "Polonius alpha enabled on nightly (blog 2026-08-04), stabilization targeted before end of 2026; stable 1.99 still rejects NLL problem case #3 (captured)",
+      "source": "Rust blog 2026-08-04 + local compile"
+    },
+    {
+      "item": "Two-phase borrows scope",
+      "answer": "Only implicit mutable borrows: autoref method receivers, reborrowed function arguments, overloaded compound assignment; explicit &mut is never two-phase",
+      "source": "rustc dev guide"
+    },
+    {
+      "item": "C# ref safety",
+      "answer": "C# has 'ref safe context' rules for ref locals/returns and ref structs (CS8168 etc.), no aliasing rule; List<T> enumerator invalidation throws InvalidOperationException on next MoveNext",
+      "source": "Microsoft Learn"
+    },
+    {
+      "item": "Rust 1.99 str slice panic messages",
+      "answer": "'start/end byte index N is not a char boundary; it is inside 'X' (bytes a..b of string)', 'start/end byte index N is out of bounds for string of length L', 'byte range starts at A but ends at B'; checks in that order (start OOB, end OOB, order, start boundary, end boundary); the char is printed with {:?} (combining marks as \\u{..})",
+      "source": "local catch_unwind enumeration, 1,568 cases"
+    },
+    {
+      "item": "C# String.Length",
+      "answer": "Returns the number of Char (UTF-16 code unit) objects, not Unicode characters; StringInfo for text elements",
+      "source": "Microsoft Learn: String.Length"
+    },
+    {
+      "item": "String growth on 1.99",
+      "answer": "String::new() has capacity 0; first push of a short str allocates 8 bytes; then doubling (16, 32); in-place growth possible depending on allocator",
+      "source": "local run (Lab step 1)"
+    },
+    {
+      "item": "Compliance audit vs learning-resource-prompt.md (2026-10-31)",
+      "answer": "Template/visuals/testing/stamp/manifest/verification all followed; fixed two gaps: (1) Go-further 'key papers' missing in 2.2-2.4 -> added Clarke/Potter/Noble 1998, RustBelt POPL 2018, Stacked Borrows POPL 2020, Tree Borrows PLDI 2025, Pike/Thompson USENIX Winter 1993 (all verified via Crossref/USENIX); (2) closures/iterator chains used in 2.3/2.4 code before chapter 2.10 without a bridging note -> LINQ reading note + glossary terms closure/iterator in 2.3, pointer in 2.4, comment in 2.2 Ex1",
+      "source": "self-audit"
+    },
+    {
+      "item": "let chains",
+      "answer": "Stable in Rust 1.88 (2025-06-26), edition 2024 only, because they depend on the if-let temporary scope change",
+      "source": "Rust blog 1.88.0"
+    },
+    {
+      "item": "let-else",
+      "answer": "Stable since Rust 1.65 (2022-11-03)",
+      "source": "Rust blog 1.65.0"
+    },
+    {
+      "item": "rustc E0004 witness reporting",
+      "answer": "If some enum variants appear in no arm (guarded arms count as appearing), only those are reported; otherwise missing sub-patterns of partly covered variants (e.g. Authorized(1_u32..=u32::MAX)) are reported. Lists: 1, 'A and B', 'A, B and C', 'A, B, C and N more'",
+      "source": "512-program enumeration with rustc 1.99"
+    },
+    {
+      "item": "Rust 2024 match ergonomics",
+      "answer": "mut/ref/ref mut on bindings and & patterns not allowed when default binding mode is not move; verified error 'cannot mutably bind by value within an implicitly-borrowing pattern' (2021 accepts)",
+      "source": "Edition guide + local compile"
+    },
+    {
+      "item": "main returning Err",
+      "answer": "std's Termination for Result prints 'Error: {err:?}' (Debug) to stderr and returns ExitCode::FAILURE (1)",
+      "source": "toolchain std/src/process.rs lines 2719-2729 + local run"
+    },
+    {
+      "item": "? semantics",
+      "answer": "Result::Err(e) returns Result::Err(From::from(e)); Option::None returns None",
+      "source": "Rust Reference, operator expressions"
+    },
+    {
+      "item": "anyhow backtraces",
+      "answer": "RUST_BACKTRACE=1 for panics and errors; RUST_LIB_BACKTRACE=1 for errors only",
+      "source": "docs.rs/anyhow"
+    },
+    {
+      "item": "ACM DOIs return 403 to automated fetches",
+      "answer": "doi.org resolves (302 to dl.acm.org); ACM blocks bots. Verify ACM papers via Crossref metadata",
+      "source": "curl + Crossref"
+    },
+    {
+      "item": "C# internal constructor across assemblies",
+      "answer": "Reported as CS1729 (no constructor takes N arguments), not CS0122; internal class gives CS0122",
+      "source": "local .NET 10 build"
+    },
+    {
+      "item": "Rust visibility rules",
+      "answer": "Everything private by default (except pub-trait items, pub-enum variants); public item reachable if all ancestor modules accessible; private item visible to module + descendants",
+      "source": "Rust Reference, Visibility and privacy"
+    },
+    {
+      "item": "BTreeMap node size",
+      "answer": "B = 6, CAPACITY = 2*B-1 = 11 keys per node",
+      "source": "toolchain alloc/src/collections/btree/node.rs"
+    },
+    {
+      "item": ".NET PriorityQueue",
+      "answer": "array-backed, quaternary min-heap; lowest priority dequeued first",
+      "source": "Microsoft Learn"
+    },
+    {
+      "item": "CollectionsMarshal.GetValueRefOrAddDefault",
+      "answer": "Docs: items should not be added to or removed from the Dictionary while the ref is in use (Rust's entry enforces this at compile time)",
+      "source": "Microsoft Learn"
+    },
+    {
+      "item": "Williams heapsort DOI",
+      "answer": "10.1145/512274.3734138 (10.1145/512274.512284 is Boothroyd's Algorithm 230, a wrong guess caught by Crossref)",
+      "source": "Crossref"
     }
   ],
-  "next": "F8 Type-system concepts",
+  "next": "2.9 Generics and traits",
   "design_system_changes": [
     "2026-10-11 F3: .callout-title display:block (inline code in titles wrapped badly)",
     "2026-10-11 F3: Mermaid scales to fit on desktop; on <=760px min-width 560px + horizontal scroll, auto-centred",

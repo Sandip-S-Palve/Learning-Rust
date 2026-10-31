@@ -1,0 +1,1607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.3 Borrowing and references</title>
+<meta name="description" content="Shared and mutable references, the aliasing-XOR-mutation rule, the borrow checker and non-lexical lifetimes, with an animated borrow timeline, an explorer checked against rustc on 522 programs, and C# aliasing bugs run side by side.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .bx-modes { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .85rem; margin-bottom: 8px; }
+  .bx-modes label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .bx-palette { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  @media (max-width: 760px) { .bx-palette { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .bx-palette button, .bx-actions button { font: .78rem var(--font-mono); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+  .bx-palette button:disabled { opacity: .4; cursor: not-allowed; }
+  .bx-palette button .bx-kind { display: block; font-family: var(--font-body); font-size: .72rem; color: var(--muted); }
+  .bx-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .bx-actions button { font-family: var(--font-body); }
+  .bx-actions .bx-sep { width: 1px; background: var(--border); margin: 0 4px; }
+  .bx-prog { border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); color: var(--code-text); padding: 6px 0; font: .82rem var(--font-mono); }
+  .bx-row { display: grid; grid-template-columns: 2.2em minmax(0, 1fr) 20px 20px; align-items: stretch; column-gap: 6px; padding: 0 8px; }
+  .bx-row > span { padding: 3px 0; }
+  .bx-ln { color: var(--muted); text-align: right; }
+  .bx-code { white-space: pre; overflow-x: auto; }
+  .bx-live { border-radius: 3px; }
+  .bx-live.a { background: var(--teal); }
+  .bx-live.b { background: var(--purple); }
+  .bx-head { font-family: var(--font-body); font-size: .72rem; color: var(--muted); }
+  .bx-head .bx-live { background: none; text-align: center; }
+  .bx-row.err { background: var(--red-soft); }
+  .bx-msg { grid-column: 2 / 5; color: var(--red); font-size: .76rem; padding: 0 0 4px; white-space: normal; }
+  .bx-verdict { margin-top: 8px; font-weight: 700; min-height: 1.4em; }
+  .bx-verdict.ok { color: var(--green); }
+  .bx-verdict.bad { color: var(--red); }
+  .bx-legend { font-size: .78rem; color: var(--muted); margin-top: 4px; }
+  .bx-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+</style>
+</head>
+<body data-chapter="2.3">
+<article class="content">
+<h1>Borrowing and references</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Use shared (<code>&amp;T</code>) and mutable (<code>&amp;mut T</code>) references to let code use a value without taking ownership of it</li>
+      <li>State the two rules of references, <em>aliasing XOR mutation</em> and <em>references are always valid</em>, and explain the bugs each one rules out</li>
+      <li>Predict how long a borrow lasts under non-lexical lifetimes, and read errors E0502, E0499, E0506, E0505, E0597 and E0106</li>
+      <li>Recognise reborrowing, two-phase borrows and disjoint field borrows, and restructure code that fights the borrow checker</li>
+      <li>Compare borrowing with .NET's object references, <code>ref</code>/<code>in</code> parameters and "collection was modified" exceptions</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Chapter 2.2 left an obvious question open: if passing a value to a function <em>moves</em> it, how does a function just <em>look</em> at something? Cloning everything would be absurd. The answer is borrowing: handing out a reference that lets code use a value for a while, without owning it.</p>
+  <p>In C#, references are the default and nobody tracks them. Any number of variables, fields, closures and threads can point at the same <code>List&lt;T&gt;</code>, and any of them can change it. That freedom is behind a familiar family of bugs: <code>InvalidOperationException: Collection was modified</code>, a method that misbehaves when the caller passes the same object as two arguments, a "read-only" view that changes underneath its reader, and data races between threads. All of them come from the same thing: <strong>something is being read through one path while it's mutated through another</strong>.</p>
+  <p>Rust's borrow rules forbid exactly that combination, at compile time. You can have many readers or one writer, never both at once, and no reference can outlive what it points to. Every chapter from here on depends on this. For your rule engine, it's what lets a thousand rules evaluate the same facts in parallel with no locks, because the compiler has proved nobody is writing to them (chapter 4.1).</p>
+</div>
+
+<h2 id="intuition">Intuition first: lending the original</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Back to chapter 2.2's <strong>signed original contract</strong> in its owner's cabinet. Copying it is expensive and handing it over gives it away. Usually you just want to <em>lend</em> it.</p>
+  <ul>
+    <li><strong>Shared borrow (<code>&amp;T</code>):</strong> the reading room. Any number of colleagues can read the contract at the same time. While anyone is reading, nobody may write on it, not even the owner.</li>
+    <li><strong>Mutable borrow (<code>&amp;mut T</code>):</strong> checking it out for editing. Exactly one person has it, and nobody else may read or write it, again including the owner, until it's returned.</li>
+    <li><strong>The owner can't shred a lent document.</strong> It can't move or drop the value while any borrow is still in use, so no reader is ever left holding a pointer to a shredded page.</li>
+    <li><strong>Loans end when the borrower is done</strong>, at the last moment the reference is used, not at some formal deadline. That's non-lexical lifetimes, and it's why most code just works.</li>
+  </ul>
+  <p>In .NET, everyone gets a photocopy of the cabinet key. Anyone can open it and scribble on the contract at any time, and the only protection is whatever discipline (or locks) your team remembers to use.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">var rules = new List&lt;string&gt; { "amount &gt; 100" };
+var view = rules;           // a second reference, same object
+Describe(rules);            // the callee could also change it
+rules.Add("vip");           // `view` sees the change
+void Describe(List&lt;string&gt; r) =&gt; Console.WriteLine(r.Count);</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">let mut rules = vec![String::from("amount &gt; 100")];
+let view = &amp;rules;          // a shared borrow: read-only
+describe(&amp;rules);           // lent for the call, then back
+println!("{}", view.len()); // last use of `view`
+rules.push(String::from("vip")); // fine: no borrow is alive
+fn describe(r: &amp;[String]) { println!("{}", r.len()); }</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="references">References and borrowing</h3>
+<p>A <dfn data-term="reference" data-def="A non-owning pointer to a value, written &amp;T (shared) or &amp;mut T (mutable). Guaranteed non-null and valid for as long as it is used; dropping a reference never drops the value.">reference</dfn> is a pointer to a value that doesn't own it. You create one with the <code>&amp;</code> operator, and the Book names the act: "We call the action of creating a reference <dfn data-term="borrow" data-def="Creating a reference to a value (&amp;x or &amp;mut x). The owner keeps ownership; the borrow ends when the reference is last used, and the owner is restricted while it is alive.">borrowing</dfn>." The function below borrows the rule list, reads it, and gives it back simply by returning:</p>
+<pre data-title="borrowing a value"><code class="language-rust">fn describe(rules: &amp;[String]) -&gt; usize {
+    rules.iter().map(|r| r.len()).sum()
+}
+
+let rules = vec![String::from("amount &gt; 100")];
+let chars = describe(&amp;rules); // lend it…
+println!("{chars} {rules:?}"); // …still ours</code></pre>
+<p class="small muted">New syntax you can read as LINQ for now: <code>rules.iter()</code> walks the items by reference, <code>.map(|r| r.len())</code> is <code>Select(r =&gt; r.Length)</code> (<code>|r| …</code> is a <dfn data-term="closure" data-def="An anonymous function that can capture variables from its surroundings, written |args| body; Rust's equivalent of a C# lambda. Covered fully in chapter 2.10 (Fn, FnMut, FnOnce, captures).">closure</dfn>, Rust's lambda), and <code>.sum()</code> is <code>Sum()</code>. Like LINQ, an <dfn data-term="iterator" data-def="A value that produces a sequence of items one at a time via next(); adapters such as map, filter and take build lazy pipelines, consumed by sum, collect or a for loop. Rust's equivalent of IEnumerable plus LINQ; covered fully in chapter 2.10.">iterator</dfn> chain is lazy and runs only when consumed; unlike LINQ, it compiles to a plain loop with no allocations or virtual calls. Chapter 2.10 covers closures and iterators fully; until then, read <code>filter</code>, <code>map</code>, <code>any</code>, <code>max_by_key</code> and <code>collect</code> as <code>Where</code>, <code>Select</code>, <code>Any</code>, <code>MaxBy</code> and <code>ToList</code>.</p>
+<p>Three things to notice. The parameter type <code>&amp;[String]</code> and the argument <code>&amp;rules</code> both say "borrowed". <code>&amp;rules</code> is a <code>&amp;Vec&lt;String&gt;</code>, and Rust converts it to the slice <code>&amp;[String]</code> automatically: borrowing a slice is the idiomatic parameter type, and Clippy suggests it (chapter 2.4 explains slices). And when <code>describe</code> returns, its reference simply goes away. Dropping a reference never drops the value it points to; only the owner does that.</p>
+<p>A <dfn data-term="shared reference" data-def="&amp;T: a read-only borrow. Any number may exist at once; while one is in use the value can't be mutated (except through interior mutability). Shared references are Copy.">shared reference</dfn>, <code>&amp;T</code>, is read-only. You can have as many as you like, and they are <code>Copy</code> (chapter 2.2): <code>let b = a;</code> copies the reference and both stay usable. To use the value behind a reference you <em>dereference</em> it with <code>*</code>, but for method calls, field access, indexing and printing Rust does that for you (<em>auto-deref</em>), so <code>rules.len()</code> works whether <code>rules</code> is a <code>Vec</code> or a <code>&amp;Vec</code>.</p>
+<p>In memory, a reference is just an address. Lab step 1 prints it: <code>&amp;rules</code> is the address of the <code>Vec</code>'s 24-byte header <em>on the stack</em>, the owner's own slot, not the heap buffer. A reference to a sized type is one pointer, 8 bytes. A reference to a slice or <code>str</code> is a <em>fat pointer</em>, 16 bytes: an address plus a length.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · what a reference is</span>
+  <svg viewBox="0 0 720 262" role="img" aria-label="A shared reference on the stack holds the address of the Vec header, which points at the heap buffer; a str reference holds an address and a length into the heap">
+    <defs>
+      <marker id="rf-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="rf-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="140" y="22" class="svg-title" text-anchor="middle">stack (main's frame)</text>
+    <text x="560" y="22" class="svg-title" text-anchor="middle">heap</text>
+    <rect x="20" y="40" width="250" height="54" rx="6" class="svg-teal"/>
+    <text x="32" y="62" class="svg-mono">rules: Vec&lt;String&gt;  (owner)</text>
+    <text x="32" y="82" class="svg-text-sm">ptr · len 3 · cap 4 = 24 bytes</text>
+    <rect x="20" y="124" width="250" height="50" rx="6" class="svg-box-strong"/>
+    <text x="32" y="145" class="svg-mono">shared: &amp;Vec&lt;String&gt;</text>
+    <text x="32" y="164" class="svg-text-sm">one address = 8 bytes</text>
+    <rect x="20" y="200" width="250" height="50" rx="6" class="svg-box-strong"/>
+    <text x="32" y="221" class="svg-mono">name: &amp;str</text>
+    <text x="32" y="240" class="svg-text-sm">address + length = 16 bytes</text>
+    <path d="M270 150 C 320 150, 320 70, 274 68" class="svg-line-accent" marker-end="url(#rf-b)"/>
+    <text x="330" y="114" class="svg-text-sm">points at the owner,</text>
+    <text x="330" y="130" class="svg-text-sm">not at the heap</text>
+    <rect x="440" y="44" width="250" height="64" rx="6" class="svg-purple"/>
+    <text x="452" y="68" class="svg-mono">[String; 3] buffer</text>
+    <text x="452" y="90" class="svg-text-sm">each String: ptr · len · cap</text>
+    <rect x="440" y="160" width="250" height="44" rx="6" class="svg-purple"/>
+    <text x="452" y="187" class="svg-mono">b"amount &gt; 100"</text>
+    <path d="M270 58 L436 64" class="svg-line" marker-end="url(#rf-a)"/>
+    <path d="M565 108 L565 156" class="svg-line" marker-end="url(#rf-a)"/>
+    <path d="M270 225 C 380 225, 400 190, 436 186" class="svg-line-accent" marker-end="url(#rf-b)"/>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> A reference is an address: the stack slot of whatever it borrows. The sizes come from <code>size_of</code> in Lab step 1 (64-bit target). Because <code>shared</code> points at <code>rules</code> itself, <code>rules</code> must not move or be dropped while <code>shared</code> is in use. That's the borrow checker's second job.</figcaption>
+</figure>
+
+<h3 id="mutable">Mutable references</h3>
+<p>A <dfn data-term="mutable reference" data-def="&amp;mut T: an exclusive borrow that allows mutation. While one is in use, no other reference to the value (shared or mutable) may be used, and the owner itself can't be accessed. Not Copy.">mutable reference</dfn>, <code>&amp;mut T</code>, lets the borrower change the value. It needs a <code>mut</code> binding to borrow from (otherwise error E0596, Lab step 2), and an explicit <code>&amp;mut</code> at the call site, so a reader of the code can see which calls may change their arguments:</p>
+<pre data-title="borrowing mutably"><code class="language-rust">fn add_rule(rules: &amp;mut Vec&lt;String&gt;, rule: &amp;str) {
+    rules.push(rule.to_string());
+}
+
+let mut rules = Vec::new();
+add_rule(&amp;mut rules, "vip == true"); // visibly lends write access
+let mut retries = 3;
+let r = &amp;mut retries;
+*r += 1;                             // `*` to write through it
+println!("{} {retries}", rules.len());</code></pre>
+<p>C# has nothing like that call-site marker for objects: <code>AddRule(rules, …)</code> looks the same whether or not the method mutates the list. (C#'s <code>ref</code> keyword is the closest thing; see the .NET callout below.)</p>
+
+<h3 id="rules">The two rules</h3>
+<p>The Book states the rules of references in two lines:</p>
+<ol>
+  <li><strong>"At any given time, you can have <em>either</em> one mutable reference <em>or</em> any number of immutable references."</strong></li>
+  <li><strong>"References must always be valid."</strong></li>
+</ol>
+<p>The first is usually called <dfn data-term="aliasing XOR mutation" data-def="Rust's core borrowing rule: a value may be aliased (many shared references) or mutated (one mutable reference), but never both at the same time. Also called 'shared XOR mutable'.">aliasing XOR mutation</dfn>: a value can have many readers, or one writer, but never both at once. "At any given time" doesn't mean "while the variables exist". It means while the references are still going to be <em>used</em>. Here's the classic violation, holding a reference into a <code>Vec</code> while pushing to it:</p>
+<pre data-title="e1.rs"><code class="language-rust">// Holding a shared borrow into a Vec while pushing to it.
+fn main() {
+    let mut steps = vec![String::from("validate"), String::from("charge")];
+    let first = &amp;steps[0];            // shared borrow of `steps` starts…
+    steps.push(String::from("ship")); // …mutable borrow needed here
+    println!("first step: {first}");  // …shared borrow still used here
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `steps` as mutable because it is also borrowed as immutable
+ --&gt; errs/e1.rs:5:5
+  |
+4 |     let first = &amp;steps[0];            // shared borrow of `steps` starts…
+  |                  ----- immutable borrow occurs here
+5 |     steps.push(String::from("ship")); // …mutable borrow needed here
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+6 |     println!("first step: {first}");  // …shared borrow still used here
+  |                            ----- immutable borrow later used here</pre>
+<p>This isn't pedantry. <code>push</code> may find the buffer full, allocate a bigger one, copy the elements across and free the old buffer. <code>first</code> would then point into freed memory. In C or C++ that's a use-after-free; in C# the runtime prevents the crash but you get the analogous logic bug (Lab step 4). Rust refuses to compile it, and the error tells you the three facts that matter: where the shared borrow started, where the conflicting mutable borrow is, and where the shared borrow is used later.</p>
+<p>The rule rules out more than memory errors. If nothing can change a value while you hold a <code>&amp;T</code> to it, then a reader never sees a half-finished update, a method can't be surprised by its own arguments aliasing each other, and two threads can't race on it. The Book draws exactly that conclusion: "The benefit of having this restriction is that Rust can prevent data races at compile time" (chapters F9 and 4.1).</p>
+
+<figure class="visual stepper" data-interval="3000">
+  <span class="visual-tag">Animation · a borrow timeline</span>
+  <svg viewBox="0 0 720 380" role="img" aria-label="Borrow lifetimes drawn as bars beside the code: shared borrows end at their last use, then a mutable borrow can start">
+    <text x="440" y="26" class="svg-text-sm" text-anchor="middle">steps</text>
+    <text x="500" y="26" class="svg-text-sm" text-anchor="middle">first</text>
+    <text x="555" y="26" class="svg-text-sm" text-anchor="middle">count</text>
+    <text x="610" y="26" class="svg-text-sm" text-anchor="middle">push</text>
+    <text x="665" y="26" class="svg-text-sm" text-anchor="middle">m</text>
+
+    <rect x="10" y="38" width="395" height="32" rx="4" class="svg-box" data-hl="1"/>
+    <rect x="10" y="74" width="395" height="32" rx="4" class="svg-box" data-hl="2"/>
+    <rect x="10" y="110" width="395" height="32" rx="4" class="svg-box" data-hl="3"/>
+    <rect x="10" y="146" width="395" height="32" rx="4" class="svg-box" data-hl="4,8"/>
+    <rect x="10" y="182" width="395" height="32" rx="4" class="svg-box" data-hl="5,8"/>
+    <rect x="10" y="218" width="395" height="32" rx="4" class="svg-box" data-hl="6"/>
+    <rect x="10" y="254" width="395" height="32" rx="4" class="svg-box" data-hl="6"/>
+    <rect x="10" y="290" width="395" height="32" rx="4" class="svg-box" data-hl="7"/>
+    <text x="20" y="59" class="svg-text-sm">1</text><text x="44" y="59" class="svg-mono">let mut steps = vec![…];</text>
+    <text x="20" y="95" class="svg-text-sm">2</text><text x="44" y="95" class="svg-mono">let first = &amp;steps[0];</text>
+    <text x="20" y="131" class="svg-text-sm">3</text><text x="44" y="131" class="svg-mono">let count = &amp;steps;</text>
+    <text x="20" y="167" class="svg-text-sm">4</text><text x="44" y="167" class="svg-mono">println!(first, count.len());</text>
+    <text x="20" y="203" class="svg-text-sm">5</text><text x="44" y="203" class="svg-mono">steps.push(…);</text>
+    <text x="20" y="239" class="svg-text-sm">6</text><text x="44" y="239" class="svg-mono">let m = &amp;mut steps;</text>
+    <text x="20" y="275" class="svg-text-sm">7</text><text x="44" y="275" class="svg-mono">m.push(…);</text>
+    <text x="20" y="311" class="svg-text-sm">8</text><text x="44" y="311" class="svg-mono">println!(steps);</text>
+    <text x="44" y="344" class="svg-mono">}</text>
+
+    <rect x="432" y="40" width="16" height="284" rx="3" class="svg-teal"/>
+    <rect x="432" y="220" width="16" height="64" rx="3" class="svg-box" stroke-dasharray="4 3" data-show="6-7"/>
+    <rect x="492" y="76" width="16" height="100" rx="3" class="svg-teal" data-show="2-7"/>
+    <rect x="547" y="112" width="16" height="64" rx="3" class="svg-teal" data-show="3-7"/>
+    <g data-show="=4">
+      <rect x="492" y="176" width="16" height="170" rx="3" class="svg-box" stroke-dasharray="4 3"/>
+      <rect x="547" y="176" width="16" height="170" rx="3" class="svg-box" stroke-dasharray="4 3"/>
+      <text x="530" y="366" class="svg-text-sm" text-anchor="middle">old lexical rule: until the }</text>
+    </g>
+    <rect x="602" y="184" width="16" height="28" rx="3" class="svg-purple" data-show="5-7"/>
+    <rect x="657" y="220" width="16" height="64" rx="3" class="svg-purple" data-show="6-7"/>
+    <g data-show="=8">
+      <rect x="492" y="76" width="16" height="136" rx="3" class="svg-red"/>
+      <rect x="547" y="112" width="16" height="100" rx="3" class="svg-red"/>
+      <rect x="602" y="184" width="16" height="28" rx="3" class="svg-red"/>
+      <text x="555" y="250" class="svg-text-sm" text-anchor="middle">overlap at line 5:</text>
+      <text x="555" y="268" class="svg-text-sm" text-anchor="middle">error E0502</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>steps</code> owns the vector for the whole block: its bar runs from line 1 to the closing brace, where it's dropped (chapter 2.2).</li>
+    <li><code>first</code> borrows <code>steps</code> (shared). Its bar starts here and, under non-lexical lifetimes, ends at its <em>last use</em>.</li>
+    <li><code>count</code> is a second shared borrow, alive at the same time as <code>first</code>. Many readers at once is exactly what <code>&amp;T</code> allows.</li>
+    <li>Line 4 is the last use of both, so both borrows end here. Before Rust 2018 they lasted until the closing brace (dashed), and line 5 would have been rejected.</li>
+    <li><code>push</code> takes <code>&amp;mut steps</code> for the duration of the call. No other borrow is alive, so it's allowed.</li>
+    <li><code>m</code> is an exclusive borrow from line 6 to its last use on line 7. While it's alive, even the owner <code>steps</code> is off-limits (dashed).</li>
+    <li>After line 7 nothing is borrowed, and the owner reads freely. The program compiles and runs (see the listing below).</li>
+    <li>Now move the <code>println!</code> from line 4 to after line 5. The shared borrows stretch past the <code>push</code>, the bars overlap, and the compiler rejects the program with E0502, exactly as in <code>e1.rs</code>.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> The borrow checker's view of a function: every borrow is a range from creation to last use, and two ranges conflict if they overlap and at least one is <code>&amp;mut</code>. Overlapping shared ranges are fine. The real program follows.</figcaption>
+</figure>
+<pre data-playground data-title="src/bin/timeline.rs"><code class="language-rust">fn main() {
+    let mut steps = vec![String::from("validate"), String::from("charge")];
+    let first = &amp;steps[0]; // shared borrow #1 starts
+    let count = &amp;steps; // shared borrow #2: many readers are fine
+    println!("{first}, {} steps", count.len()); // last use of both: they end
+    steps.push(String::from("ship")); // a brief &amp;mut, nothing else alive
+    let m = &amp;mut steps; // an exclusive borrow starts
+    m.push(String::from("refund")); // last use of m: it ends
+    println!("{steps:?}"); // the owner can read again
+}</code></pre>
+<pre class="output">validate, 2 steps
+["validate", "charge", "ship", "refund"]</pre>
+
+<h3 id="dangling">References must always be valid</h3>
+<p>The second rule says a reference can never outlive the value it points to: there are no <dfn data-term="dangling reference" data-def="A pointer to memory that has been freed or reused. Safe Rust rules them out at compile time: a reference may not outlive its referent (E0597, E0106).">dangling references</dfn>. The Book: "the compiler guarantees that references will never be dangling references." Two errors enforce it. Borrowing a value that dies too soon:</p>
+<pre data-title="e5.rs"><code class="language-rust">// A reference that would outlive the value it points to.
+fn main() {
+    let r;
+    {
+        let rule = String::from("amount &gt; 100");
+        r = &amp;rule;
+    } // `rule` is dropped here
+    println!("{r}");
+}</code></pre>
+<pre class="output error">error[E0597]: `rule` does not live long enough
+ --&gt; errs/e5.rs:6:13
+  |
+5 |         let rule = String::from("amount &gt; 100");
+  |             ---- binding `rule` declared here
+6 |         r = &amp;rule;
+  |             ^^^^^ borrowed value does not live long enough
+7 |     } // `rule` is dropped here
+  |     - `rule` dropped here while still borrowed
+8 |     println!("{r}");
+  |                - borrow later used here</pre>
+<p>And returning a reference to something the function itself owns, which is dropped as the function returns:</p>
+<pre data-title="e6.rs"><code class="language-rust">// Returning a reference to a local: it would dangle.
+fn make_rule() -&gt; &amp;String {
+    let rule = String::from("amount &gt; 100");
+    &amp;rule
+}
+
+fn main() {
+    println!("{}", make_rule());
+}</code></pre>
+<pre class="output error">error[E0106]: missing lifetime specifier
+ --&gt; errs/e6.rs:2:19
+  |
+2 | fn make_rule() -&gt; &amp;String {
+  |                   ^ expected named lifetime parameter
+  |
+  = help: this function's return type contains a borrowed value, but there is no value for it to be borrowed from
+help: consider using the `'static` lifetime, but this is uncommon unless you're returning a borrowed value from a `const` or a `static`
+  |
+2 | fn make_rule() -&gt; &amp;'static String {
+  |                    +++++++
+help: instead, you are more likely to want to return an owned value
+  |
+2 - fn make_rule() -&gt; &amp;String {
+2 + fn make_rule() -&gt; String {
+  |</pre>
+<p>Read the second help: "you are more likely to want to return an owned value". A function that <em>creates</em> data returns it by value, which is cheap (a move, chapter 2.2). A function returns a reference only when it points into something the <em>caller</em> passed in, and spelling out that connection is what lifetimes are for (chapter 2.11). For the same reason, a reference is never null: Rust uses <code>Option&lt;&amp;T&gt;</code> for "maybe a reference" (chapter 2.5).</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: object references vs borrows, and C#'s own ref safety</div>
+  <ul>
+    <li><strong>A C# class reference is not a borrow.</strong> It's a shared, mutable, untracked pointer that keeps the object alive (via the GC) and lets anyone change it. Rust has nothing that does all of that at once; the closest is <code>Rc&lt;RefCell&lt;T&gt;&gt;</code> (chapter 2.12), and its clumsiness is deliberate.</li>
+    <li><strong>C#'s <code>ref</code>, <code>in</code> and <code>ref readonly</code></strong> are the true cousins of <code>&amp;mut T</code> and <code>&amp;T</code>. C# even has <em>ref safety rules</em>: Microsoft's docs define a "ref safe context" and "the compiler ensures that a reference can't escape its ref safe context". Returning a reference to a local is a compile error in C# too (Lab step 4 shows CS8168). The difference is scope. C#'s rules cover only <code>ref</code> variables and <code>ref struct</code>s like <code>Span&lt;T&gt;</code>, and say nothing about aliasing. Rust applies both rules to every reference.</li>
+    <li><strong>No aliasing rule in C#.</strong> <code>static void AddTwice(ref int a, ref int b)</code> can be called as <code>AddTwice(ref z, ref z)</code>, and Lab step 4 shows it returns 40 instead of 12. The Rust equivalent, <code>add_twice(&amp;mut z, &amp;z)</code>, doesn't compile.</li>
+    <li><strong>Iterator invalidation is a runtime check in .NET.</strong> <code>List&lt;T&gt;</code>'s docs: "An enumerator remains valid as long as the collection remains unchanged… the enumerator is irrecoverably invalidated and the next call to MoveNext or IEnumerator.Reset throws an InvalidOperationException." In Rust, that's error E0502 at compile time.</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="nll">The borrow checker and non-lexical lifetimes</h3>
+<p>The <dfn data-term="borrow checker" data-def="The compiler pass (rustc's borrowck, run on MIR) that verifies every borrow obeys aliasing XOR mutation and that no reference outlives its referent. It costs nothing at run time.">borrow checker</dfn> is the part of the compiler that enforces both rules. It works on a simplified control-flow form of each function (MIR), one function at a time, looking only at signatures across function boundaries. For each borrow it computes the set of program points where the reference may still be used, and reports an error if a conflicting access happens at any of those points. Then it's gone: borrow checking emits no code and costs nothing at run time.</p>
+<p>How long a borrow lasts used to be decided by <em>scope</em>: a reference stored in a variable stayed borrowed until the variable's closing brace. That rejected a lot of obviously fine code. Since Rust 2018 the checker uses <dfn data-term="non-lexical lifetimes" data-def="NLL: the borrow checker (Rust 2018+, all editions since 1.63) treats a borrow as alive only until the reference's last use along each control-flow path, not until the end of its lexical scope.">non-lexical lifetimes</dfn> (NLL): a borrow lasts until the reference's last use. NLL shipped with the 2018 edition. The old checker's migration mode was removed in Rust 1.63 (2022), whose release notes say: "Remove migrate borrowck mode for pre-NLL errors". Since then NLL is the only borrow checker, in every edition. The difference is easy to see, because the old compiler still runs. Here is one program, compiled by rustc 1.30 (October 2018, the last release before NLL) and by today's 1.99:</p>
+<pre data-title="nll_demo.rs"><code class="language-rust">#![allow(unused)]
+fn main() {
+    let mut v = vec![1, 2, 3];
+    let a = &amp;v;
+    println!("{}", a[0]);
+    v.push(5);
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immutable
+ --&gt; nll_demo.rs:6:5
+  |
+4 |     let a = &amp;v;
+  |              - immutable borrow occurs here
+5 |     println!("{}", a[0]);
+6 |     v.push(5);
+  |     ^ mutable borrow occurs here
+7 | }
+  | - immutable borrow ends here</pre>
+<p>That's rustc 1.30's output. Notice the last label, "immutable borrow ends here", pointing at the closing brace: the lexical rule in one line. rustc 1.99 compiles the same file without a word, because <code>a</code> is last used on line 5. Try it yourself in the explorer below. Each line you add is checked with the same rules as both compilers.</p>
+
+<figure class="visual" id="bx">
+  <span class="visual-tag">Interactive · borrow checker explorer</span>
+  <div class="bx-modes" role="radiogroup" aria-label="Borrow checker">
+    <label><input type="radio" name="bx-mode" value="nll" checked> Today's checker (NLL, rustc 1.99)</label>
+    <label><input type="radio" name="bx-mode" value="lexical"> The old lexical checker (rustc 1.30)</label>
+  </div>
+  <div class="bx-palette" id="bx-palette"></div>
+  <div class="bx-actions" id="bx-actions">
+    <button type="button" id="bx-undo">Undo</button><button type="button" id="bx-clear">Clear</button><span class="bx-sep"></span>
+  </div>
+  <div class="bx-prog" id="bx-prog" aria-live="polite"></div>
+  <div class="bx-legend">Live borrow:<i style="background:var(--teal)"></i>a (shared)<i style="background:var(--purple)"></i>b (mutable)</div>
+  <div class="bx-verdict" id="bx-verdict" aria-live="polite"></div>
+  <figcaption><strong>Figure 3.</strong> Build a program from six statements (each at most once) and watch the borrow ranges and errors update. Every one of the 522 programs you can build was compiled with rustc 1.99 and rustc 1.30, and the explorer reproduces both compilers' error codes and lines exactly (1,044 results, 0 mismatches). The error text is rustc's own.</figcaption>
+</figure>
+
+<p>Counting over all 522 programs shows how much NLL changed day-to-day Rust:</p>
+<figure class="visual">
+  <span class="visual-tag">Chart · programs accepted, lexical vs NLL</span>
+  <div class="chart-box"><canvas id="nll-chart" aria-label="Bar chart of explorer programs accepted by rustc 1.30 and rustc 1.99, by number of statements"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> All 522 explorer programs, grouped by number of statements. rustc 1.99 accepts 219, rustc 1.30 only 30. Every program the old checker accepted, the new one accepts too. Once a program has five or more statements, the lexical checker rejects every one, because some borrow is always still "in scope" when the vector is touched again.</figcaption>
+</figure>
+
+<h3 id="errors">The borrow errors you'll meet</h3>
+<p>Almost every borrow-check failure is one of a handful of codes. Learn to read them by number. Lab step 2 runs the rest of this table.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Code</th><th>Message (abridged)</th><th>Rule broken</th><th>Usual fix</th></tr></thead>
+  <tbody>
+    <tr><td>E0502</td><td>cannot borrow as mutable because it is also borrowed as immutable (or the reverse)</td><td>Aliasing XOR mutation</td><td>Finish using the reader first; copy out what you need; collect, then apply</td></tr>
+    <tr><td>E0499</td><td>cannot borrow as mutable more than once at a time</td><td>One writer</td><td>Use one <code>&amp;mut</code> at a time; <code>split_at_mut</code> for disjoint parts</td></tr>
+    <tr><td>E0506</td><td>cannot assign to <code>x</code> because it is borrowed</td><td>No writes while read</td><td>Assign after the last use of the reference</td></tr>
+    <tr><td>E0505</td><td>cannot move out of <code>x</code> because it is borrowed</td><td>Owner can't move a lent value</td><td>Move after the last use; or pass a reference</td></tr>
+    <tr><td>E0597</td><td><code>x</code> does not live long enough</td><td>References must be valid</td><td>Keep the owner alive longer; return owned data</td></tr>
+    <tr><td>E0106</td><td>missing lifetime specifier</td><td>A returned reference must come from an input</td><td>Return an owned value, or tie it to a parameter (2.11)</td></tr>
+    <tr><td>E0596</td><td>cannot borrow as mutable, as it is not declared as mutable</td><td><code>&amp;mut</code> needs a <code>mut</code> place</td><td><code>let mut</code>, or a <code>&amp;mut</code> parameter</td></tr>
+    <tr><td>E0382</td><td>borrow of moved value (for a <code>&amp;mut</code>)</td><td><code>&amp;mut T</code> isn't <code>Copy</code></td><td>Let it reborrow (below)</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="reborrow">Reborrowing: why passing a <code>&amp;mut</code> doesn't use it up</h3>
+<p>Shared references are <code>Copy</code>; mutable references can't be, since a copy would give two writers. So by the move rules of chapter 2.2, passing <code>r: &amp;mut String</code> to a function should move <code>r</code> and leave it unusable. It doesn't, because the compiler inserts a <dfn data-term="reborrow" data-def="Creating a new, shorter borrow through an existing reference (&amp;mut *r or &amp;*r). The compiler does it implicitly when a &amp;mut is passed to a parameter of reference type, so the original reference is usable again after the call.">reborrow</dfn>: <code>f(r)</code> becomes <code>f(&amp;mut *r)</code>, a new mutable borrow <em>through</em> <code>r</code> that lasts only for the call. While it's alive <code>r</code> is frozen, and afterwards <code>r</code> works again (Lab step 3, section 3). The implicit reborrow happens where the target type is known to be a reference, such as a function argument or an annotated <code>let</code>. A plain <code>let r2 = r;</code> moves the <code>&amp;mut</code>, and using <code>r</code> afterwards is E0382 (Exercise 3, snippet e).</p>
+
+<h3 id="two-phase">Two-phase borrows: <code>v.push(v.len())</code></h3>
+<p>Strictly, <code>v.push(v.len())</code> takes <code>&amp;mut v</code> for the receiver <em>and then</em> reads <code>v.len()</code> for the argument, which looks like E0502. It compiles because of <dfn data-term="two-phase borrow" data-def="A mutable borrow that starts as a shared 'reservation' and becomes exclusive only when activated (e.g. when the method body runs), so v.push(v.len()) compiles. Applies only to certain implicit borrows such as autoref'd method receivers.">two-phase borrows</dfn>. The rustc dev guide: they "are a more permissive version of mutable borrows" that first act as shared borrows during a reservation phase and become full mutable borrows only when <em>activated</em>, when <code>push</code> actually runs. They apply only to certain <em>implicit</em> mutable borrows: autoref'd method receivers, reborrowed function arguments, and compound assignment operators. "Explicit <code>&amp;mut</code> … in source code is never two-phase." The design point is that common nested calls just work without you thinking about them.</p>
+
+<h3 id="disjoint">Disjoint borrows: fields, slices and methods</h3>
+<p>The borrow checker tracks <em>places</em>, not just variables. Borrowing <code>engine.rules</code> immutably and <code>engine.hits</code> mutably at the same time is fine inside one function, because they're different fields (Lab step 3, section 4). For two parts of one slice, <code>split_at_mut</code> hands you two non-overlapping <code>&amp;mut</code> halves (section 5). But a <em>method</em> borrows <code>self</code> as a whole, whatever fields it touches inside, because the caller checks only the signature:</p>
+<pre data-title="e10.rs"><code class="language-rust">// A method borrows the whole struct, even if it only touches one field.
+struct Engine {
+    rules: Vec&lt;String&gt;,
+    hits: u32,
+}
+
+impl Engine {
+    fn rules(&amp;self) -&gt; &amp;[String] {
+        &amp;self.rules
+    }
+    fn hits_mut(&amp;mut self) -&gt; &amp;mut u32 {
+        &amp;mut self.hits
+    }
+}
+
+fn main() {
+    let mut engine = Engine { rules: vec![String::from("amount &gt; 100")], hits: 0 };
+    let rules = engine.rules();     // borrows all of `engine` immutably
+    let hits = engine.hits_mut();   // needs all of `engine` mutably
+    *hits += rules.len() as u32;
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `engine` as mutable because it is also borrowed as immutable
+  --&gt; errs/e10.rs:19:16
+   |
+18 |     let rules = engine.rules();     // borrows all of `engine` immutably
+   |                 ------ immutable borrow occurs here
+19 |     let hits = engine.hits_mut();   // needs all of `engine` mutably
+   |                ^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+20 |     *hits += rules.len() as u32;
+   |              ----- immutable borrow later used here</pre>
+<p>Fixes, in order of preference: finish with the first borrow before the second (copy out <code>rules.len()</code> first), access the fields directly inside the type's own module, or restructure: split the struct so the parts that change independently are separate values. Chapter 3.2 calls this "borrow-friendly design".</p>
+
+<h3 id="patterns">Designing with the borrow checker</h3>
+<p>Most borrow errors in real code come from a few shapes, and each has a standard restructuring:</p>
+<ul>
+  <li><strong>Read, then write: <em>collect, then apply</em>.</strong> Evaluate with shared borrows into a list of changes, let those borrows end, then apply the list with one mutable borrow. That's the rule engine in Lab step 4, and it's also easier to test, log and replay (chapter 10.2's event sourcing is this idea scaled up).</li>
+  <li><strong>Copy out what you need.</strong> Instead of holding a <code>&amp;Job</code> while mutating the list, take its <code>id</code> (a <code>Copy</code> <code>u32</code>) and let the borrow end (Exercise 2).</li>
+  <li><strong>Use indices or keys</strong> instead of long-lived references into a collection you're changing: <code>for i in 0..v.len()</code>, or <code>retain</code>/<code>drain</code>/<code>extract_if</code>, which let the collection do the editing safely (Lab step 3, section 6).</li>
+  <li><strong>Shrink the borrow</strong> with a block <code>{ … }</code> or by moving the last use earlier.</li>
+  <li><strong>Interior mutability</strong> (<code>Cell</code>, <code>RefCell</code>, <code>Mutex</code>) moves the check from compile time to run time, for the genuine cases where shared mutation is the design (chapter 2.12). Lab step 5 shows that the rule still holds there: a violation becomes a panic instead of a compile error.</li>
+</ul>
+
+<details class="deep-dive"><summary>Deep dive: aliasing XOR mutation makes code faster, too</summary><div class="body">
+  <p>If <code>a: &amp;mut i32</code> is the only path to its value, nothing else, including a <code>b: &amp;i32</code> parameter, can change it or observe the change. rustc tells LLVM this (the <code>noalias</code> attribute on <code>&amp;mut</code> parameters, on by default since Rust 1.54 once LLVM's bugs with it were fixed), and the optimiser uses it. The same function with raw pointers, which carry no such promise, compiled with <code>-O</code> for the lab Mac (arm64):</p>
+<pre data-title="src/alias.rs"><code class="language-rust">// `a` is &amp;mut, so the compiler may assume nothing else (including `b`) points at it.
+#[unsafe(no_mangle)]
+pub fn add_twice(a: &amp;mut i32, b: &amp;i32) {
+    *a += *b;
+    *a += *b;
+}
+
+// Raw pointers carry no such promise: `a` and `b` might be the same address.
+#[unsafe(no_mangle)]
+pub unsafe fn add_twice_raw(a: *mut i32, b: *const i32) {
+    unsafe {
+        *a += *b;
+        *a += *b;
+    }
+}</code></pre>
+<pre class="output">_add_twice:
+	ldr	w8, [x1]
+	ldr	w9, [x0]
+	add	w8, w9, w8, lsl #1
+	str	w8, [x0]
+	ret
+_add_twice_raw:
+	ldr	w8, [x1]
+	ldr	w9, [x0]
+	add	w8, w9, w8
+	str	w8, [x0]
+	ldr	w9, [x1]
+	add	w8, w9, w8
+	str	w8, [x0]
+	ret</pre>
+  <p><code>add_twice</code> loads each value once and computes <code>a + 2*b</code> in one instruction (<code>lsl #1</code>), with one store. <code>add_twice_raw</code> must store, then reload <code>b</code>, because the store to <code>a</code> might have changed it. And here is .NET 10's JIT compiling the C# <code>AddTwice(ref int a, ref int b)</code> from Lab step 4:</p>
+<pre class="output">; Program:&lt;&lt;Main&gt;$&gt;g__AddTwice|0_1(byref,byref) (FullOpts, arm64)
+G_M000_IG02:                ;; offset=0x0008
+    ldr     w2, [x0]
+    ldr     w3, [x1]
+    add     w2, w2, w3
+    str     w2, [x0]
+    ldr     w2, [x0]
+    ldr     w1, [x1]
+    add     w1, w2, w1
+    str     w1, [x0]</pre>
+  <p>The JIT reloads both values after the first store, because in C# <code>a</code> and <code>b</code> may alias, and Lab step 4 shows they really can (<code>AddTwice(ref z, ref z)</code> gives 40). Fortran compilers have long made the no-aliasing assumption for array arguments; C added <code>restrict</code> for it and left it to the programmer to get right. Rust gets the same assumption for every <code>&amp;mut</code>, checked by the compiler.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: where the borrow checker is too strict, and Polonius</summary><div class="body">
+  <p>The borrow checker is <em>sound</em> (it never accepts a program that breaks the rules) but not <em>complete</em>: it rejects some correct programs. The best-known one is "NLL problem case #3", a conditional return of a borrow:</p>
+<pre data-title="pc3.rs"><code class="language-rust">use std::collections::HashMap;
+
+// Sound, but rejected by today's borrow checker ("NLL problem case #3").
+fn get_or_insert(map: &amp;mut HashMap&lt;u32, String&gt;, key: u32) -&gt; &amp;String {
+    if let Some(v) = map.get(&amp;key) {
+        return v; // the shared borrow is returned on this path only…
+    }
+    map.insert(key, String::from("default")); // …but is treated as alive here too
+    map.get(&amp;key).unwrap()
+}
+
+fn main() {
+    let mut cache = HashMap::new();
+    println!("{}", get_or_insert(&amp;mut cache, 1));
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `*map` as mutable because it is also borrowed as immutable
+ --&gt; errs/pc3.rs:8:5
+  |
+4 | fn get_or_insert(map: &amp;mut HashMap&lt;u32, String&gt;, key: u32) -&gt; &amp;String {
+  |                       - let's call the lifetime of this reference `'1`
+5 |     if let Some(v) = map.get(&amp;key) {
+  |                      --- immutable borrow occurs here
+6 |         return v; // the shared borrow is returned on this path only…
+  |                - returning this value requires that `*map` is borrowed for `'1`
+7 |     }
+8 |     map.insert(key, String::from("default")); // …but is treated as alive here too
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here</pre>
+  <p>On the <code>return v</code> path the borrow must last as long as the caller's (<code>'1</code>), and today's checker applies that requirement on every path, including the one where we didn't return. The program is fine. The idiomatic workaround already exists for maps, the Entry API, which does lookup-or-insert in a single borrow (chapter 2.8):</p>
+<pre data-playground data-title="src/bin/pc3_fixed.rs"><code class="language-rust">use std::collections::HashMap;
+
+// The idiomatic fix today: the Entry API does the lookup-or-insert in one borrow.
+fn get_or_insert(map: &amp;mut HashMap&lt;u32, String&gt;, key: u32) -&gt; &amp;String {
+    map.entry(key).or_insert_with(|| String::from("default"))
+}
+
+fn main() {
+    let mut cache = HashMap::new();
+    println!("{}", get_or_insert(&amp;mut cache, 1));
+    cache.insert(2, String::from("custom"));
+    println!("{}", get_or_insert(&amp;mut cache, 2));
+}</code></pre>
+<pre class="output">default
+custom</pre>
+  <p>The fix in the compiler is <strong>Polonius</strong>, a new formulation of borrow checking that is flow-sensitive, so it knows a borrow isn't live on paths where it wasn't returned. The Rust blog's August 2026 post enabled "Polonius alpha" on nightly "in preparation for stabilization in the next few months", using exactly this shape (<code>get_mut_or_default</code>) as its headline example.</p>
+  <div class="callout verify"><div class="callout-title">⚠ Verify</div><p>As of 2026-10-31, stable rustc 1.99 still rejects <code>pc3.rs</code> (captured above). The Rust project aims to stabilize Polonius alpha before the end of 2026. Once it ships, this program should compile on stable and this deep dive will be updated.</p></div>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Put each Rust program in <code>src/bin/</code> of one Cargo project and run <code>cargo run --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — borrowing, dereferencing, and what a reference is</h3>
+<pre data-playground data-title="src/bin/refs.rs"><code class="language-rust">use std::mem::size_of;
+
+// Borrows the rule set: reads it, gives it back automatically.
+// (&amp;[String], a slice, accepts a borrowed Vec and more: Clippy's ptr_arg, chapter 2.4.)
+fn describe(rules: &amp;[String]) -&gt; usize {
+    rules.iter().map(|r| r.len()).sum() // auto-deref: no `*` needed for methods
+}
+
+// Borrows mutably: may change the caller's value, can't keep it.
+fn add_rule(rules: &amp;mut Vec&lt;String&gt;, rule: &amp;str) {
+    rules.push(rule.to_string());
+}
+
+fn main() {
+    // 1. Shared and mutable borrows of one owner.
+    let mut rules = vec![String::from("amount &gt; 100"), String::from("country == NL")];
+    let chars = describe(&amp;rules); // lend it out…
+    println!("1. {} rules, {chars} chars; still mine: {:?}", rules.len(), rules); // …and still own it
+    add_rule(&amp;mut rules, "vip == true");
+    println!("   after add_rule: {} rules", rules.len());
+
+    // 2. Explicit dereference with `*` for plain values.
+    let mut retries = 3;
+    let r = &amp;mut retries;
+    *r += 1; // write through the reference
+    println!("2. retries = {retries}");
+
+    // 3. A reference is a pointer to the owner's location, here the stack slot of `rules`.
+    let shared = &amp;rules;
+    println!("3. &amp;rules  = {:p} (address of the Vec header on the stack)", &amp;rules);
+    println!("   shared  = {:p} (the same address: shared points at the owner)", shared);
+    println!("   buffer  = {:p} (the heap data, untouched)", rules.as_ptr());
+
+    // 4. Sizes: a reference is one pointer; a slice reference also carries a length.
+    println!("4. size_of::&lt;&amp;Vec&lt;String&gt;&gt;()  = {}", size_of::&lt;&amp;Vec&lt;String&gt;&gt;());
+    println!("   size_of::&lt;&amp;mut u64&gt;()       = {}", size_of::&lt;&amp;mut u64&gt;());
+    println!("   size_of::&lt;&amp;str&gt;()           = {}", size_of::&lt;&amp;str&gt;());
+    println!("   size_of::&lt;&amp;[u64]&gt;()         = {}", size_of::&lt;&amp;[u64]&gt;());
+
+    // 5. Shared references are Copy: hand out as many as you like.
+    let a = &amp;rules;
+    let b = a; // copies the reference, `a` is still usable
+    println!("5. a and b both read: {} / {}", a[0], b[1]);
+}</code></pre>
+<pre class="output">1. 2 rules, 25 chars; still mine: ["amount &gt; 100", "country == NL"]
+   after add_rule: 3 rules
+2. retries = 4
+3. &amp;rules  = 0x16ee12058 (address of the Vec header on the stack)
+   shared  = 0x16ee12058 (the same address: shared points at the owner)
+   buffer  = 0x1019113f0 (the heap data, untouched)
+4. size_of::&lt;&amp;Vec&lt;String&gt;&gt;()  = 8
+   size_of::&lt;&amp;mut u64&gt;()       = 8
+   size_of::&lt;&amp;str&gt;()           = 16
+   size_of::&lt;&amp;[u64]&gt;()         = 16
+5. a and b both read: amount &gt; 100 / country == NL</pre>
+<p>Section 3 is Figure 1 in numbers. <code>shared</code> holds the same address as <code>&amp;rules</code>, a stack address. The heap buffer lives elsewhere, and no borrow copied or moved it. Section 4 shows the sizes: one pointer for a reference to a sized type, a pointer plus a length for <code>&amp;str</code> and slices. (Addresses differ from run to run.)</p>
+
+<h3 id="lab-2">Step 2 — the errors, one rule at a time</h3>
+<p>Two writers at once:</p>
+<pre data-title="e2.rs"><code class="language-rust">// Two mutable borrows of the same value, both alive at once.
+fn main() {
+    let mut balance = 100;
+    let a = &amp;mut balance;
+    let b = &amp;mut balance;
+    *a -= 30;
+    *b -= 50;
+    println!("{balance}");
+}</code></pre>
+<pre class="output error">error[E0499]: cannot borrow `balance` as mutable more than once at a time
+ --&gt; errs/e2.rs:5:13
+  |
+4 |     let a = &amp;mut balance;
+  |             ------------ first mutable borrow occurs here
+5 |     let b = &amp;mut balance;
+  |             ^^^^^^^^^^^^ second mutable borrow occurs here
+6 |     *a -= 30;
+  |     -------- first borrow later used here</pre>
+<p>Writing to a value while it's being read:</p>
+<pre data-title="e3.rs"><code class="language-rust">// Assigning to a value while it is borrowed.
+fn main() {
+    let mut limit = 10;
+    let view = &amp;limit;
+    limit = 20;
+    println!("view sees {view}, limit is now {limit}");
+}</code></pre>
+<pre class="output error">error[E0506]: cannot assign to `limit` because it is borrowed
+ --&gt; errs/e3.rs:5:5
+  |
+4 |     let view = &amp;limit;
+  |                ------ `limit` is borrowed here
+5 |     limit = 20;
+  |     ^^^^^^^^^^ `limit` is assigned to here but it was already borrowed
+6 |     println!("view sees {view}, limit is now {limit}");
+  |                          ---- borrow later used here</pre>
+<p>Moving a value while it's lent out, the owner "shredding" a borrowed document:</p>
+<pre data-title="e4.rs"><code class="language-rust">// Moving a value while a reference to it is still in use.
+fn archive(doc: String) {
+    println!("archived {doc}");
+}
+
+fn main() {
+    let doc = String::from("rule-set v7");
+    let title = &amp;doc;
+    archive(doc);
+    println!("title was {title}");
+}</code></pre>
+<pre class="output error">error[E0505]: cannot move out of `doc` because it is borrowed
+  --&gt; errs/e4.rs:9:13
+   |
+ 7 |     let doc = String::from("rule-set v7");
+   |         --- binding `doc` declared here
+ 8 |     let title = &amp;doc;
+   |                 ---- borrow of `doc` occurs here
+ 9 |     archive(doc);
+   |             ^^^ move out of `doc` occurs here
+10 |     println!("title was {title}");
+   |                          ----- borrow later used here
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+ 8 |     let title = &amp;doc.clone();
+   |                     ++++++++</pre>
+<p>Borrowing mutably from an immutable binding:</p>
+<pre data-title="e7.rs"><code class="language-rust">// Borrowing mutably from a binding that isn't `mut`.
+fn main() {
+    let steps = vec![1, 2, 3];
+    let r = &amp;mut steps;
+    r.push(4);
+}</code></pre>
+<pre class="output error">error[E0596]: cannot borrow `steps` as mutable, as it is not declared as mutable
+ --&gt; errs/e7.rs:4:13
+  |
+4 |     let r = &amp;mut steps;
+  |             ^^^^^^^^^^ cannot borrow as mutable
+  |
+help: consider changing this to be mutable
+  |
+3 |     let mut steps = vec![1, 2, 3];
+  |         +++</pre>
+<p>Notice the pattern in every message: <em>where the borrow started</em>, <em>where the conflict is</em>, and <em>where the borrow is used later</em>. The third label is the one to look at first. Often the fix is just to move that use earlier, or to stop holding the reference that long. The <code>.clone()</code> the compiler offers in e4 works, but it's rarely the best answer (chapter 2.2's pitfall).</p>
+
+<h3 id="lab-3">Step 3 — what NLL, reborrowing and split borrows allow</h3>
+<pre data-playground data-title="src/bin/nll.rs"><code class="language-rust">struct Engine {
+    rules: Vec&lt;String&gt;,
+    hits: u32,
+}
+
+impl Engine {
+    fn rules(&amp;self) -&gt; &amp;[String] {
+        &amp;self.rules
+    }
+    fn record_hit(&amp;mut self) {
+        self.hits += 1;
+    }
+}
+
+fn append_bang(s: &amp;mut String) {
+    s.push('!');
+}
+
+fn main() {
+    // 1. Non-lexical lifetimes: a borrow ends at its last use, not at the closing brace.
+    let mut steps = vec![String::from("validate"), String::from("charge")];
+    let first = &amp;steps[0];
+    println!("1. first step: {first}"); // last use of `first`: the shared borrow ends here
+    steps.push(String::from("ship")); // so this mutable borrow is fine
+    println!("   steps: {steps:?}");
+
+    // 2. Two-phase borrow: `v.len()` is evaluated before `push` activates its &amp;mut.
+    let mut sizes = vec![10, 20];
+    sizes.push(sizes.len());
+    println!("2. sizes: {sizes:?}");
+
+    // 3. Reborrowing: passing a &amp;mut to a function lends it for the call, it isn't moved.
+    let mut msg = String::from("done");
+    let r = &amp;mut msg;
+    append_bang(r); // implicitly append_bang(&amp;mut *r)
+    append_bang(r); // r is still usable
+    r.push('?');
+    println!("3. msg: {msg}");
+
+    // 4. Disjoint fields: borrowing two different fields at once is fine…
+    let mut engine = Engine { rules: vec![String::from("amount &gt; 100")], hits: 0 };
+    let rules = &amp;engine.rules;
+    let hits = &amp;mut engine.hits;
+    *hits += rules.len() as u32;
+    // …but a method call borrows the *whole* struct, so finish with `rules` first.
+    let count = engine.rules().len();
+    engine.record_hit();
+    println!("4. {count} rule(s), hits = {}", engine.hits);
+
+    // 5. Two mutable halves of one slice, proven disjoint by split_at_mut.
+    let mut balances = [100, 200, 300, 400];
+    let (left, right) = balances.split_at_mut(2);
+    left[0] -= 50;
+    right[1] += 50; // a transfer between two elements, both borrowed mutably
+    println!("5. balances: {balances:?}");
+
+    // 6. Index-based edits instead of iterator invalidation (compare errs/e8.rs).
+    let mut queue = vec![1, 2, 3];
+    let n = queue.len();
+    for i in 0..n {
+        if queue[i] == 2 {
+            queue.push(4); // allowed: no borrow of `queue` is held across the loop
+        }
+    }
+    queue.retain(|job| *job != 1); // or let the collection do the editing
+    println!("6. queue: {queue:?}");
+}</code></pre>
+<pre class="output">1. first step: validate
+   steps: ["validate", "charge", "ship"]
+2. sizes: [10, 20, 2]
+3. msg: done!!?
+4. 1 rule(s), hits = 2
+5. balances: [50, 200, 300, 450]
+6. queue: [2, 3, 4]</pre>
+<p>Every section here would fail under one of the naive rules. Section 1 is <code>e1.rs</code> with the <code>println!</code> moved before the <code>push</code>. Section 2 is a two-phase borrow, section 3 implicit reborrows, sections 4 and 5 disjoint borrows. Section 6 shows two ways to edit a collection without holding a borrow across the edit: an index loop and <code>retain</code>.</p>
+
+<h3 id="lab-4">Step 4 — a borrow-friendly rule engine, and the C# aliasing bugs</h3>
+<p>A small version of the rule engine: rules evaluate orders with shared borrows only, producing actions; then one exclusive borrow applies them. The signatures alone tell you which phase can change what.</p>
+<pre data-playground data-title="src/bin/engine.rs"><code class="language-rust">use std::collections::HashMap;
+
+struct Order {
+    id: u32,
+    amount: i64, // cents
+    country: String,
+}
+
+struct Rule {
+    name: String,
+    min_amount: i64,
+    country: Option&lt;String&gt;,
+    discount_pct: i64,
+}
+
+enum Action {
+    Discount { order: u32, cents: i64, rule: String },
+}
+
+// Phase 1, read-only: many rules look at the same orders through shared borrows.
+// The signature promises the caller that nothing is modified.
+fn evaluate(rules: &amp;[Rule], orders: &amp;[Order]) -&gt; Vec&lt;Action&gt; {
+    let mut actions = Vec::new();
+    for order in orders {
+        for rule in rules {
+            let country_ok = rule.country.as_deref().is_none_or(|c| c == order.country);
+            if order.amount &gt;= rule.min_amount &amp;&amp; country_ok {
+                actions.push(Action::Discount {
+                    order: order.id,
+                    cents: order.amount * rule.discount_pct / 100,
+                    rule: rule.name.clone(),
+                });
+            }
+        }
+    }
+    actions
+}
+
+// Phase 2, exclusive: one mutable borrow applies every change.
+fn apply(actions: &amp;[Action], orders: &amp;mut [Order], audit: &amp;mut HashMap&lt;String, u32&gt;) {
+    for action in actions {
+        let Action::Discount { order, cents, rule } = action;
+        if let Some(o) = orders.iter_mut().find(|o| o.id == *order) {
+            o.amount -= cents;
+        }
+        *audit.entry(rule.clone()).or_insert(0) += 1;
+    }
+}
+
+fn main() {
+    let rules = vec![
+        Rule { name: "big-order".into(), min_amount: 10_000, country: None, discount_pct: 5 },
+        Rule { name: "nl-promo".into(), min_amount: 0, country: Some("NL".into()), discount_pct: 10 },
+    ];
+    let mut orders = vec![
+        Order { id: 1, amount: 25_000, country: "NL".into() },
+        Order { id: 2, amount: 4_000, country: "DE".into() },
+        Order { id: 3, amount: 12_000, country: "DE".into() },
+    ];
+    let mut audit = HashMap::new();
+
+    let actions = evaluate(&amp;rules, &amp;orders); // shared borrows end when evaluate returns
+    apply(&amp;actions, &amp;mut orders, &amp;mut audit); // now an exclusive borrow is allowed
+
+    for o in &amp;orders {
+        println!("order {}: {:&gt;7.2} {}", o.id, o.amount as f64 / 100.0, o.country);
+    }
+    let mut hits: Vec&lt;_&gt; = audit.iter().collect();
+    hits.sort();
+    println!("rule hits: {hits:?}");
+}</code></pre>
+<pre class="output">order 1:  212.50 NL
+order 2:   40.00 DE
+order 3:  114.00 DE
+rule hits: [("big-order", 2), ("nl-promo", 1)]</pre>
+<p>Order 1 got both discounts (5% for a big order, plus 10% for NL: €250.00 − €12.50 − €25.00), and order 3 only the first. Now the bugs that borrowing prevents, first in C#, where each one compiles:</p>
+<pre data-title="l23cs/Program.cs (.NET 10, Release)"><code class="language-csharp">using System.Runtime.CompilerServices;
+
+// 1. Two parameters, one list: nothing stops the caller passing the same object twice.
+static void MergeInto(List&lt;int&gt; target, List&lt;int&gt; source)
+{
+    foreach (var id in source) target.Add(id);
+}
+
+var ids = new List&lt;int&gt; { 1, 2, 3 };
+try { MergeInto(ids, ids); }
+catch (InvalidOperationException e) { Console.WriteLine($"1. MergeInto(ids, ids): {e.GetType().Name}: {e.Message}"); }
+Console.WriteLine($"   ids now has {ids.Count} items (one was added before the throw)");
+
+// 2. Changing a collection while enumerating it: detected only at run time.
+var queue = new List&lt;int&gt; { 1, 2, 3 };
+try
+{
+    foreach (var job in queue)
+        if (job == 2) queue.Add(4);
+}
+catch (InvalidOperationException e) { Console.WriteLine($"2. modify during foreach: {e.Message}"); }
+
+// 3. Aliased mutation through two references: legal, silent, and order-dependent.
+var limits = new Dictionary&lt;string, int&gt; { ["daily"] = 100 };
+var view = limits;          // a second reference to the same object, not a copy
+limits["daily"] = 50;
+Console.WriteLine($"3. view[\"daily\"] = {view["daily"]} (changed underneath the reader)");
+
+// 4. `ref` parameters may alias, so the JIT must reload b after writing a.
+int x = 10, y = 1;
+AddTwice(ref x, ref y);
+int z = 10;
+AddTwice(ref z, ref z);
+Console.WriteLine($"4. AddTwice(ref x, ref y) -&gt; {x}; AddTwice(ref z, ref z) -&gt; {z}");
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+static void AddTwice(ref int a, ref int b)
+{
+    a += b;
+    a += b;
+}</code></pre>
+<pre class="output">1. MergeInto(ids, ids): InvalidOperationException: Collection was modified; enumeration operation may not execute.
+   ids now has 4 items (one was added before the throw)
+2. modify during foreach: Collection was modified; enumeration operation may not execute.
+3. view["daily"] = 50 (changed underneath the reader)
+4. AddTwice(ref x, ref y) -&gt; 12; AddTwice(ref z, ref z) -&gt; 40</pre>
+<p>Line 1 is the subtle one: the method was written for two different lists, and it broke on the first call that passed the same one twice, <em>after</em> it had already modified the list. Line 3 compiles and runs silently. The Rust equivalents of 1 and 2 don't compile:</p>
+<pre data-title="e9.rs"><code class="language-rust">// Passing the same Vec as both the target and the source.
+fn merge_into(target: &amp;mut Vec&lt;u32&gt;, source: &amp;Vec&lt;u32&gt;) {
+    for id in source {
+        target.push(*id);
+    }
+}
+
+fn main() {
+    let mut ids = vec![1, 2, 3];
+    merge_into(&amp;mut ids, &amp;ids);
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `ids` as immutable because it is also borrowed as mutable
+  --&gt; errs/e9.rs:10:26
+   |
+10 |     merge_into(&amp;mut ids, &amp;ids);
+   |     ---------- --------  ^^^^ immutable borrow occurs here
+   |     |          |
+   |     |          mutable borrow occurs here
+   |     mutable borrow later used by call</pre>
+<pre data-title="e8.rs"><code class="language-rust">// Iterator invalidation: changing a collection while iterating over it.
+fn main() {
+    let mut queue = vec![1, 2, 3];
+    for job in &amp;queue {
+        if *job == 2 {
+            queue.push(4); // C#: InvalidOperationException at runtime
+        }
+    }
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `queue` as mutable because it is also borrowed as immutable
+ --&gt; errs/e8.rs:6:13
+  |
+4 |       for job in &amp;queue {
+  |       -          ------
+  |       |          |
+  |       |          immutable borrow occurs here
+  |  _____|          immutable borrow later used here
+  | |
+5 | |         if *job == 2 {
+6 | |             queue.push(4); // C#: InvalidOperationException at runtime
+  | |             ^^^^^^^^^^^^^ mutable borrow occurs here
+7 | |         }
+8 | |     }
+  | |_____- this for loop borrows `queue` immutably, preventing mutation within its body
+  |
+  = help: consider using an index-based loop instead, or collecting modifications into a separate collection</pre>
+<p>The e8 help even suggests the fixes from Step 3. Finally, C#'s ref-safety rules do catch the dangling case, for <code>ref</code> returns only:</p>
+<pre data-title="l23cserr/Program.cs"><code class="language-csharp">// C# has borrow-like rules too, but only for `ref` and ref structs such as Span&lt;T&gt;.
+static ref int Largest(int[] values)
+{
+    int best = values.Max();
+    return ref best; // a reference to a local that is about to disappear
+}
+
+Console.WriteLine(Largest([3, 9, 4]));</code></pre>
+<pre class="output error">Program.cs(5,16): error CS8168: Cannot return local 'best' by reference because it is not a ref local</pre>
+
+<h3 id="lab-5">Step 5 — moving the check to run time: RefCell, and what it costs</h3>
+<p><code>RefCell&lt;T&gt;</code> (chapter 2.12) enforces the same rule while the program runs: it counts active borrows and refuses a conflicting one. Here is <code>e1.rs</code>'s mistake again, hidden from the compiler:</p>
+<pre data-playground data-title="src/bin/refcell.rs"><code class="language-rust">use std::cell::RefCell;
+
+fn main() {
+    // The same aliasing mistake as errs/e1.rs, but hidden from the compiler inside a RefCell.
+    let steps = RefCell::new(vec![String::from("validate"), String::from("charge")]);
+
+    let reader = steps.borrow(); // run-time shared borrow (a counter goes to 1)
+    println!("first step: {}", reader[0]);
+    println!("try_borrow_mut while reading: {:?}", steps.try_borrow_mut().map(|_| ()));
+    drop(reader); // shared borrow released (counter back to 0)
+    steps.borrow_mut().push(String::from("ship"));
+    println!("after release: {} steps", steps.borrow().len());
+
+    let _reader = steps.borrow();
+    steps.borrow_mut().push(String::from("refund")); // the rule is still enforced: by a panic
+}</code></pre>
+<pre class="output error runtime">first step: validate
+try_borrow_mut while reading: Err(BorrowMutError)
+after release: 3 steps
+
+thread 'main' (810068) panicked at src/bin/refcell.rs:15:11:
+RefCell already borrowed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</pre>
+<p>The rule didn't go away; the <em>moment you find out</em> moved, from <code>cargo build</code> to production. That's the honest comparison with .NET's "collection was modified" check. And speed?</p>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::cell::RefCell;
+use std::hint::black_box;
+use std::sync::Mutex;
+use std::time::Instant;
+
+const N: u64 = 100_000_000;
+
+// The borrow checker verified this at compile time: nothing to check at run time.
+#[inline(never)]
+fn via_mut_ref(counter: &amp;mut u64) {
+    for i in 0..N {
+        *counter += black_box(i) &amp; 1;
+    }
+}
+
+// RefCell checks the borrow rules at run time, on every borrow_mut() (chapter 2.12).
+#[inline(never)]
+fn via_refcell(counter: &amp;RefCell&lt;u64&gt;) {
+    for i in 0..N {
+        *counter.borrow_mut() += black_box(i) &amp; 1;
+    }
+}
+
+// A Mutex enforces the same rule across threads, with an atomic lock/unlock (chapter 4.2).
+#[inline(never)]
+fn via_mutex(counter: &amp;Mutex&lt;u64&gt;) {
+    for i in 0..N {
+        *counter.lock().unwrap() += black_box(i) &amp; 1;
+    }
+}
+
+fn best_of_5(mut f: impl FnMut()) -&gt; f64 {
+    (0..5)
+        .map(|_| {
+            let t = Instant::now();
+            f();
+            t.elapsed().as_secs_f64() * 1e9 / N as f64
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn main() {
+    let mut plain = 0u64;
+    let cell = RefCell::new(0u64);
+    let lock = Mutex::new(0u64);
+
+    let t_ref = best_of_5(|| via_mut_ref(&amp;mut plain));
+    let t_cell = best_of_5(|| via_refcell(&amp;cell));
+    let t_lock = best_of_5(|| via_mutex(&amp;lock));
+
+    assert_eq!(plain, *cell.borrow());
+    assert_eq!(plain, *lock.lock().unwrap());
+    println!("{N} increments each, best of 5, ns per increment:");
+    println!("  &amp;mut u64 (checked at compile time) : {t_ref:.2}");
+    println!("  RefCell&lt;u64&gt; (checked at run time) : {t_cell:.2}");
+    println!("  Mutex&lt;u64&gt;   (lock per increment)  : {t_lock:.2}");
+}</code></pre>
+<pre class="output">100000000 increments each, best of 5, ns per increment:
+  &amp;mut u64 (checked at compile time) : 0.49
+  RefCell&lt;u64&gt; (checked at run time) : 0.40
+  Mutex&lt;u64&gt;   (lock per increment)  : 6.57</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · cost of a checked increment</span>
+  <div class="chart-box"><canvas id="cost-chart" aria-label="Bar chart: &amp;mut about 0.5 ns, RefCell 0.4 ns, Mutex 6.6 ns per increment"></canvas></div>
+  <figcaption><strong>Figure 5.</strong> Release build, best of 5 per run; the bars are medians of 12 runs, and hovering a bar shows the range (<code>&amp;mut</code> 0.39–0.58 ns, <code>RefCell</code> 0.40–0.41 ns, <code>Mutex</code> 6.55–6.58 ns). In this loop the RefCell check (one extra load and branch per increment, seen with <code>--emit asm</code>) is lost in the noise of the loop itself. An uncontended <code>Mutex</code> lock/unlock costs about 16×.</figcaption>
+</figure>
+<p>Two conclusions, one of them maybe surprising. Compile-time borrows cost nothing at run time, by construction. But <code>RefCell</code>'s run-time check is also very cheap: here it was within noise (the generated code adds one load and one branch per increment, and LLVM even removed the borrow counter's increment and decrement). So the reason to prefer plain references isn't speed. It's that a mistake becomes a compile error you fix in a minute instead of a panic in production. Reach for <code>RefCell</code> when shared mutation is the design, not to silence the borrow checker. The <code>Mutex</code> cost is real, and chapter 4.2 deals with it.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All solutions were run as programs (Exercises 1 and 2 with <code>assert!</code>s) and are Clippy-clean; every Exercise 3 verdict comes from rustc 1.99.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — borrow, don't own <span class="difficulty">★☆☆ product skill</span></div>
+  <p>These three signatures take ownership, so callers lose their data: <code>fn total(orders: Vec&lt;Order&gt;) -&gt; i64</code>, <code>fn apply_tax(order: Order, pct: i64) -&gt; Order</code> and <code>fn print_all(names: Vec&lt;String&gt;)</code>. Rewrite each to borrow, choosing <code>&amp;</code> or <code>&amp;mut</code>, and write a <code>main</code> that totals the orders before and after a 21% tax and prints the names twice.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">struct Order {
+    id: u32,
+    amount: i64, // cents
+}
+
+// Before: fn total(orders: Vec&lt;Order&gt;) -&gt; i64, which consumed the caller's orders.
+fn total(orders: &amp;[Order]) -&gt; i64 {
+    orders.iter().map(|o| o.amount).sum()
+}
+
+// Before: fn apply_tax(order: Order) -&gt; Order, which moved in and out again.
+fn apply_tax(order: &amp;mut Order, pct: i64) {
+    order.amount += order.amount * pct / 100;
+}
+
+// Before: fn print_all(names: Vec&lt;String&gt;), which took ownership just to print.
+fn print_all(names: &amp;[String]) {
+    for n in names {
+        println!("  {n}");
+    }
+}
+
+fn main() {
+    let mut orders = vec![Order { id: 1, amount: 10_000 }, Order { id: 2, amount: 5_000 }];
+    let names = vec![String::from("Ada"), String::from("Linus")];
+
+    println!("total before tax: {}", total(&amp;orders));
+    for o in &amp;mut orders {
+        apply_tax(o, 21);
+    }
+    println!("total after tax:  {}", total(&amp;orders)); // orders still ours
+    print_all(&amp;names);
+    print_all(&amp;names); // and names too, as often as we like
+
+    assert_eq!(total(&amp;orders), 18_150);
+    assert_eq!(orders[0].id, 1);
+    println!("ok");
+}</code></pre>
+<pre class="output">total before tax: 15000
+total after tax:  18150
+  Ada
+  Linus
+  Ada
+  Linus
+ok</pre>
+  <p>The rule of thumb: <code>&amp;T</code> (or <code>&amp;[T]</code>/<code>&amp;str</code>) to read, <code>&amp;mut T</code> to modify in place, by value only when the function keeps the value or consumes it. <code>apply_tax</code> could also stay by-value (<code>fn apply_tax(order: Order) -&gt; Order</code> is a fine functional style), but then the caller must move the order in and store the result. The <code>&amp;mut</code> version fits the loop over <code>&amp;mut orders</code>.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — start the next job <span class="difficulty">★★☆ product skill</span></div>
+  <p>The workflow engine's scheduler should pick the highest-priority job that isn't running, mark it running and return its id. This first attempt doesn't compile. Explain why, then fix it in two different ways, neither of which clones anything.</p>
+<pre data-title="ex2_naive.rs"><code class="language-rust">struct Job { id: u32, priority: u8, running: bool }
+
+fn mark_running(jobs: &amp;mut [Job], id: u32) {
+    for j in jobs.iter_mut().filter(|j| j.id == id) {
+        j.running = true;
+    }
+}
+
+fn start_next(jobs: &amp;mut [Job]) -&gt; Option&lt;u32&gt; {
+    let next = jobs.iter().filter(|j| !j.running).max_by_key(|j| j.priority)?;
+    mark_running(jobs, next.id);
+    Some(next.id)
+}
+
+fn main() {
+    let mut jobs = vec![Job { id: 1, priority: 3, running: false }];
+    println!("{:?}", start_next(&amp;mut jobs));
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `*jobs` as mutable because it is also borrowed as immutable
+  --&gt; ex/ex2_naive.rs:11:5
+   |
+10 |     let next = jobs.iter().filter(|j| !j.running).max_by_key(|j| j.priority)?;
+   |                ---- immutable borrow occurs here
+11 |     mark_running(jobs, next.id);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+12 |     Some(next.id)
+   |          ------- immutable borrow later used here</pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">struct Job {
+    id: u32,
+    priority: u8,
+    running: bool,
+}
+
+fn mark_running(jobs: &amp;mut [Job], id: u32) {
+    for j in jobs.iter_mut().filter(|j| j.id == id) {
+        j.running = true;
+    }
+}
+
+// Fix 1: copy out what you need (a u32 is Copy), so the shared borrow ends at once.
+fn start_next(jobs: &amp;mut [Job]) -&gt; Option&lt;u32&gt; {
+    let id = jobs.iter().filter(|j| !j.running).max_by_key(|j| j.priority)?.id;
+    mark_running(jobs, id); // no shared borrow is alive any more
+    Some(id)
+}
+
+// Fix 2: borrow mutably from the start and change the job in place.
+fn start_next_in_place(jobs: &amp;mut [Job]) -&gt; Option&lt;u32&gt; {
+    let next = jobs.iter_mut().filter(|j| !j.running).max_by_key(|j| j.priority)?;
+    next.running = true;
+    Some(next.id)
+}
+
+fn main() {
+    let mut jobs = vec![
+        Job { id: 1, priority: 3, running: false },
+        Job { id: 2, priority: 9, running: false },
+        Job { id: 3, priority: 5, running: false },
+    ];
+    assert_eq!(start_next(&amp;mut jobs), Some(2));
+    assert_eq!(start_next_in_place(&amp;mut jobs), Some(3));
+    assert_eq!(start_next(&amp;mut jobs), Some(1));
+    assert_eq!(start_next(&amp;mut jobs), None);
+    assert!(jobs.iter().all(|j| j.running));
+    println!("started 2, 3, 1, then None: ok");
+}</code></pre>
+<pre class="output">started 2, 3, 1, then None: ok</pre>
+  <p><code>next</code> is a <code>&amp;Job</code> into <code>jobs</code>, and it's still used (<code>next.id</code>) when <code>mark_running</code> needs <code>&amp;mut</code> access to the whole slice. That's E0502. Fix 1 copies the <code>u32</code> out at once, so the shared borrow ends on the same line; it's the "copy out what you need" pattern, and it also works when the mutation happens far away, such as in a database. Fix 2 borrows mutably from the start with <code>iter_mut()</code> and edits the job in place, with one borrow and no second search. The signature changed from <code>&amp;mut Vec&lt;Job&gt;</code> to <code>&amp;mut [Job]</code>: it never adds or removes jobs, so it shouldn't ask for the power to.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — which functions compile? <span class="difficulty">★★☆</span></div>
+  <p>For each function <code>a</code> to <code>f</code>, decide whether it compiles, and if not, which error code you'd get. Then check against the solution.</p>
+<pre data-title="puzzle.rs"><code class="language-rust">fn a() {
+    let mut s = String::from("rule");
+    let r = &amp;mut s;
+    let len = s.len();
+    r.push('!');
+    println!("{len}");
+}
+
+fn b() {
+    let mut s = String::from("rule");
+    let r = &amp;mut s;
+    r.push('!');
+    let len = s.len();
+    println!("{len}");
+}
+
+fn c() {
+    let mut v = vec![1, 2];
+    v.push(v.len());
+}
+
+fn d() {
+    let mut v = vec![1, 2];
+    let first = &amp;v[0];
+    let n = v.len();
+    println!("{first} {n}");
+}
+
+fn e() {
+    let mut s = String::from("rule");
+    let r1 = &amp;mut s;
+    let r2 = r1;
+    r2.push('!');
+    r1.push('?');
+}
+
+fn f() {
+    let mut total = 0;
+    let view = &amp;total;
+    println!("{view}");
+    total += 1;
+    println!("{total}");
+}
+
+fn main() {
+    a(); b(); c(); d(); e(); f();
+}</code></pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">a: error[E0502]  cannot borrow `s` as immutable because it is also borrowed as mutable
+b: compiles
+c: compiles
+d: compiles
+e: error[E0382]  borrow of moved value: `r1`
+f: compiles</pre>
+  <ul>
+    <li><strong>a</strong>: <code>r</code> (mutable) is used on the line after <code>s.len()</code>, so the shared borrow for <code>len</code> happens inside <code>r</code>'s range: E0502.</li>
+    <li><strong>b</strong>: the same statements with the last use of <code>r</code> moved first. Under NLL, <code>r</code>'s borrow is over before <code>s.len()</code>.</li>
+    <li><strong>c</strong>: a two-phase borrow: <code>v.len()</code> runs while <code>push</code>'s <code>&amp;mut</code> is only reserved.</li>
+    <li><strong>d</strong>: two shared borrows at once (<code>first</code> and the one for <code>len</code>). Many readers are fine. (The <code>mut</code> isn't even needed; rustc warns about it.)</li>
+    <li><strong>e</strong>: <code>let r2 = r1;</code> with no type annotation <em>moves</em> the <code>&amp;mut</code> (it isn't <code>Copy</code>), so using <code>r1</code> afterwards is E0382. <code>let r2: &amp;mut String = r1;</code> would reborrow instead. Then <code>r2.push(…)</code> followed by <code>r1.push(…)</code> compiles, because <code>r2</code> isn't used again.</li>
+    <li><strong>f</strong>: <code>view</code>'s last use is the first <code>println!</code>, so the <code>+= 1</code> after it is fine. Swap the two lines and you get E0506.</li>
+  </ul>
+  </details>
+</div>
+
+<h2 id="decision">Which parameter type?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>The function…</th><th>Take</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Only reads the value</td><td><code>&amp;T</code>, or better <code>&amp;[T]</code> / <code>&amp;str</code> for collections and text</td><td><code>fn evaluate(rules: &amp;[Rule], orders: &amp;[Order])</code></td></tr>
+    <tr><td>Changes it in place, and the caller keeps it</td><td><code>&amp;mut T</code> (or <code>&amp;mut [T]</code> if it doesn't add or remove items)</td><td><code>fn apply(…, orders: &amp;mut [Order])</code></td></tr>
+    <tr><td>Keeps it (stores it in a struct, sends it to another thread)</td><td><code>T</code> by value</td><td><code>fn register(&amp;mut self, rule: Rule)</code></td></tr>
+    <tr><td>Consumes it, so the old value must not be used afterwards</td><td><code>T</code> by value (the <code>self</code> of <code>commit(self)</code>)</td><td><code>fn commit(self) -&gt; Result&lt;…&gt;</code></td></tr>
+    <tr><td>Is a small <code>Copy</code> value (ids, numbers, flags)</td><td><code>T</code> by value, even just to read</td><td><code>fn find(&amp;self, id: u32)</code></td></tr>
+    <tr><td>Needs shared ownership or shared mutation by design</td><td><code>Arc&lt;T&gt;</code>, <code>Rc&lt;RefCell&lt;T&gt;&gt;</code>, <code>Mutex</code></td><td>Chapters 2.12, 4.2</td></tr>
+  </tbody>
+</table></div>
+<p>Start with the most restrictive choice that works, <code>&amp;T</code>, and move down the table only when you must. Callers can always pass a borrow of something they own, but they can't get back a value you took.</p>
+
+<h2 id="compare">C# vs Rust: references</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Default way to pass a class instance</td><td>Copy of a reference: shared, mutable, untracked</td><td>Choose: <code>&amp;T</code>, <code>&amp;mut T</code> or move</td></tr>
+    <tr><td>Call site shows mutation?</td><td>Only for <code>ref</code>/<code>out</code></td><td>Always: <code>&amp;mut x</code></td></tr>
+    <tr><td>Read-only view</td><td><code>IReadOnlyList&lt;T&gt;</code> (a convention; the owner can still change it)</td><td><code>&amp;T</code>: nobody can change it while borrowed</td></tr>
+    <tr><td>Modify while enumerating</td><td><code>InvalidOperationException</code> at run time</td><td>E0502 at compile time</td></tr>
+    <tr><td>Same object passed as two arguments</td><td>Allowed; may misbehave</td><td>Rejected if either is <code>&amp;mut</code></td></tr>
+    <tr><td>Reference outliving its target</td><td>Impossible for objects (GC keeps them alive); compile error for <code>ref</code> (CS8168)</td><td>Compile error (E0597, E0106)</td></tr>
+    <tr><td>Null references</td><td>Possible (nullable reference types warn)</td><td>Impossible: <code>Option&lt;&amp;T&gt;</code></td></tr>
+    <tr><td>Data race on shared data</td><td>Possible; locks are by convention</td><td>Compile error (chapter 4.1)</td></tr>
+    <tr><td>Aliasing assumption for the optimiser</td><td>None: <code>ref</code>s may alias</td><td><code>&amp;mut</code> is <code>noalias</code></td></tr>
+    <tr><td>Run-time cost of the checks</td><td>Version checks in enumerators, locks</td><td>Zero for references; small for <code>RefCell</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "A borrow lasts until the end of the scope"</div>
+  <p>Not since Rust 2018: it lasts until the reference's last use (Figure 2). If an error seems wrong, find the "borrow later used here" label. That use is what keeps the borrow alive.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Cloning to make the borrow checker happy</div>
+  <p>It compiles, but it hides the design question. First try ending the borrow earlier, copying out an id, or collect-then-apply (Exercise 2, Lab step 4).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Storing references in long-lived structs too early</div>
+  <p>A struct holding <code>&amp;T</code> needs lifetime parameters (chapter 2.11) and freezes what it points to for its whole life. In application code, prefer owned data or ids. Keep references for short-lived views.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Taking <code>&amp;Vec&lt;T&gt;</code> or <code>&amp;String</code> parameters</div>
+  <p>Take <code>&amp;[T]</code> and <code>&amp;str</code>: they accept more callers at no cost, and Clippy's <code>ptr_arg</code> lint flags the other form (chapter 2.4).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Methods that return a reference into <code>self</code>, then mutate</div>
+  <p>A getter like <code>fn rules(&amp;self) -&gt; &amp;[String]</code> borrows <em>all</em> of <code>self</code> for as long as its result is used (e10). Copy out what you need, or reach the fields directly.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "<code>RefCell</code> turns off the borrow checker"</div>
+  <p>It moves the same rule to run time, and violations panic (Lab step 5). It's for designs that genuinely need shared mutation, not for silencing errors.</p></div>
+
+<h2 id="real-world">Real-world view: borrowing in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine evaluation:</strong> <code>evaluate(&amp;rules, &amp;facts)</code> is read-only by signature, so it can run on many threads over the same facts with no locks. The compiler proves no rule mutates shared state (chapter 4.1 adds the threads). Mutation is confined to one apply phase.</li>
+    <li><strong>Collect, then apply = auditable:</strong> producing a <code>Vec&lt;Action&gt;</code> before mutating gives you a natural point to log, dry-run, or persist decisions. For the workflow engine, that's the step outcome you write to the event log before updating state (chapter 10.2).</li>
+    <li><strong>APIs that say what they do:</strong> <code>&amp;self</code> methods are queries; <code>&amp;mut self</code> methods are commands; <code>self</code> methods consume. That's CQS, enforced by the compiler instead of by naming conventions.</li>
+    <li><strong>Ids over references across components:</strong> store <code>StepId</code>/<code>RuleId</code> and look things up, rather than holding references between long-lived objects. It plays well with the borrow checker, serialisation and persistence.</li>
+    <li><strong>Review checklist:</strong> clones added to silence E0502; <code>&amp;Vec</code>/<code>&amp;String</code> parameters; <code>&amp;mut</code> where <code>&amp;</code> would do; <code>RefCell</code> used to dodge a design problem; structs holding references in application code; long-lived getters returning references into <code>self</code>.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.3">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does the rule "aliasing XOR mutation" allow at a given point in a program?</div>
+    <ol class="options">
+      <li data-key="a">One shared reference and one mutable reference</li>
+      <li data-key="b">Any number of mutable references, if they're in different functions</li>
+      <li data-key="c">Either any number of shared references, or exactly one mutable reference</li>
+      <li data-key="d">Only one reference of any kind</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the forbidden combination: reading while writing.</p>
+      <p data-for="b">Two live <code>&amp;mut</code> to one value is E0499 anywhere.</p>
+      <p data-for="c">Correct: many readers or one writer, the Book's first rule.</p>
+      <p data-for="d">Many shared references at once are fine.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does <code>let first = &amp;v[0]; v.push(x); println!("{first}");</code> fail to compile?</div>
+    <ol class="options">
+      <li data-key="a">Because <code>v</code> isn't <code>mut</code></li>
+      <li data-key="b"><code>push</code> may reallocate and free the old buffer, leaving <code>first</code> dangling; the shared borrow is still used after the mutable one (E0502)</li>
+      <li data-key="c">Because <code>first</code> is never used</li>
+      <li data-key="d">Because indexing moves the element out</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That would be E0596; the real problem is the overlap.</p>
+      <p data-for="b">Correct (e1.rs, Figure 2 step 8).</p>
+      <p data-for="c">It's used in the <code>println!</code>, and that use is the problem.</p>
+      <p data-for="d"><code>&amp;v[0]</code> borrows; it doesn't move.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Under today's borrow checker, which version compiles?<br>(1) <code>let a = &amp;v; v.push(1); println!("{}", a.len());</code><br>(2) <code>let a = &amp;v; println!("{}", a.len()); v.push(1);</code></div>
+    <ol class="options">
+      <li data-key="a">Only (2): the borrow ends at <code>a</code>'s last use, before the push</li>
+      <li data-key="b">Only (1)</li>
+      <li data-key="c">Both</li>
+      <li data-key="d">Neither: <code>a</code> is in scope until the closing brace</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's non-lexical lifetimes.</p>
+      <p data-for="b">(1) uses <code>a</code> after the push: E0502.</p>
+      <p data-for="c">(1) overlaps a shared and a mutable borrow.</p>
+      <p data-for="d">That was the pre-2018 lexical rule (rustc 1.30 rejects both).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What is a <code>&amp;Vec&lt;String&gt;</code> in memory, on a 64-bit target?</div>
+    <ol class="options">
+      <li data-key="a">A copy of the 24-byte <code>Vec</code> header</li>
+      <li data-key="b">A pointer to the heap buffer</li>
+      <li data-key="c">A reference-counted handle</li>
+      <li data-key="d">An 8-byte address of the <code>Vec</code> itself (its header, wherever the owner keeps it)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That would be a move or copy, not a borrow.</p>
+      <p data-for="b">It points at the owner's header, which points at the heap.</p>
+      <p data-for="c">References have no count; that's <code>Rc</code>/<code>Arc</code>.</p>
+      <p data-for="d">Correct (Figure 1, Lab step 1).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A colleague writes <code>fn latest_rule() -&gt; &amp;Rule { let r = load(); &amp;r }</code>. What happens, and what's the fix?</div>
+    <ol class="options">
+      <li data-key="a">It compiles; Rust extends <code>r</code>'s lifetime automatically</li>
+      <li data-key="b">It compiles but crashes at run time</li>
+      <li data-key="c">Compile error (E0106): <code>r</code> is dropped when the function returns. Return the owned <code>Rule</code></li>
+      <li data-key="d">Add <code>'static</code> and it works</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Rust never extends a value's life to fit a reference.</p>
+      <p data-for="b">Safe Rust never compiles a dangling reference.</p>
+      <p data-for="c">Correct (e6.rs and its second help).</p>
+      <p data-for="d"><code>&amp;r</code> still points at a local, so you'd just get a different error. The compiler itself calls <code>'static</code> here "uncommon".</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why can you call <code>append(r); append(r);</code> with <code>r: &amp;mut String</code>, even though <code>&amp;mut</code> isn't <code>Copy</code>?</div>
+    <ol class="options">
+      <li data-key="a">Because <code>&amp;mut</code> is <code>Copy</code> inside functions</li>
+      <li data-key="b">The compiler reborrows: each call gets <code>&amp;mut *r</code>, a new borrow that ends when the call returns</li>
+      <li data-key="c">Because of two-phase borrows</li>
+      <li data-key="d">It doesn't compile</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>&amp;mut</code> is never <code>Copy</code>.</p>
+      <p data-for="b">Correct (Lab step 3, section 3).</p>
+      <p data-for="c">Two-phase borrows are about <code>v.push(v.len())</code>.</p>
+      <p data-for="d">It does, thanks to implicit reborrowing.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You need to remove every expired lease from <code>leases: Vec&lt;Lease&gt;</code> while iterating. <code>for l in &amp;leases { if l.expired() { leases.remove(…) } }</code> gives E0502. What's the idiomatic fix?</div>
+    <ol class="options">
+      <li data-key="a"><code>leases.retain(|l| !l.expired());</code>: let the collection do the editing</li>
+      <li data-key="b">Clone the vector and iterate over the clone</li>
+      <li data-key="c">Wrap it in <code>RefCell</code></li>
+      <li data-key="d">Use <code>unsafe</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 3, section 6). <code>extract_if</code> also works if you need the removed items.</p>
+      <p data-for="b">This works, but costs a full copy for nothing.</p>
+      <p data-for="c">That would panic at run time, the same bug found later.</p>
+      <p data-for="d">Never to bypass a correct error.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text"><code>let n = engine.rules().len(); engine.record_hit();</code> compiles, but <code>let rs = engine.rules(); engine.record_hit(); println!("{}", rs.len());</code> doesn't. Why?</div>
+    <ol class="options">
+      <li data-key="a"><code>rules()</code> returns a copy in the first case</li>
+      <li data-key="b">Methods can't be called twice on one value</li>
+      <li data-key="c"><code>record_hit</code> moves <code>engine</code></li>
+      <li data-key="d"><code>rules(&amp;self)</code> borrows all of <code>engine</code> for as long as its result is used. In the first case that ends before <code>record_hit(&amp;mut self)</code>; in the second it doesn't (E0502)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Both cases return a reference; the first just stops using it at once.</p>
+      <p data-for="b">They can, if the borrows don't overlap.</p>
+      <p data-for="c">It takes <code>&amp;mut self</code>.</p>
+      <p data-for="d">Correct (e10.rs, Lab step 3, section 4).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What's the main reason to prefer plain references over <code>RefCell</code> when both would work?</div>
+    <ol class="options">
+      <li data-key="a"><code>RefCell</code> is about 10× slower</li>
+      <li data-key="b"><code>RefCell</code> doesn't enforce aliasing XOR mutation</li>
+      <li data-key="c">With references, a violation is a compile error; with <code>RefCell</code>, it's a panic at run time</li>
+      <li data-key="d"><code>RefCell</code> can't hold a <code>Vec</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Lab step 5 measured its check as within noise of a plain <code>&amp;mut</code>.</p>
+      <p data-for="b">It enforces the same rule, dynamically.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d">It can hold any type.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">In C#, <code>MergeInto(ids, ids)</code> threw "Collection was modified" after adding one item. What does Rust do with <code>merge_into(&amp;mut ids, &amp;ids)</code>?</div>
+    <ol class="options">
+      <li data-key="a">The same exception, as a panic</li>
+      <li data-key="b">Compile error E0502: <code>ids</code> can't be borrowed immutably while it's borrowed mutably for the same call</li>
+      <li data-key="c">It runs forever, doubling the vector</li>
+      <li data-key="d">It silently copies <code>ids</code> first</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">No run-time check is needed; it never compiles.</p>
+      <p data-for="b">Correct (e9.rs).</p>
+      <p data-for="c">That's what an unchecked language might do; Rust rejects it.</p>
+      <p data-for="d">Rust never copies implicitly (chapter 2.2).</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Borrowing creates a reference: <code>&amp;T</code> to read (many at once, <code>Copy</code>), <code>&amp;mut T</code> to modify (exclusive, visible at the call site). A reference is just an address (8 bytes; 16 for slices and <code>&amp;str</code>), and dropping it never drops the value.</li>
+  <li>Two rules: <strong>aliasing XOR mutation</strong> (many readers or one writer, never both) and <strong>references are always valid</strong> (no dangling, no null). Together they rule out use-after-free, iterator invalidation, aliasing surprises and data races, at compile time and with zero run-time cost.</li>
+  <li>Under non-lexical lifetimes, a borrow lasts until its <em>last use</em>, not the end of the scope. Of 522 explorer programs, rustc 1.99 accepts 219 and the lexical-era rustc 1.30 accepted 30.</li>
+  <li>Know the errors by number: E0502/E0499 (overlap), E0506/E0505 (assign or move while borrowed), E0597/E0106 (dangling), E0596 (not <code>mut</code>). Reborrowing, two-phase borrows and disjoint field borrows make most natural code compile.</li>
+  <li>When the checker objects, restructure: end the borrow earlier, copy out ids, collect then apply, use indices or <code>retain</code>. <code>RefCell</code> moves the same rule to run time (a panic, not a compile error), at very little speed cost.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">reference</li><li class="chip">borrow</li><li class="chip">shared reference</li><li class="chip">mutable reference</li><li class="chip">aliasing XOR mutation</li>
+  <li class="chip">dangling reference</li><li class="chip">borrow checker</li><li class="chip">non-lexical lifetimes</li><li class="chip">reborrow</li><li class="chip">two-phase borrow</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html">The Rust Programming Language — “References and Borrowing”</a><span class="why">The source of the two rules and the dangling-reference examples quoted here.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rust-lang.github.io/rfcs/2094-nll.html">RFC 2094 — Non-lexical lifetimes</a><span class="why">The design of today's borrow checker, with the "problem cases" (including #3) that motivated it.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://blog.rust-lang.org/2022/08/05/nll-by-default/">Rust Blog — “Non-lexical lifetimes (NLL) fully stable”</a> and <a href="https://blog.rust-lang.org/2026/08/04/enabling-polonius-alpha-on-nightly/">“Enabling the next iteration of the borrow checker on nightly”</a><span class="why">How the old checker was retired in 1.63, and the 2026 plan for Polonius.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/3371109">“Stacked Borrows: An Aliasing Model for Rust”</a> — Ralf Jung, Hoang-Hai Dang, Jeehoon Kang, Derek Dreyer, POPL 2020<span class="why">What aliasing XOR mutation means precisely, down to <code>unsafe</code> code; the model behind the <code>noalias</code> optimisation and the Miri checker.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/3735592">“Tree Borrows”</a> — Neven Villani, Johannes Hostert, Derek Dreyer, Ralf Jung, PLDI 2025<span class="why">The successor model, which accepts more real-world <code>unsafe</code> code while keeping the optimisations; useful background for chapter 5.1.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rustc-dev-guide.rust-lang.org/borrow-check/two-phase-borrows.html">rustc dev guide — Two-phase borrows</a><span class="why">Exactly which borrows are two-phase, and why <code>v.push(v.len())</code> compiles.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/cell/struct.RefCell.html"><code>RefCell</code></a> and <a href="https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut"><code>slice::split_at_mut</code></a><span class="why">The run-time borrow check and the standard tool for two disjoint mutable borrows.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/csharp/advanced-topics/performance/">Reduce memory allocations using new C# features (ref safe context)</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/compiler-messages/ref-safety-errors">ref safety errors</a>, <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.list-1.getenumerator"><code>List&lt;T&gt;.GetEnumerator</code></a><span class="why">C#'s own borrow-like rules for <code>ref</code>, and the run-time "collection was modified" contract.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=8M0QfLUDaaA">“Learning Rust: Memory, Ownership and Borrowing”</a> — YouCodeThings<span class="why">A visual walk through borrowing on top of the ownership model from chapter 2.2.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=VFIOSWy93H0">“Understanding Ownership in Rust”</a> — Let's Get Rusty<span class="why">A walk through the ownership model from chapter 2.2 that this chapter builds on, if you want it explained a second way.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- borrow checker explorer (Figure 3) ----------
+  var OPS = [
+    ["A", "let a = &v;", "shared borrow"],
+    ["B", "let b = &mut v;", "mutable borrow"],
+    ["a", 'println!("{}", a[0]);', "use a"],
+    ["b", "b.push(4);", "use b"],
+    ["R", 'println!("{}", v.len());', "read v directly"],
+    ["W", "v.push(5);", "write v directly"]
+  ];
+  var CODE = {}; OPS.forEach(function (o) { CODE[o[0]] = o[1]; });
+  var MSG = {
+    "B E0502": "cannot borrow `v` as mutable because it is also borrowed as immutable",
+    "A E0502": "cannot borrow `v` as immutable because it is also borrowed as mutable",
+    "R E0502": "cannot borrow `v` as immutable because it is also borrowed as mutable",
+    "W E0499": "cannot borrow `v` as mutable more than once at a time",
+    "W E0502": "cannot borrow `v` as mutable because it is also borrowed as immutable"
+  };
+  // mode "nll": a borrow lives until its last use; mode "lexical": until the end of the block.
+  function check(seq, mode) {
+    var end = function (u) { return mode === "lexical" ? Infinity : seq.lastIndexOf(u); };
+    var lastUse = { A: end("a"), B: end("b") };
+    function live(x, i) { var c = seq.indexOf(x); return c >= 0 && c < i && lastUse[x] > i; }
+    var errs = [];
+    for (var i = 0; i < seq.length; i++) {
+      var op = seq[i];
+      if (op === "B" && live("A", i)) errs.push(["E0502", i]);
+      else if ((op === "A" || op === "R") && live("B", i)) errs.push(["E0502", i]);
+      else if (op === "W" && live("A", i) && live("B", i))
+        // both loans conflict: NLL reports the mutable one, Rust 1.30 the earliest one
+        errs.push([mode === "lexical" && seq.indexOf("A") < seq.indexOf("B") ? "E0502" : "E0499", i]);
+      else if (op === "W" && live("B", i)) errs.push(["E0499", i]);
+      else if (op === "W" && live("A", i)) errs.push(["E0502", i]);
+    }
+    return errs;
+  }
+  window.__bx = { check: check };
+
+  var seq = "AaW";
+  var PRESETS = [["NLL in one line", "AaW"], ["Reader blocks writer", "AWa"], ["Two writers", "BWb"], ["Owner read while lent", "BRb"], ["Many readers", "AaR"]];
+  function el(id) { return document.getElementById(id); }
+  function mode() { return document.querySelector('input[name="bx-mode"]:checked').value; }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function allowed(op) {
+    if (seq.indexOf(op) >= 0) return false;
+    if (op === "a") return seq.indexOf("A") >= 0;
+    if (op === "b") return seq.indexOf("B") >= 0;
+    return true;
+  }
+  var pal = el("bx-palette");
+  OPS.forEach(function (o) {
+    var btn = document.createElement("button"); btn.type = "button"; btn.dataset.op = o[0];
+    btn.innerHTML = '<span class="bx-kind">+ ' + o[2] + "</span>" + esc(o[1]);
+    btn.onclick = function () { if (allowed(o[0])) { seq += o[0]; render(); } };
+    pal.appendChild(btn);
+  });
+  var acts = el("bx-actions");
+  PRESETS.forEach(function (p) {
+    var btn = document.createElement("button"); btn.type = "button"; btn.textContent = p[0];
+    btn.onclick = function () { seq = p[1]; render(); };
+    acts.appendChild(btn);
+  });
+  el("bx-undo").onclick = function () { seq = seq.slice(0, -1); render(); };
+  el("bx-clear").onclick = function () { seq = ""; render(); };
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="bx-mode"]'), function (r) { r.onchange = render; });
+
+  function liveRange(x, use, m) {
+    var c = seq.indexOf(x); if (c < 0) return null;
+    if (m === "lexical") return [c, seq.length]; // through the closing brace
+    return [c, Math.max(c, seq.lastIndexOf(use))];
+  }
+  function row(ln, code, inA, inB, cls) {
+    return '<div class="bx-row' + (cls || "") + '"><span class="bx-ln">' + ln + '</span><span class="bx-code">' + code +
+      '</span><span class="bx-live' + (inA ? " a" : "") + '"></span><span class="bx-live' + (inB ? " b" : "") + '"></span></div>';
+  }
+  function render() {
+    var m = mode(), errs = check(seq, m), byLine = {};
+    errs.forEach(function (e) { byLine[e[1]] = e[0]; });
+    var ra = liveRange("A", "a", m), rb = liveRange("B", "b", m);
+    function inR(r, i) { return r && i >= r[0] && i <= r[1]; }
+    var h = '<div class="bx-row bx-head"><span></span><span></span><span class="bx-live">a</span><span class="bx-live">b</span></div>';
+    h += row(1, "fn main() {", false, false) + row(2, "    let mut v = vec![1, 2, 3];", false, false);
+    for (var i = 0; i < seq.length; i++) {
+      var code = byLine[i];
+      h += row(i + 3, "    " + esc(CODE[seq[i]]), inR(ra, i), inR(rb, i), code ? " err" : "");
+      if (code) h += '<div class="bx-row err"><span></span><span class="bx-msg">error[' + code + "]: " + esc(MSG[seq[i] + " " + code]) + "</span></div>";
+    }
+    h += row(seq.length + 3, "}", inR(ra, seq.length), inR(rb, seq.length));
+    el("bx-prog").innerHTML = h;
+    var v = el("bx-verdict");
+    if (!seq.length) { v.className = "bx-verdict"; v.textContent = "Add statements with the buttons above."; }
+    else if (!errs.length) { v.className = "bx-verdict ok"; v.textContent = "✓ Compiles with " + (m === "nll" ? "rustc 1.99" : "rustc 1.30") + "."; }
+    else { v.className = "bx-verdict bad"; v.textContent = "✗ " + errs.length + (errs.length === 1 ? " error" : " errors") + " from " + (m === "nll" ? "rustc 1.99" : "rustc 1.30") + "."; }
+    Array.prototype.forEach.call(pal.querySelectorAll("button"), function (b) { b.disabled = !allowed(b.dataset.op); });
+    el("bx-undo").disabled = !seq.length; el("bx-clear").disabled = !seq.length;
+  }
+  render();
+
+  // ---------- accepted programs, lexical vs NLL (Figure 4) ----------
+  Course.chart("nll-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["1", "2", "3", "4", "5", "6"],
+        datasets: [
+          { label: "programs possible", data: [4, 14, 42, 102, 180, 180], backgroundColor: c.muted, borderRadius: 4 },
+          { label: "accepted by rustc 1.99 (NLL)", data: [4, 14, 37, 66, 68, 30], backgroundColor: c.teal, borderRadius: 4 },
+          { label: "accepted by rustc 1.30 (lexical)", data: [4, 9, 11, 6, 0, 0], backgroundColor: c.amber, borderRadius: 4 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { title: { display: true, text: "statements in the program" } },
+          y: { min: 0, title: { display: true, text: "programs" } }
+        }
+      }
+    };
+  });
+
+  // ---------- cost of a checked increment (Figure 5) ----------
+  Course.chart("cost-chart", function (c) {
+    var range = ["0.39–0.58", "0.40–0.41", "6.55–6.58"];
+    return {
+      type: "bar",
+      data: {
+        labels: ["&mut u64 (compile time)", "RefCell<u64> (run time)", "Mutex<u64> (lock)"],
+        datasets: [{ label: "ns per increment (median of 12 runs)", data: [0.50, 0.40, 6.57], backgroundColor: [c.teal, c.purple, c.red], borderRadius: 5 }]
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: function (ctx) { return ctx.parsed.y + " ns (range " + range[ctx.dataIndex] + " ns)"; } } }
+        },
+        scales: { y: { min: 0, title: { display: true, text: "ns per increment (lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

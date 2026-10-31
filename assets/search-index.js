@@ -284,6 +284,1242 @@ window.SEARCH_INDEX = [
 },
 {
 "heading": "Why this matters",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#why",
+"text": "💡 Why this matters This is the first chapter of actual Rust, and most of it will look familiar: braces, semicolons, if , while , generic angle brackets. That familiarity is a trap. The syntax is close enough to C#"
+},
+{
+"heading": "Intuition first: the same sentence, stricter grammar",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#intuition",
+"text": "🧭 Analogy Think of moving from C# to Rust as moving from conversational English to contract English . The words are the same, but contract English refuses implied meaning. \"The supplier may change the price\" becomes \"the supplier may change"
+},
+{
+"heading": "Core explanation",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#core",
+"text": "Basic"
+},
+{
+"heading": "Variables: let, immutability and mut",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#variables",
+"text": "A variable is introduced with let . Its type is usually inferred (chapter F8), and you can annotate it when inference needs help or for clarity: let port: u16 = 8080; . Rust variables are immutable by default . Assigning"
+},
+{
+"heading": "Constants and statics",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#const-static",
+"text": "const : const MAX_RETRIES: u32 = 5; . The value must be computable at compile time, the type must be written, and the compiler copies the value into every place it's used. It's the equivalent of C# const , and"
+},
+{
+"heading": "Shadowing",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#shadowing",
+"text": "Shadowing means declaring a new variable with the same name as an existing one. The old one is hidden for the rest of the scope. It's not the same as mut : Animation · shadowing vs mutation let limit ="
+},
+{
+"heading": "Scalar types",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#scalars",
+"text": "Rust's integer types say their size and signedness in the name: i8 i16 i32 i64 i128 (signed) and u8 u16 u32 u64 u128 (unsigned). The pair isize / usize is pointer-sized: 8 bytes on a 64-bit machine. usize is the"
+},
+{
+"heading": "Integer overflow: defined, and chosen by you",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#overflow",
+"text": "Integer overflow is what happens when a result doesn't fit its type. A u8 holds 0–255. What is 250_u8 + 10 ? Rust's answer has three layers. If the compiler can see it, it's an error. let level: u8 ="
+},
+{
+"heading": "Converting between numeric types",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#conversions",
+"text": "Rust never converts numbers for you, not even i32 → i64 (error E0308 and E0277 in Lab step 2). You choose one of three tools, in order of preference: From / Into : lossless only. let wide: u32 = small.into();"
+},
+{
+"heading": "Compound types: tuples and arrays",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#compound",
+"text": "A tuple groups a fixed number of values of possibly different types: let reading: (&str, f64, bool) = (\"sensor-7\", 21.5, true); . Read fields with .0 , .1 , or destructure them: let (id, celsius, _) = reading; . Tuples"
+},
+{
+"heading": "Functions",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#functions",
+"text": "fn , a snake_case name, parameters with mandatory types , and -> ReturnType . No return type means it returns () . The body's final expression is the return value (chapter F8); return is for leaving early. Adding a semicolon"
+},
+{
+"heading": "Control flow",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#control-flow",
+"text": "if takes a bool condition without parentheses, and braces are always required. It's an expression, so it replaces C#'s ternary: let mode = if load > 100 { \"shed\" } else { \"normal\" }; . Both branches must have the"
+},
+{
+"heading": "Comments, printing and formatting",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#macros-format",
+"text": "// and /* */ are ordinary comments. /// documents the item that follows and //! documents the enclosing module; both become HTML via cargo doc , and code inside them runs as tests (chapter 3.6). println! , format! and eprintln!"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac. Outputs are pasted verbatim. Create a project with cargo new l21 , put each program in src/bin/ , and run"
+},
+{
+"heading": "Step 1 — variables, constants and shadowing",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab-1",
+"text": "The three limit s are three variables; the last one is what the name means from then on. The inner region disappears at the closing brace. The C# compiler refuses the same idea:"
+},
+{
+"heading": "Step 2 — the errors you'll meet in your first week",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab-2",
+"text": "Each is a separate file compiled with rustc --edition 2024 file.rs , and each fails on purpose. Read the help text: it usually contains the fix. Fixes, in order: let mut retries ; if pending > 0 ; total +"
+},
+{
+"heading": "Step 3 — scalar types and conversions, side by side with C#",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab-3",
+"text": "The same operations in C# on .NET 10: Line them up. The casts now agree, including (int)NaN == 0 and saturation, thanks to .NET 9's change. Overflow doesn't: C# wrapped int.MaxValue + 1 silently, where a Rust debug build would"
+},
+{
+"heading": "Step 4 — overflow in debug and release",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab-4",
+"text": "cargo run --bin overflow (debug profile): cargo run --release --bin overflow : The four explicit methods printed the same in both builds; only the plain + changed behaviour. That's the argument for writing the explicit method wherever overflow is plausible:"
+},
+{
+"heading": "Step 5 — tuples, arrays, control flow and formatting",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#lab-5",
+"text": "And the index that's out of range, with the value hidden from the compiler as user input would be: Even in a release build, the access is checked and the program stops with a precise message, rather than reading whatever"
+},
+{
+"heading": "Exercises",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#exercises",
+"text": "All three solutions were run as programs whose assert! s check the results, and are Clippy-clean. Exercise 1 — a fee that can't silently overflow ★☆☆ product skill Write fee_cents(amount_cents: u64, rate_bp: u64, fixed_cents: u64) -> Option<u64> computing amount ×"
+},
+{
+"heading": "Which arithmetic should I write?",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#decision",
+"text": "Situation Write Why Values that can't realistically overflow (loop counters, small sizes) Plain + - * Debug builds still catch surprises Money, quantities, user-controlled sizes checked_* → handle None An error beats a plausible wrong number A value with a"
+},
+{
+"heading": "C# ↔ Rust syntax at a glance",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#syntax-table",
+"text": "C# Rust Note int x = 5; / var x = 5; let x = 5; / let x: i32 = 5; Immutable int x = 5; x = 6; let mut x = 5; x = 6; Mutability is"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#pitfalls",
+"text": "⚠️ Testing only in debug, or only in release The plain operators behave differently in the two profiles. Write the explicit method wherever overflow is possible, and consider overflow-checks = true in your release profile for business logic. ⚠️ Sprinkling"
+},
+{
+"heading": "Real-world view: basic types in your products",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#real-world",
+"text": "🏗 Architecture view Money and rates in the rule engine: integer minor units ( i64 cents) and basis points, with checked_* arithmetic returning a rule error rather than a wrong amount. Document the rounding rule next to the type (chapter"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#check",
+"text": "Multiple choice let total = 0; total += 5; fails to compile. Why, and what's the fix? total has no type; write let total: i32 = 0; += doesn't exist in Rust Variables are immutable by default (E0384); write let"
+},
+{
+"heading": "Summary",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#summary",
+"text": "let bindings are immutable unless marked mut , must be initialised on every path before use (E0381), and can be shadowed by a new let of the same name, even with a new type (C# forbids this: CS0128). const is"
+},
+{
+"heading": "Go further",
+"chapter": "Syntax and basic types",
+"url": "chapters/2-1-syntax-basics.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — “Common Programming Concepts” The official book's chapter on the same ground: variables, types, functions, control flow. Doc The Rust Reference —"
+},
+{
+"heading": "Why this matters",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#why",
+"text": "💡 Why this matters Every program has to answer \"who frees this, and when?\" for every piece of memory and every resource. .NET answers it twice. For memory, the garbage collector frees objects at some later point it chooses (chapter"
+},
+{
+"heading": "Intuition first: one original document",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#intuition",
+"text": "🧭 Analogy Think of a value as a signed original contract , filed in exactly one cabinet. Ownership: the cabinet it's in is responsible for it. One cabinet at a time. Move: you hand the original to a colleague. Now"
+},
+{
+"heading": "Core explanation",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#core",
+"text": "Basic"
+},
+{
+"heading": "The three ownership rules",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#rules",
+"text": "The Rust Book states them exactly: Each value in Rust has an owner . There can only be one owner at a time. When the owner goes out of scope, the value will be dropped. An owner is usually a"
+},
+{
+"heading": "Moves",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#moves",
+"text": "Recall from chapter F1 that a String is three words on the stack (a pointer, a length and a capacity, 24 bytes in total) pointing at a buffer on the heap. What should let s2 = s1; do? Copying the"
+},
+{
+"heading": "Copy: types that are just bits",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#copy",
+"text": "Some types have no owned resources at all: their value is their bits. For them a move is pointless ceremony, so they're Copy : assignment duplicates the bits and both variables stay usable. All the scalar types from chapter 2.1"
+},
+{
+"heading": "Clone: explicit duplication",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#clone",
+"text": "Clone is how you ask for an independent duplicate of a non- Copy value: let s3 = s2.clone(); . For a String or Vec that means a new heap allocation and a copy of every byte, so its cost grows"
+},
+{
+"heading": "Drop and RAII",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#drop",
+"text": "When a value is dropped, Rust first runs the type's Drop implementation, if it has one, then drops each of its fields. You implement Drop for types that own something outside Rust's memory, or that must do something when they"
+},
+{
+"heading": "What a move costs",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#moves-in-memory",
+"text": "A move copies the value's stack representation (24 bytes for a String or Vec , whatever the size of its heap data) and often not even that, because the optimiser frequently builds the value directly in its final location. Lab"
+},
+{
+"heading": "The let _ trap and temporaries",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#temporaries",
+"text": "A value that's never bound to a name is a temporary , and it's dropped at the end of the statement that created it. That makes two lines that look alike behave very differently (Lab step 3): The first line"
+},
+{
+"heading": "Moving out of places you don't fully own",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#moving-out",
+"text": "Sometimes you want to move a value out of a struct field or a collection while keeping the container usable. The compiler allows a partial move of a field from a local struct, after which only the remaining fields are"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac; outputs are verbatim. Put each Rust program in src/bin/ of one Cargo project and run cargo run --bin <name> ."
+},
+{
+"heading": "Step 1 — moves, clones, and what the compiler refuses",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab-1",
+"text": "Now watch the heap buffer during a move and a clone: The move left the buffer exactly where it was, at the same address; only the 24-byte header changed hands. The clone has a different address: a new allocation. (Addresses"
+},
+{
+"heading": "Step 2 — Copy and Clone on your own types",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab-2",
+"text": "Money is plain data (an i64 and three bytes), so Copy is correct and convenient. Customer owns a String , so it can be Clone but not Copy , and the compiler enforces that:"
+},
+{
+"heading": "Step 3 — drop order, early drops, and panics",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab-3",
+"text": "Check each section against Figure 2. In section 2, notice that _arr is dropped before _p : the two locals go in reverse order, and then each value's insides go in forward order. Section 5 is the let _ trap"
+},
+{
+"heading": "Step 4 — an RAII lease pool, and the same in C#",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab-4",
+"text": "A workflow worker takes a slot from a fixed-size pool for the duration of a step. The slot must come back however the step ends: run_step has three exits (the pool is exhausted, the step fails, the step succeeds) and"
+},
+{
+"heading": "Step 5 — the cost of moving vs cloning",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#lab-5",
+"text": "Chart · move vs clone of a Vec<u64> Figure 3. Release build, best of 5 per size, median of 3 program runs (the 10-million clone varied between 1.5 and 2.2 ms across runs). Clone time grows roughly linearly with the"
+},
+{
+"heading": "Exercises",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#exercises",
+"text": "All three solutions were run as programs (Exercise 2 with assert! s), and are Clippy-clean. Exercise 1 — a scope timer ★☆☆ product skill Write a ScopeTimer guard that records Instant::now() when created and prints its label and the elapsed"
+},
+{
+"heading": "Should my type be Copy, Clone, or neither?",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#decision",
+"text": "Your type… Derive Example Is small plain data (no heap, no handles), and copying it is semantically fine Clone, Copy Money , Point , TenantId(u64) , small enums without data Owns heap data, and independent duplicates make sense Clone only"
+},
+{
+"heading": "C# vs Rust: who cleans up",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#compare",
+"text": "Concern C# / .NET Rust Freeing memory Garbage collector, non-deterministic Owner's scope ends, deterministic Releasing resources IDisposable + using (opt-in) Drop (automatic) If you forget Finalizer eventually, or never (not run at exit since .NET 5) Can't forget: the drop"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#pitfalls",
+"text": "⚠️ \"Moves are expensive, so I'll clone or use references everywhere\" A move copies a few machine words; the heap data never moves (Lab steps 1 and 5). Returning owned values is idiomatic and cheap. It's .clone() that costs. ⚠️"
+},
+{
+"heading": "Real-world view: ownership in your products",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#real-world",
+"text": "🏗 Architecture view Workflow engine leases: a Lease guard returns a worker slot or a step lease on drop (Lab step 4), backed by a database expiry for crashes. Error paths and panics release it automatically. Connections and transactions: pool"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#check",
+"text": "Multiple choice After let s2 = s1; where s1: String , what happened in memory? The heap bytes were copied into a new buffer for s2 The 24-byte header (pointer, length, capacity) was copied to s2 , the heap buffer"
+},
+{
+"heading": "Summary",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#summary",
+"text": "Every value has one owner; when the owner's scope ends, the value is dropped. That single rule manages memory and resources, deterministically, with no garbage collector. Assignment, passing by value, returning, storing and for x in v move : the"
+},
+{
+"heading": "Go further",
+"chapter": "Ownership and moves",
+"url": "chapters/2-2-ownership.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — “What Is Ownership?” The source of the three rules and the double-free explanation quoted here. Doc The Rust Reference — Destructors"
+},
+{
+"heading": "Why this matters",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#why",
+"text": "💡 Why this matters Chapter 2.2 left an obvious question open: if passing a value to a function moves it, how does a function just look at something? Cloning everything would be absurd. The answer is borrowing: handing out a"
+},
+{
+"heading": "Intuition first: lending the original",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#intuition",
+"text": "🧭 Analogy Back to chapter 2.2's signed original contract in its owner's cabinet. Copying it is expensive and handing it over gives it away. Usually you just want to lend it. Shared borrow ( &T ): the reading room. Any"
+},
+{
+"heading": "Core explanation",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#core",
+"text": "Basic"
+},
+{
+"heading": "References and borrowing",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#references",
+"text": "A reference is a pointer to a value that doesn't own it. You create one with the & operator, and the Book names the act: \"We call the action of creating a reference borrowing .\" The function below borrows the"
+},
+{
+"heading": "Mutable references",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#mutable",
+"text": "A mutable reference , &mut T , lets the borrower change the value. It needs a mut binding to borrow from (otherwise error E0596, Lab step 2), and an explicit &mut at the call site, so a reader of the"
+},
+{
+"heading": "The two rules",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#rules",
+"text": "The Book states the rules of references in two lines: \"At any given time, you can have either one mutable reference or any number of immutable references.\" \"References must always be valid.\" The first is usually called aliasing XOR mutation"
+},
+{
+"heading": "References must always be valid",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#dangling",
+"text": "The second rule says a reference can never outlive the value it points to: there are no dangling references . The Book: \"the compiler guarantees that references will never be dangling references.\" Two errors enforce it. Borrowing a value that"
+},
+{
+"heading": "The borrow checker and non-lexical lifetimes",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#nll",
+"text": "The borrow checker is the part of the compiler that enforces both rules. It works on a simplified control-flow form of each function (MIR), one function at a time, looking only at signatures across function boundaries. For each borrow it"
+},
+{
+"heading": "The borrow errors you'll meet",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#errors",
+"text": "Almost every borrow-check failure is one of a handful of codes. Learn to read them by number. Lab step 2 runs the rest of this table. Code Message (abridged) Rule broken Usual fix E0502 cannot borrow as mutable because it"
+},
+{
+"heading": "Reborrowing: why passing a &mut doesn't use it up",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#reborrow",
+"text": "Shared references are Copy ; mutable references can't be, since a copy would give two writers. So by the move rules of chapter 2.2, passing r: &mut String to a function should move r and leave it unusable. It doesn't,"
+},
+{
+"heading": "Two-phase borrows: v.push(v.len())",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#two-phase",
+"text": "Strictly, v.push(v.len()) takes &mut v for the receiver and then reads v.len() for the argument, which looks like E0502. It compiles because of two-phase borrows . The rustc dev guide: they \"are a more permissive version of mutable borrows\" that"
+},
+{
+"heading": "Disjoint borrows: fields, slices and methods",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#disjoint",
+"text": "The borrow checker tracks places , not just variables. Borrowing engine.rules immutably and engine.hits mutably at the same time is fine inside one function, because they're different fields (Lab step 3, section 4). For two parts of one slice, split_at_mut"
+},
+{
+"heading": "Designing with the borrow checker",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#patterns",
+"text": "Most borrow errors in real code come from a few shapes, and each has a standard restructuring: Read, then write: collect, then apply . Evaluate with shared borrows into a list of changes, let those borrows end, then apply the"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Put each Rust program in src/bin/ of one Cargo project and run cargo run"
+},
+{
+"heading": "Step 1 — borrowing, dereferencing, and what a reference is",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab-1",
+"text": "Section 3 is Figure 1 in numbers. shared holds the same address as &rules , a stack address. The heap buffer lives elsewhere, and no borrow copied or moved it. Section 4 shows the sizes: one pointer for a reference"
+},
+{
+"heading": "Step 2 — the errors, one rule at a time",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab-2",
+"text": "Two writers at once: Writing to a value while it's being read: Moving a value while it's lent out, the owner \"shredding\" a borrowed document: Borrowing mutably from an immutable binding: Notice the pattern in every message: where the borrow"
+},
+{
+"heading": "Step 3 — what NLL, reborrowing and split borrows allow",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab-3",
+"text": "Every section here would fail under one of the naive rules. Section 1 is e1.rs with the println! moved before the push . Section 2 is a two-phase borrow, section 3 implicit reborrows, sections 4 and 5 disjoint borrows. Section"
+},
+{
+"heading": "Step 4 — a borrow-friendly rule engine, and the C# aliasing bugs",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab-4",
+"text": "A small version of the rule engine: rules evaluate orders with shared borrows only, producing actions; then one exclusive borrow applies them. The signatures alone tell you which phase can change what. Order 1 got both discounts (5% for a"
+},
+{
+"heading": "Step 5 — moving the check to run time: RefCell, and what it costs",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#lab-5",
+"text": "RefCell<T> (chapter 2.12) enforces the same rule while the program runs: it counts active borrows and refuses a conflicting one. Here is e1.rs 's mistake again, hidden from the compiler: The rule didn't go away; the moment you find out"
+},
+{
+"heading": "Exercises",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#exercises",
+"text": "All solutions were run as programs (Exercises 1 and 2 with assert! s) and are Clippy-clean; every Exercise 3 verdict comes from rustc 1.99. Exercise 1 — borrow, don't own ★☆☆ product skill These three signatures take ownership, so callers"
+},
+{
+"heading": "Which parameter type?",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#decision",
+"text": "The function… Take Example Only reads the value &T , or better &[T] / &str for collections and text fn evaluate(rules: &[Rule], orders: &[Order]) Changes it in place, and the caller keeps it &mut T (or &mut [T] if it"
+},
+{
+"heading": "C# vs Rust: references",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#compare",
+"text": "Concern C# / .NET Rust Default way to pass a class instance Copy of a reference: shared, mutable, untracked Choose: &T , &mut T or move Call site shows mutation? Only for ref / out Always: &mut x Read-only view"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#pitfalls",
+"text": "⚠️ \"A borrow lasts until the end of the scope\" Not since Rust 2018: it lasts until the reference's last use (Figure 2). If an error seems wrong, find the \"borrow later used here\" label. That use is what keeps"
+},
+{
+"heading": "Real-world view: borrowing in your products",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#real-world",
+"text": "🏗 Architecture view Rule engine evaluation: evaluate(&rules, &facts) is read-only by signature, so it can run on many threads over the same facts with no locks. The compiler proves no rule mutates shared state (chapter 4.1 adds the threads). Mutation"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#check",
+"text": "Multiple choice What does the rule \"aliasing XOR mutation\" allow at a given point in a program? One shared reference and one mutable reference Any number of mutable references, if they're in different functions Either any number of shared references,"
+},
+{
+"heading": "Summary",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#summary",
+"text": "Borrowing creates a reference: &T to read (many at once, Copy ), &mut T to modify (exclusive, visible at the call site). A reference is just an address (8 bytes; 16 for slices and &str ), and dropping it never"
+},
+{
+"heading": "Go further",
+"chapter": "Borrowing and references",
+"url": "chapters/2-3-borrowing.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — “References and Borrowing” The source of the two rules and the dangling-reference examples quoted here. Doc RFC 2094 — Non-lexical lifetimes"
+},
+{
+"heading": "Why this matters",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#why",
+"text": "💡 Why this matters Text is most of what a rule engine handles: rule definitions, field names, operators, values, error messages. A workflow engine moves JSON payloads, step names and logs. In C# you mostly don't think about it. string"
+},
+{
+"heading": "Intuition first: the document and the highlighter",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#intuition",
+"text": "🧭 Analogy Keep the document metaphor from chapters 2.2 and 2.3. String is a document you own, on a notepad with spare pages. You can write more on it; when the pad is full you copy everything onto a bigger"
+},
+{
+"heading": "Core explanation",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#core",
+"text": "Basic"
+},
+{
+"heading": "String and &str",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#string-vs-str",
+"text": "A String owns its text. The Book's description is exact: \"A String is a wrapper over a Vec<u8> \": a pointer, a length and a capacity on the stack (24 bytes), pointing at a heap buffer of bytes it can"
+},
+{
+"heading": "Slices in general: &[T]",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#slices",
+"text": "&str is one case of a general idea. A slice &[T] borrows a contiguous run of values: all or part of an array, a Vec , or another slice. You make one with a range: &v[1..3] (elements 1 and 2),"
+},
+{
+"heading": "Deref coercion: one parameter type for every caller",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#coercion",
+"text": "Why does fn describe(s: &str) accept &my_string , which is a &String ? Because of deref coercion : String implements Deref<Target = str> , so wherever a &str is expected, the compiler turns &String into &str for free. Vec<T> does"
+},
+{
+"heading": "UTF-8: bytes, chars and graphemes",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#utf8",
+"text": "Rust text is UTF-8 , and the standard library promises it: \"Rust libraries may assume that string slices are always valid UTF-8.\" UTF-8 uses 1 byte for ASCII and 2, 3 or 4 bytes for everything else. So \"length\" has"
+},
+{
+"heading": "Why there's no s[i]",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#no-index",
+"text": "Now the C# habit: The Book gives two reasons. What should s[0] return: a byte, which is rarely what you want for non-ASCII text, or a character, which can't be found without scanning? Rust \"doesn't compile this code at all"
+},
+{
+"heading": "Building strings, and why + moves",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#building",
+"text": "A String grows like a Vec : when the bytes no longer fit, it allocates a bigger buffer (roughly doubling), copies the bytes across and frees the old buffer. Lab step 1 shows capacity going 0 → 8 → 16"
+},
+{
+"heading": "Slices and the borrow checker",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#borrowing-text",
+"text": "A &str into a String is a borrow, so chapter 2.3's rules apply. This is the Book's own example of what they prevent: In C#, Substring sidesteps the problem by copying, and a ReadOnlySpan<char> over a string is safe because"
+},
+{
+"heading": "Cow: borrow when you can, own when you must",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#cow",
+"text": "A normaliser that lowercases field names usually finds them already lowercase. Returning String allocates every time; returning &str can't work when a change is needed. Cow (\"clone on write\") is an enum holding either . The standard library: \"a smart"
+},
+{
+"heading": "The other string types",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#string-types",
+"text": "Owned Borrowed Holds Use for String &str Valid UTF-8 Almost all text Vec<u8> &[u8] Any bytes Binary data, text of unknown encoding (validate with String::from_utf8 / str::from_utf8 ) OsString &OsStr The platform's native string Environment variables, command-line arguments that may"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. The project's only dependency is unicode-segmentation = \"1\" (1.13.3 resolved). Put each program in"
+},
+{
+"heading": "Step 1 — what a String is, and how it grows",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab-1",
+"text": "Section 1 is Figure 1 in numbers: the slices point at the buffer's start and 9 bytes in, and the literal sits in a different region entirely, the executable's read-only data. Section 2 is Figure 3. Addresses differ between runs,"
+},
+{
+"heading": "Step 2 — four ways to count, and slicing by byte",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab-2",
+"text": "Notice line 3 of section 1: \"café\" written with a combining accent looks identical but has 6 bytes and 5 char s, and section 3 shows the two spellings aren't == . Comparison is byte-wise. Section 5 shows case mapping"
+},
+{
+"heading": "Step 3 — slices of everything, and deref coercion",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab-3",
+"text": "Section 1: one &str parameter accepted a literal, a &String , a sub-slice and as_str() . Section 2: one &[i64] parameter accepted an array, a Vec and a range. Section 6: split and trim return slices that point into the"
+},
+{
+"heading": "Step 4 — the same questions in C#",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab-4",
+"text": "Line by line against Rust: C#'s Length agrees with Rust's encode_utf16().count() , and StringInfo 's text elements agree with unicode-segmentation 's graphemes for all six strings. The indexer handed back a lone surrogate ( U+D83D ), half of 👍, which"
+},
+{
+"heading": "Step 5 — what borrowing saves: counting allocations",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#lab-5",
+"text": "A global allocator that counts every allocation, and four versions of the same rule tokenizer (split each line into tokens, normalise each condition's field name) run over 10,000 lines: Chart · allocations and time for one tokenizer, four ways Figure"
+},
+{
+"heading": "Exercises",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#exercises",
+"text": "All three solutions were run as programs with assert! s and are Clippy-clean. Exercise 1 — initials, for every alphabet ★☆☆ Write fn initials(name: &str) -> String that returns the uppercased first letter of each word: \"ada lovelace\" → \"AL\""
+},
+{
+"heading": "Which string type where?",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#decision",
+"text": "Situation Use Why Function parameter that reads text &str Accepts literals, String s and slices (deref coercion) Function parameter that reads a list &[T] Accepts arrays, Vec s and ranges Struct field String (or Arc<str> if shared and immutable) The"
+},
+{
+"heading": "C# vs Rust: strings",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#compare",
+"text": "Concern C# / .NET Rust Encoding UTF-16 UTF-8 Owned text string (immutable) + StringBuilder String (mutable, growable) Borrowed view ReadOnlySpan<char> (ref struct) &str , usable anywhere a borrow is Length / len() UTF-16 code units UTF-8 bytes s[i] A UTF-16"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#pitfalls",
+"text": "⚠️ Treating len() as a character count It's bytes. Use chars().count() for scalar values or graphemes for what users see, and size database columns and UI limits with that difference in mind. ⚠️ Slicing with offsets from outside the string"
+},
+{
+"heading": "Real-world view: text in your products",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#real-world",
+"text": "🏗 Architecture view Rule parsing is zero-copy: the lexer returns &str tokens into the rule source, and the parser builds an AST that either borrows from the source (with lifetimes, chapter 2.11) or converts the few names it keeps into"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#check",
+"text": "Multiple choice What is \"café\".len() ? 4, the number of characters 4, the number of UTF-16 units 5: len() counts UTF-8 bytes, and \"é\" takes two 8: each char is 2 bytes That's chars().count() . That's C#'s Length . Correct"
+},
+{
+"heading": "Summary",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#summary",
+"text": "String owns growable UTF-8 text (24 bytes: pointer, length, capacity); &str borrows it, or a literal (16 bytes: pointer, length). Store and return String ; accept &str . Slices &[T] / &mut [T] are bounds-checked fat pointers into arrays and"
+},
+{
+"heading": "Go further",
+"chapter": "Strings and slices",
+"url": "chapters/2-4-strings-slices.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — “Storing UTF-8 Encoded Text with Strings” and “The Slice Type” The sources of the indexing rationale, the three views of text,"
+},
+{
+"heading": "Why this matters",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#why",
+"text": "💡 Why this matters Chapter F8 made the case for product types, sum types and \"make illegal states unrepresentable\". This chapter is the Rust you write every day to do it. Nearly every type in your two products is a"
+},
+{
+"heading": "Intuition first: forms and multiple-choice boxes",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#intuition",
+"text": "🧭 Analogy A struct is a paper form : every box must be filled in (name, amount, currency). Leave one out and the form is rejected (error E0063). An enum is a set of tick-boxes where you tick exactly one"
+},
+{
+"heading": "Core explanation",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#core",
+"text": "Basic"
+},
+{
+"heading": "Structs: three shapes",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#structs",
+"text": "A struct groups named values into one type (a product type, chapter F8). Rust has three shapes: Named-field structs are the default. Tuple structs have positional fields ( .0 , .1 ); with one field they're F8's newtype , the"
+},
+{
+"heading": "Behaviour: impl blocks, methods and associated functions",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#impl",
+"text": "Data and behaviour are declared separately. An impl block attaches functions to a type. The Book's definition: methods \"are defined within the context of a struct (or an enum or a trait object…), and their first parameter is always self"
+},
+{
+"heading": "derive: behaviour you'd otherwise write by hand",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#derive",
+"text": "Structs and enums start with no behaviour at all: you can't print, compare, copy or clone them. The derive attribute generates the standard implementations from the fields: #[derive(…)] Gives you C# equivalent Debug {:?} and pretty {:#?} printing (Lab step"
+},
+{
+"heading": "Enums: alternatives that carry data",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#enums",
+"text": "Each variant of a Rust enum can carry its own data, in any of the three struct shapes: That's F8's sum type in code: a Payment is exactly one of these, and the data that only makes sense for Captured"
+},
+{
+"heading": "Option: the enum you'll use most",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#option",
+"text": "There's no null in safe Rust. \"Maybe a value\" is the standard library enum enum Option<T> { None, Some(T) } , so the type system knows which values can be absent and makes you deal with it. Matching on it"
+},
+{
+"heading": "match and patterns",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#match",
+"text": "match compares a value against a list of patterns . The Book: \"it compares the resultant value against the pattern of each arm, in order. If a pattern matches the value, the code associated with that pattern is executed.\" Two"
+},
+{
+"heading": "if let, while let, let-else, let chains and matches!",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#if-let",
+"text": "Writing a full match when you care about one case is noisy, so Rust has shorter forms. They all rest on one distinction. A refutable pattern can fail to match ( Some(x) fails on None ); an irrefutable one can't"
+},
+{
+"heading": "Exhaustiveness in practice",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#exhaustive",
+"text": "Try the compiler's check yourself. The explorer below is a match on a four-variant Payment with nine candidate arms. Untick arms to see exactly what rustc 1.99 says: Interactive · exhaustiveness explorer Figure 3. enum Payment { Pending, Authorized(u32), Captured"
+},
+{
+"heading": "State machines: match on (state, event)",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#state-machines",
+"text": "The most valuable use of exhaustiveness in your products is a state machine written as one match over a (state, event) tuple. Every combination is either a transition or an explicit rejection, and the compiler proves nothing is forgotten. Lab"
+},
+{
+"heading": "Recursive enums need Box",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#recursive",
+"text": "A rule expression tree is naturally an enum whose variants contain more expressions: And(Expr, Expr) . But an enum's size is the size of its largest variant, and a variant containing itself would be infinitely large: Box<T> is an owning"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Put each program in src/bin/ and run cargo run --bin <name> ."
+},
+{
+"heading": "Step 1 — structs, methods and derive",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-1",
+"text": "Section 2 calls record_attempt both ways: the method-call form and the explicit Step::record_attempt(&mut charge) form are the same function. Section 3 uses struct update syntax twice: from RetryPolicy::default() , and from a clone of charge , because ..charge would move"
+},
+{
+"heading": "Step 2 — what the compiler rejects",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-2",
+"text": "w8 is only a warning, and the program runs: \"DE\" gets the catch-all fee of 250, not 100. Treat unreachable-pattern warnings as bugs. With cargo clippy -- -D warnings in CI (chapter 6.5) they fail the build. Note how each"
+},
+{
+"heading": "Step 3 — enums with data, and Option's toolbox",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-3",
+"text": "amount() returns Option<u32> , so the caller can't forget that pending and failed payments have no amount. first_captured_amount uses ? on an Option : if find returns None , the function returns None at once, the same early-return that chapter"
+},
+{
+"heading": "Step 4 — every kind of pattern",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-4",
+"text": "A real mistake from writing this program: the first version of classify had the guard arm ( n if n % 1_000 == 0 ) above the big @ 100_000.. arm, and 150,000 came out as \"even thousands\", because it's"
+},
+{
+"heading": "Step 5 — the same model in C#",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-5",
+"text": "The build printed one warning, which is easy to miss in a large solution, and the program threw at run time on the fourth payment. The records, with and the list pattern behave like their Rust counterparts. The difference is"
+},
+{
+"heading": "Step 6 — a rule expression tree and a workflow state machine",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-6",
+"text": "Part A: order 1 passes because NOT vip == 0 is true, order 2 fails because the customer is neither Dutch (31) nor VIP, and order 3 reports the missing field instead of guessing. And short-circuits, as the Ok(Value::Bool(false)) arm"
+},
+{
+"heading": "Step 7 — operators as text vs as an enum",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#lab-7",
+"text": "Chart · evaluating 10 million conditions Figure 4. Release build, best of 5 per run, median of 3 runs (String: 14.4, 13.1, 13.2 ms; enum: 8.5 ms each time). The enum version is 1.6× faster and half the size per"
+},
+{
+"heading": "Exercises",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#exercises",
+"text": "All three solutions were run as programs (1 and 2 with assert! s) and are Clippy-clean. Exercise 1 — money that can't be mixed ★☆☆ product skill Define enum Currency { Eur, Usd } and struct Money { cents: i64,"
+},
+{
+"heading": "Which construct?",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#decision",
+"text": "You need… Use Example Several values that belong together Named-field struct RetryPolicy { max_attempts, backoff_ms } A distinct type around one value Tuple struct (newtype) StepId(u64) , Cents(i64) One of several alternatives, each with its own data Enum Payment ,"
+},
+{
+"heading": "C# vs Rust: data and decisions",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#compare",
+"text": "Concern C# / .NET Rust Grouping data class , struct , record struct (always a value) Constructors Special members, run automatically Ordinary associated functions ( new ) Methods Inside the class; this is implicit In impl blocks; self , &self"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#pitfalls",
+"text": "⚠️ Reaching for _ in matches on your own enums It compiles today and hides tomorrow's new variant. List variants explicitly, especially for states, events and commands; use _ for open-ended types like integers and strings. ⚠️ Arm order with"
+},
+{
+"heading": "Real-world view: types in your products",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#real-world",
+"text": "🏗 Architecture view Rule engine: the parsed rule is an Expr enum tree; operators, value types and actions are enums; evaluation is a recursive match (Lab step 6). Adding an operator makes every unfinished match a compile error, which is"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#check",
+"text": "Multiple choice Which receiver should a method that changes a step's attempt counter take? &self &mut self : it changes the step in place and the caller keeps it self No self : make it an associated function Mutating through"
+},
+{
+"heading": "Summary",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#summary",
+"text": "Structs come in three shapes (named, tuple/newtype, unit); every field is set at construction. Behaviour goes in impl blocks: &self reads, &mut self changes, self consumes, no self constructs. #[derive(...)] generates Debug , Clone , Copy , PartialEq , Hash"
+},
+{
+"heading": "Go further",
+"chapter": "Structs, enums and pattern matching",
+"url": "chapters/2-5-structs-enums.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language: Structs , Method Syntax , Enums and Pattern Matching , Patterns and Matching The sources of the method and match quotes, and"
+},
+{
+"heading": "Why this matters",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#why",
+"text": "💡 Why this matters In C#, any method can throw, and its signature doesn't say so. You learn which exceptions File.ReadAllText throws from the documentation, if you look. The compiler won't tell you that you forgot one, and a catch"
+},
+{
+"heading": "Intuition first: the return slip and the fire alarm",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#intuition",
+"text": "🧭 Analogy Result is a delivery that comes back with a slip : either the parcel ( Ok ) or a note saying why it couldn't be delivered ( Err : \"address not found\", \"refused\"). Whoever ordered it must read"
+},
+{
+"heading": "Core explanation",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#core",
+"text": "Basic"
+},
+{
+"heading": "Two kinds of error",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#two-kinds",
+"text": "The Book: \"Rust groups errors into two major categories: recoverable and unrecoverable errors.\" And: \"Rust doesn't have exceptions. Instead, it has the type Result<T, E> for recoverable errors and the panic! macro that stops execution when the program encounters an"
+},
+{
+"heading": "Result<T, E>",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#result",
+"text": "Result is an ordinary enum from the standard library, exactly the kind chapter 2.5 taught: enum Result<T, E> { Ok(T), Err(E) } . A function that can fail returns one, and its signature tells the caller both what success produces"
+},
+{
+"heading": "The ? operator",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#question-mark",
+"text": "Matching every Result by hand would bury the logic. The question mark operator does the common thing: on Ok(v) it evaluates to v ; on Err(e) it returns from the current function immediately. The Rust Reference states it precisely: \""
+},
+{
+"heading": "Panics",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#panic",
+"text": "A panic happens when you call panic! , when unwrap() or expect() meets an Err or None , when an index is out of range, or when arithmetic overflows in a debug build (chapter 2.1). By default the panic unwinds"
+},
+{
+"heading": "Writing an error type",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#error-types",
+"text": "A real operation fails in several ways (the file is missing, a number is malformed, an operator is unknown), and the caller may want to treat them differently. The idiomatic error type is an enum with one variant per failure,"
+},
+{
+"heading": "thiserror and anyhow",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#thiserror-anyhow",
+"text": "The hand-written impls are mechanical, and two crates, used by most of the ecosystem, remove the boilerplate. They're published by the same author (David Tolnay, per crates.io) for the two sides of the library/application split. thiserror (crates.io: \"derive(Error)\"): #[derive(thiserror::Error)] on"
+},
+{
+"heading": "Comparing the strategies",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#strategies",
+"text": "There are four common choices for E . The explorer shows exactly what each one gives the person reading the log and the code handling the error. Every output was produced by one Rust program running the same rule loader"
+},
+{
+"heading": "How an error travels",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#propagation",
+"text": "Animation · an error propagating with ? Deep in the stack, \"yes\".parse::<u32>() returns Err(ParseIntError) . It knows only that the text wasn't a number, not which line or file. map_err wraps it with what parse_line knows: RuleError::BadNumber { line: 2,"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Steps 3 and Exercise 2 need these dependencies in Cargo.toml : thiserror = \"2\""
+},
+{
+"heading": "Step 1 — Result and its methods",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab-1",
+"text": "Section 3 shows the two collection strategies. collect::<Result<Vec<_>, _>>() stops at the first error; partition keeps going and gathers all of them, which is what a rule editor wants (Exercise 2). Notice that \"-3\" fails for a u32 with \"invalid"
+},
+{
+"heading": "Step 2 — an error type by hand, and ?",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab-2",
+"text": "Each report walks the source() chain. The last line is main returning Err : the standard library printed the Debug form and the process exited with status 1. Fine for a developer, poor for an operator, which Step 3 improves."
+},
+{
+"heading": "Step 3 — thiserror for the library, anyhow for the application",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab-3",
+"text": "Compare RuleError here with Step 2's: the same three variants, messages and causes, without the hand-written Display , Error and From impls. The application layer never names an error type; it adds context and lets ? convert. The final block"
+},
+{
+"heading": "Step 4 — panics, contained and not",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab-4",
+"text": "Each panic first prints its own message to stderr (the default panic hook), then the program reports it. The four threads panicked and the program carried on, because join() returned the panic as an Err . Note the difference in"
+},
+{
+"heading": "Step 5 — the cost of failing: Result vs panics vs exceptions",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#lab-5",
+"text": "Parse 200,000 strings, of which 0, 1, 10 or 50% are invalid, using each language's two styles: failure as a value (Rust Result , C# TryParse ), and failure as unwinding (a Rust panic caught with catch_unwind , a C#"
+},
+{
+"heading": "Exercises",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#exercises",
+"text": "Solutions 1 and 2 were run as programs with assert! s and are Clippy-clean; Exercise 2 uses thiserror . Exercise 1 — a config error type by hand ★☆☆ Write parse_setting(line: &str) -> Result<(String, u32), ConfigError> for lines like max_retries"
+},
+{
+"heading": "Which error approach?",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#decision",
+"text": "Situation Use Why A library or reusable module Your own error enum ( thiserror ) Callers match on variants; errors are part of the API An application, CLI or service's top layers anyhow::Result + .context() Good messages and chains; no"
+},
+{
+"heading": "C# vs Rust: failure",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#compare",
+"text": "Concern C# / .NET Rust Expected failures Exceptions (or the Try* pattern) Result<T, E> Bugs Exceptions ( NullReference , IndexOutOfRange ) Panic Visible in the signature No Yes Ignoring a failure Unnoticed until it propagates #[must_use] warning Propagation Automatic (stack"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#pitfalls",
+"text": "⚠️ unwrap() on input from outside Files, requests, environment variables and databases fail in production. Use ? with context; reserve unwrap for tests and expect for real invariants, with a message saying why it holds. ⚠️ Using panics as exceptions"
+},
+{
+"heading": "Real-world view: failure in your products",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#real-world",
+"text": "🏗 Architecture view Rule engine: parsing returns all errors with locations (Exercise 2); evaluation returns Result<Value, EvalError> for type mismatches and missing facts. Customer-supplied rule code runs behind a panic boundary so one bad rule can't stop the engine (chapter"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#check",
+"text": "Multiple choice What does let n = s.parse::<u32>()?; do when the parse fails? It panics It returns Err(From::from(e)) from the enclosing function immediately It sets n to 0 It throws an exception to the nearest catch That's unwrap() . Correct"
+},
+{
+"heading": "Summary",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#summary",
+"text": "Rust has no exceptions: recoverable failures are Result<T, E> values, written in the signature and #[must_use] ; bugs and broken invariants panic. ? returns Err(From::from(e)) early, converting error types through From ; it needs a function returning Result / Option"
+},
+{
+"heading": "Go further",
+"chapter": "Error handling",
+"url": "chapters/2-6-error-handling.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — Error Handling (chapter 9) The source of the two-category framing and the \"no exceptions\" quote; includes \"To panic! or Not to"
+},
+{
+"heading": "Why this matters",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#why",
+"text": "💡 Why this matters So far every program has lived in one file. Your rule engine and workflow engine will be tens of thousands of lines across many files and several crates, with a public API that customers build against"
+},
+{
+"heading": "Intuition first: the company, the departments and the reception desk",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#intuition",
+"text": "🧭 Analogy A package is a company , with one registration document ( Cargo.toml ). A crate is a building the company runs: at most one office building that other companies can visit (the library crate ), and any number"
+},
+{
+"heading": "Core explanation",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#core",
+"text": "Basic"
+},
+{
+"heading": "Crates and packages",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#crates-packages",
+"text": "The Book's definitions, which you'll hear people use loosely and should use precisely: \"A crate is the smallest amount of code that the Rust compiler considers at a time.\" It's either a library crate (\"Library crates don't have a main"
+},
+{
+"heading": "Modules and the module tree",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#modules",
+"text": "Inside a crate, code is organised into a tree of modules . The crate root is the top module, called crate . You declare a module with mod , either inline: or, as soon as it grows, in its own"
+},
+{
+"heading": "Visibility: private by default",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#visibility",
+"text": "The Reference: \"By default, everything is private , with two exceptions: Associated items in a pub Trait are public by default; Enum variants in a pub enum are also public by default.\" Private means visible in the current module and"
+},
+{
+"heading": "Paths and use",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#paths-use",
+"text": "Every item has a path , and there are four ways to start one: crate::model::Rule : absolute , from this crate's root. Robust when code moves within a module. self::tax::rate and plain tax::rate : relative to the current module. super::DEFAULT_RATE"
+},
+{
+"heading": "Predicting visibility",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#explorer",
+"text": "The rules above are short, but applying them across a tree takes practice. Pick a function and a place to call it from: Interactive · visibility explorer Figure 3. Click a function in the tree and choose where the call"
+},
+{
+"heading": "Re-exports and preludes: designing the public API",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#reexports",
+"text": "Without re-exports, a crate's public paths mirror its files: ruleset::engine::Engine , ruleset::parser::parse_rule . That leaks the layout into every caller, and moving a file becomes a breaking change. A re-export , pub use , publishes an item under a new"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#lab",
+"text": "All programs were built and run with rustc 1.99.0 and Cargo (edition 2024) and the .NET 10.0.201 SDK on the lab Mac; outputs are verbatim."
+},
+{
+"heading": "Step 1 — a multi-file package: one library, two binaries",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#lab-1",
+"text": "cargo build -v shows one rustc invocation per crate (abridged to the crate name, root file and type): cargo run --bin ruleset and cargo run --bin explain : And the public API as rustdoc sees it: the files generated by"
+},
+{
+"heading": "Step 2 — what the compiler enforces",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#lab-2",
+"text": "Each of these files was placed in src/bin/ , so it's a separate crate using the library, exactly like a customer's code. And the two file-layout errors, from a separate package whose src/main.rs declares mod rules; (with both src/rules.rs and"
+},
+{
+"heading": "Step 3 — every form of path and use",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#lab-3",
+"text": "DEFAULT_RATE is private to billing , yet billing::tax::rate reads it through super:: : children see their ancestors' private items. The use declarations inside main apply only within main ."
+},
+{
+"heading": "Step 4 — the same boundary in .NET",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#lab-4",
+"text": "The assembly boundary works like Rust's crate boundary for internal types (CS0122). Notice what's missing: RulesLib.Parsing and RulesLib.Model are just names. Any type in the same assembly can use any internal member in any namespace, and there's no way to"
+},
+{
+"heading": "Exercises",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#exercises",
+"text": "Solutions 1 and 2 were compiled and run and are Clippy-clean; every Exercise 3 verdict comes from rustc. Exercise 1 — make it compile with the least visibility ★☆☆ This program has four visibility errors. Fix them while keeping everything"
+},
+{
+"heading": "Which visibility?",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#decision",
+"text": "The item is… Use Example An implementation detail of one module (private) A helper like check in engine.rs A helper for the parent module only pub(super) tokenize in parser::lexer Shared between modules, but not part of the API pub(crate) Rule::new"
+},
+{
+"heading": "C# vs Rust: code organisation",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#compare",
+"text": "Concern C# / .NET Rust Group of projects Solution ( .sln ) Workspace (chapter 3.5) Build description .csproj Cargo.toml (one package) Compilation unit Assembly (one per project) Crate (one library + any number of binaries per package) Which files compile"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#pitfalls",
+"text": "⚠️ Creating a file and expecting it to compile Nothing happens until its parent declares mod name; . And declare each module once: elsewhere, refer to it with use crate::… , never a second mod . ⚠️ \"It's pub ,"
+},
+{
+"heading": "Real-world view: structuring your products",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#real-world",
+"text": "🏗 Architecture view Rule engine: a small public API at the crate root ( Engine , Rule , parse , EvalError , a prelude), with private modules for the lexer, parser, compiler and evaluator. pub(crate) constructors guarantee that every compiled"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#check",
+"text": "Multiple choice How many library and binary crates can one package contain? Exactly one of each Any number of each At most one library crate, and any number of binary crates (at least one crate in total) One crate only"
+},
+{
+"heading": "Summary",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#summary",
+"text": "A package ( Cargo.toml ) holds at most one library crate ( src/lib.rs ) and any number of binary crates ( src/main.rs , src/bin/*.rs ); binaries use the library by name, through its public API. Modules form a tree from"
+},
+{
+"heading": "Go further",
+"chapter": "Modules, crates and packages",
+"url": "chapters/2-7-modules-crates.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — Packages, Crates, and Modules (chapter 7) The definitions quoted here, and the restaurant example that builds a module tree step by"
+},
+{
+"heading": "Why this matters",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#why",
+"text": "💡 Why this matters Chapters F3 to F5 taught what dynamic arrays, hash tables, B-trees and heaps are and what they cost. This chapter is about using Rust's versions well, which differs from .NET in ways that matter every day."
+},
+{
+"heading": "Intuition first: an office's storage",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#intuition",
+"text": "🧭 Analogy Vec is a shelf of numbered boxes: grab box 7 instantly, add to the end cheaply, but inserting at the front means shifting everything. VecDeque is a circular conveyor: load and unload at either end. HashMap is a"
+},
+{
+"heading": "Core explanation",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#core",
+"text": "Basic"
+},
+{
+"heading": "The family",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#family",
+"text": "Everything except Vec lives in std::collections . The standard library's own guidance, condensed: Type Use it when (std docs) Key costs (std docs) .NET Vec<T> \"a sequence of elements in a particular order\", appending at the end; a stack get"
+},
+{
+"heading": "Collections own their elements",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#ownership",
+"text": "A collection owns what's in it (chapter 2.2). v.push(s) moves s into the vector; dropping the vector drops every element. Getting things back out follows the same rules as everything else: Borrow : &v[i] , v.get(i) (an Option<&T> , no"
+},
+{
+"heading": "Four ways to iterate",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#iteration",
+"text": "What a loop hands you depends on how you ask: Animation · iter, iter_mut, into_iter and drain for p in &prices (or prices.iter() ) lends each element as &i32 . The vector is borrowed for the loop and fully usable"
+},
+{
+"heading": "The Entry API",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#entry",
+"text": "\"Add to the count if present, insert 1 if not\" is the most common map operation. The naive version looks the key up twice. The Entry API looks it up once and hands you a view of the slot, either"
+},
+{
+"heading": "What a key needs",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#keys",
+"text": "HashMap / HashSet keys need Eq + Hash , and equal values must have equal hashes (chapter F4). Strings, integers, char , bool , tuples of them, and your own types with #[derive(PartialEq, Eq, Hash)] qualify. f64 doesn't , because"
+},
+{
+"heading": "Choosing a collection",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#choosing",
+"text": "Answer two or three questions about how the data is used, and the choice follows from the costs above: Interactive · collection chooser How will you get items back out? Do you need the keys in sorted order, or ranges"
+},
+{
+"heading": "Sorting, searching and deduplicating",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#sorting",
+"text": "sort is stable (equal elements keep their order) and sort_unstable isn't, but is generally faster and allocates nothing; prefer it unless ties must keep their input order. sort_by_key(|x| key) and sort_by(|a, b| …) customise the order, and .then(...) on an"
+},
+{
+"heading": "Capacity and reuse",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#capacity",
+"text": "Every growable collection reserves spare capacity and reallocates when it runs out (chapter F3's amortised doubling; chapter 2.4 watched a String grow). When you know the size, Vec::with_capacity(n) and HashMap::with_capacity(n) allocate once. In a loop, clear() keeps the capacity for"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab",
+"text": "All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim."
+},
+{
+"heading": "Step 1 — Vec, the workhorse",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab-1",
+"text": "Section 3 shows the trade-off between remove (order kept, everything after shifts) and swap_remove (the last element jumps into the hole, O(1)). For a work list whose order doesn't matter, swap_remove is the fast choice. Section 4: binary_search(&20) returned Err(3)"
+},
+{
+"heading": "Step 2 — what the compiler rejects",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab-2",
+"text": "If daily is used only in the insert's arguments, limits.insert(\"weekly\", daily * 7) , the program compiles: the argument is computed before insert takes its mutable borrow, the two-phase borrow from chapter 2.3 (checked). The fix for e5 is one"
+},
+{
+"heading": "Step 3 — maps, sets, heaps and deques",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab-3",
+"text": "Section 1 looks up String keys with &str ( Borrow ), and insert returns the previous value, here Some(100) . Section 2 sorts the counts before printing, because a HashMap 's order changes from run to run; the BTreeMap in"
+},
+{
+"heading": "Step 4 — collections in the products",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab-4",
+"text": "A: the field index means an order with two facts meets 3 candidate rules, not all 4; with thousands of rules over hundreds of fields that difference is the whole performance story, and chapter 9.4's Rete network generalises it. B:"
+},
+{
+"heading": "Step 5 — counting words: Entry, double lookups and owned keys",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#lab-5",
+"text": "Chart · ns per token, counting 1 million words Figure 4. Release builds, best of 5 per run; bars are medians of 3 runs in each language (Rust A 38.8, B 16.7, C 27.9, D 22.1 ns; C# 25.2 and"
+},
+{
+"heading": "Exercises",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#exercises",
+"text": "Solutions 1 and 2 were run as programs with assert! s and are Clippy-clean. Exercise 1 — a sorted report by country ★☆☆ Given a list of orders (id, country, cents), print each country's order ids and total, sorted by"
+},
+{
+"heading": "Which operation?",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#decision",
+"text": "You want to… Use Instead of Insert or update a map entry entry(k).or_insert(..) / or_default() / and_modify contains_key + insert / get_mut …with String keys in a hot loop get_mut(&str) , insert a clone on a miss entry(s.to_string()) every time"
+},
+{
+"heading": "C# vs Rust: collections",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#compare",
+"text": "Concern C# / .NET Rust Growable array List<T> Vec<T> Queue / deque Queue<T> ; no built-in deque VecDeque<T> Hash map / set Dictionary , HashSet HashMap , HashSet Ordered map / set SortedDictionary (a binary search tree), SortedSet BTreeMap ,"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#pitfalls",
+"text": "⚠️ Relying on HashMap iteration order It changes between runs. Sort, use BTreeMap , or an insertion-ordered map whenever order reaches output, tests or persisted data. ⚠️ entry(key.to_string()) in hot loops The allocation happens even when the key exists; it"
+},
+{
+"heading": "Real-world view: collections in your products",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#real-world",
+"text": "🏗 Architecture view Rule engine: a HashMap<FieldId, Vec<RuleId>> index sends each fact only to rules that test it (Lab step 4); compiled rules live in a Vec indexed by dense ids; the top failing rules come from a bounded heap"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#check",
+"text": "Multiple choice After for s in steps { … } where steps: Vec<String> , can you call steps.len() ? Yes, a for loop only reads No: for x in v calls into_iter() , which consumes the Vec (E0382); write for"
+},
+{
+"heading": "Summary",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#summary",
+"text": "Vec for sequences, VecDeque for queues, HashMap / HashSet for unordered lookup, BTreeMap / BTreeSet for ordered keys and ranges, BinaryHeap for \"the biggest next\" (a max-heap; Reverse for min). Collections own their elements: values move in; you borrow ("
+},
+{
+"heading": "Go further",
+"chapter": "Standard collections",
+"url": "chapters/2-8-collections.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc std::collections The source of the performance table and the \"when should you use which collection\" guidance used in Figure 3. Doc Vec , HashMap (and its"
+},
+{
+"heading": "Why this matters",
 "chapter": "How a program uses memory",
 "url": "chapters/f1-memory.html#why",
 "text": "💡 Why this matters In C# you rarely think about where data lives: the CLR and its garbage collector decide. Rust hands that decision back to you, safely. Every rule you'll meet in Module 2 (ownership, borrowing, lifetimes, Box ,"
@@ -1229,5 +2465,353 @@ window.SEARCH_INDEX = [
 "chapter": "Core algorithms and techniques",
 "url": "chapters/f7-algorithms.html#go-further",
 "text": "Supplementary only: everything you need is above. All links were checked on 2026-10-12. Doc Rust slice docs — sort , sort_unstable , partition_point The \"Current implementation\" notes quoted in this chapter. Doc Microsoft Learn — Array.Sort and Enumerable.OrderBy .NET's introsort"
+},
+{
+"heading": "Why this matters",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#why",
+"text": "💡 Why this matters Chapters F1–F7 were about how data sits in memory and how fast you can process it. This chapter is about what the compiler knows about that data, and so which mistakes it can stop before your"
+},
+{
+"heading": "Intuition first: forms with \"AND\" and forms with \"OR\"",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#intuition",
+"text": "🧭 Analogy Think of a type as a paper form that a value must fit. A product type is a form where you fill in every box: name and address and phone. A C# class or record and a Rust"
+},
+{
+"heading": "Core explanation",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#core",
+"text": "Basic"
+},
+{
+"heading": "What a type is",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#what-is-a-type",
+"text": "A type is two things at once: a set of possible values (a bool is one of {false, true}; a u8 is one of 0…255) and the operations allowed on those values (you can add two u8 s; you can't"
+},
+{
+"heading": "Static vs dynamic typing",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#static-dynamic",
+"text": "Under static typing , every expression has a type known before the program runs, and type errors stop the build. Under dynamic typing , types belong to values at runtime and are checked when each operation executes; a type error"
+},
+{
+"heading": "Strong vs weak: a different axis",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#strong-weak",
+"text": "People often say \"strongly typed\" when they mean \"statically typed\". They're separate questions. Static vs dynamic is about when types are checked. Strong vs weak is an informal description of how much the language converts for you silently . There's"
+},
+{
+"heading": "Type inference and nominal typing",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#inference-nominal",
+"text": "Static typing doesn't mean writing types everywhere. With type inference the compiler works out the types you leave out. C#'s var infers a local's type from its initialiser only. Rust goes further inside a function body: let mut ids ="
+},
+{
+"heading": "Value semantics vs reference semantics",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#value-reference",
+"text": "What does b = a do? There are two possible answers, and mixing them up is one of the most common sources of bugs in any language. Value semantics : b gets its own copy of the value. Changing b"
+},
+{
+"heading": "Product types",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#products",
+"text": "A product type holds several fields at the same time. Rust has three forms: a struct with named fields, a tuple struct with positional fields ( struct Meters(f64); ), and an anonymous tuple ( (u8, bool) ). The name comes"
+},
+{
+"heading": "Sum types",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#sums",
+"text": "A sum type (also called a tagged union or discriminated union ) is a value that is exactly one of several variants, each of which can carry its own data. Rust's enum is a sum type: A Payment is a"
+},
+{
+"heading": "Pattern matching and exhaustiveness",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#exhaustive",
+"text": "You take a sum type apart with match , which picks the arm for the variant actually present and binds its fields to names: Because a Rust enum is closed (its variants are listed in one place and can't hold"
+},
+{
+"heading": "Sum types in memory",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#niche",
+"text": "Figure 1 showed the layout: a tag plus a slot as big as the largest variant, rounded up to the alignment. Payment is 16 bytes, because its largest variant holds a u64 (8 bytes, alignment 8) and the tag needs"
+},
+{
+"heading": "Generics: parametric polymorphism",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#generics",
+"text": "Generics let you write code once for many types: Vec<T> , HashMap<K, V> , fn largest<T>(items: &[T]) -> T . You already know them from C#'s List<T> . As in C#, a generic function may only do with T what"
+},
+{
+"heading": "Polymorphism styles",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#polymorphism",
+"text": "Polymorphism means one piece of code working with values of several types. Christopher Strachey's 1967 lecture notes gave us the split between parametric and ad hoc polymorphism; Cardelli and Wegner's 1985 survey refined it into the classification still used today."
+},
+{
+"heading": "Expressions vs statements",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#expressions",
+"text": "An expression produces a value; a statement does something and produces nothing. In C#, if , switch statements and blocks are statements; to get a value you switch to the expression forms ( cond ? a : b , switch"
+},
+{
+"heading": "Making illegal states unrepresentable",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#illegal-states",
+"text": "Yaron Minsky of Jane Street put this design principle in four words: \" make illegal states unrepresentable \" . If a combination of values is invalid in your domain, choose types in which it can't be constructed at all. Then"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab",
+"text": "All programs below were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac. Outputs are copied verbatim. The Rust files live in one Cargo project: put each in src/bin/ and run cargo"
+},
+{
+"heading": "Step 1 — the C# baseline: aliasing, dynamic, and open switches",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-1",
+"text": "Create it with dotnet new console -n f8cs and replace Program.cs . Nullable reference types are on (the template's default). dotnet build succeeds, with two warnings: dotnet run : Read it top to bottom. The struct copy is independent, while"
+},
+{
+"heading": "Step 2 — what the Rust compiler refuses",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-2",
+"text": "Each of these is a separate file, compiled with rustc --edition 2024 file.rs . They're meant to fail; read the messages, which are some of the best in any compiler. Note the second message: \"implicitly returns () as its body"
+},
+{
+"heading": "Step 3 — value semantics, and products vs sums in memory",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-3",
+"text": "Compare with Step 1. Point derives Copy , so assignment copies, like a C# struct. Customer holds a String and isn't Copy ; to get two independent customers you write .clone() , and the only way to change c2 through"
+},
+{
+"heading": "Step 4 — exhaustiveness turns a new variant into a to-do list",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-4",
+"text": "Here Wallet was just added to Payment , but fee_cents wasn't updated. In C# (Step 1) this was a warning followed by a runtime crash. In Rust: The error names the missing variant, points to where it was declared, and"
+},
+{
+"heading": "Step 5 — generics, trait objects and fat pointers",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-5",
+"text": "check_static is compiled twice (once for MaxAmount , once for EvenOnly ); check_dynamic once. The Vec<Box<dyn Rule>> holds two different types, which is only possible through dynamic dispatch, the shape of a rule set loaded from configuration. largest works for"
+},
+{
+"heading": "Step 6 — expressions, and a state machine with no illegal states",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#lab-6",
+"text": "No variable is ever declared first and assigned later: every value comes out of an if , a match , a block or a loop . The match on a tuple (express, weight_kg) with ranges ( 0..=2 ) is a"
+},
+{
+"heading": "Exercises",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#exercises",
+"text": "All three solutions were run as programs and as unit tests (3 passed), and are Clippy-clean. Exercise 1 — replace the flags ★★☆ product skill A multi-tenant SaaS models accounts in C# as bool IsTrial, IsActive, IsSuspended, IsClosed plus nullable"
+},
+{
+"heading": "Which modelling tool?",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#decision",
+"text": "Situation Rust tool C# today A fixed set of alternatives you own, each with its own data enum with data + match Class hierarchy + switch; C# 15 union (preview) A value that may be absent Option<T> Nullable reference/value types"
+},
+{
+"heading": "C# vs Rust: type-system features at a glance",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#compare",
+"text": "Feature C# (C# 14 / .NET 10) Rust (1.99, edition 2024) Typing discipline Static, with a dynamic escape hatch Static; runtime typing only through explicit types ( dyn Any , value enums) Implicit numeric conversions Widening allowed ( int →"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#pitfalls",
+"text": "⚠️ \"Strongly typed\" means \"statically typed\" Two different axes. Python is dynamic and fairly strict; C is static and converts liberally. Ask which conversions happen silently, and when errors are reported. ⚠️ \"A Rust struct is like a C# struct,"
+},
+{
+"heading": "Real-world view: types in your two products",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#real-world",
+"text": "🏗 Architecture view Rule engine, fact model. Customers define facts at runtime, so the engine is a statically typed program carrying dynamically typed values. The standard Rust answer is a sum type: enum Value { Null, Bool(bool), Int(i64), Decimal(…), Text(String),"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#check",
+"text": "Multiple choice Python raises TypeError for \"1\" + 1 , but only when that line runs. How is Python best described? Static and strong Dynamic, with few silent conversions (often called \"strong\") Dynamic and weak, like JavaScript Static, because it"
+},
+{
+"heading": "Summary",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#summary",
+"text": "Static vs dynamic is about when types are checked; \"strong vs weak\" is an informal word for silent conversions. Rust is static with almost no implicit conversions, infers types inside functions, and is nominal, so newtypes like Meters catch unit"
+},
+{
+"heading": "Go further",
+"chapter": "Type-system concepts",
+"url": "chapters/f8-type-concepts.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rust Programming Language — “Enums and Pattern Matching” and “Object-Oriented Programming Features” The official book's treatment of sum types and of trait objects vs inheritance."
+},
+{
+"heading": "Why this matters",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#why",
+"text": "💡 Why this matters A workflow engine is concurrency in product form. Thousands of workflow runs are in flight at once, most of them waiting: for a timer, an HTTP call, a human approval. A handful of worker threads must"
+},
+{
+"heading": "Intuition first: a restaurant kitchen",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#intuition",
+"text": "🧭 Analogy One chef, three dishes is concurrency : start the soup, while it simmers chop the salad, check the oven. Three dishes are in progress; only one thing happens at any instant. It works because most of each dish's"
+},
+{
+"heading": "Core explanation",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#core",
+"text": "Basic"
+},
+{
+"heading": "Processes and threads",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#processes-threads",
+"text": "A process is a running program with its own private address space (chapter F1): its own code, heap and globals, plus OS resources such as open files and sockets. One process can't read another's memory; they talk through files, pipes"
+},
+{
+"heading": "Scheduling",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#scheduling",
+"text": "Your machine has a few cores (the lab Mac has 10: 6 performance and 4 efficiency cores) and the OS has hundreds of threads. The scheduler decides which thread runs on which core, and for how long. Two styles matter:"
+},
+{
+"heading": "Data races and race conditions",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#races",
+"text": "Here's the bug every concurrent system meets first. counter += 1 looks like one step, but the CPU executes three: load the value into a register, add one, store it back. If two threads interleave those steps, one increment can"
+},
+{
+"heading": "Locks",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#locks",
+"text": "The basic fix is mutual exclusion : make the whole read-modify-write a critical section that only one thread can be inside at a time. A mutex (mutual-exclusion lock) does that: a thread acquires it, others trying to acquire it wait,"
+},
+{
+"heading": "Deadlock",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#deadlock",
+"text": "A deadlock is a set of threads each waiting for something another one holds, so none of them can ever proceed. Coffman, Elphick and Shoshani's 1971 survey gave the four conditions that must all hold: Mutual exclusion: a resource can"
+},
+{
+"heading": "Atomics: indivisible operations",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#atomics",
+"text": "An atomic operation is one the CPU performs as a single indivisible step: no other core can see it half-done. Modern CPUs provide atomic read-modify-write instructions, and both platforms expose them. .NET has Interlocked.Increment , Interlocked.CompareExchange and friends. Rust has"
+},
+{
+"heading": "CPU-bound vs I/O-bound work",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#cpu-io",
+"text": "The single most useful question to ask about a workload is: what is it waiting for? CPU-bound work spends its time computing: evaluating a rule set, parsing, compressing, hashing. More cores help, up to the number of cores and no"
+},
+{
+"heading": "Threads vs async tasks",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#threads-vs-tasks",
+"text": "For I/O-bound work there are two broad ways to keep many operations in flight: One OS thread per operation, blocking. Simple code: a thread calls read() and the OS parks it until data arrives. It works up to a few"
+},
+{
+"heading": "Event loops and non-blocking I/O",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#event-loop",
+"text": "With non-blocking I/O , a read that has no data yet returns immediately with \"would block\" instead of parking the thread. On its own that would mean asking every socket over and over (busy polling). The missing piece is an"
+},
+{
+"heading": "Readiness vs completion I/O",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#readiness-completion",
+"text": "Operating systems offer two different models for that notification, and the difference shapes runtime design: Readiness model Completion model Question you ask the OS \"Tell me when this socket can be read without blocking\" \"Read into this buffer and tell"
+},
+{
+"heading": "Hands-on lab",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab",
+"text": "Everything below was compiled and run with rustc 1.99.0 (edition 2024, release builds), Tokio 1.54.1 and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro, 6 performance + 4 efficiency cores). Timings vary between runs and machines; where"
+},
+{
+"heading": "Step 1 — the data race C# accepts and Rust refuses",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab-1",
+"text": "The plain counter++ compiles without a warning and loses about three-quarters of the updates (the count was similar on all three runs: 1.01–1.06 million of 4 million). Interlocked and lock are correct. Now the same mistake in Rust: The borrow"
+},
+{
+"heading": "Step 2 — a race condition with no data race, and three fixes",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab-2",
+"text": "Chart · 4 threads × 1,000,000 increments Figure 6. Median of three runs, log scale. The fastest bar is wrong : separate atomic load and store calls finish quickly because threads overwrite each other's work (about 2.4–3.0 million updates lost"
+},
+{
+"heading": "Step 3 — every possible schedule",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab-3",
+"text": "Figure 3 claims 18 of 20 schedules lose an update. Rather than trust the widget, enumerate them: Only the two schedules where one thread runs start-to-finish before the other are correct. With more threads or longer critical sections the number"
+},
+{
+"heading": "Step 4 — a real deadlock, and lock ordering",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab-4",
+"text": "Each thread takes its first lock, sleeps 50 ms (standing in for real work), then asks for the second lock, which the other thread holds. Neither will ever finish; the watchdog notices after 2 seconds. The deadlocked threads stay blocked"
+},
+{
+"heading": "Step 5 — CPU-bound vs I/O-bound, measured",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#lab-5",
+"text": "Chart · CPU-bound speed-up vs threads Figure 7. Measured speed-up (median of three runs) against the ideal \"N threads = N× faster\". Close to ideal up to 6 threads, the M2 Pro's performance cores. The 4 efficiency cores add a"
+},
+{
+"heading": "Exercises",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#exercises",
+"text": "All three solutions were run as programs whose assert! s check the result (Exercise 2 five times in a row), and are Clippy-clean. Exercise 1 — a deadlock-free transfer ★★☆ product skill Write transfer(from: &Account, to: &Account, amount) where each"
+},
+{
+"heading": "Which concurrency model?",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#decision",
+"text": "Workload Model .NET Rust CPU-bound, data-parallel (evaluate rules over many facts) ~1 thread per core, split the data Parallel.For , PLINQ rayon par_iter ; thread::scope Many concurrent waits (HTTP, DB, timers) Async tasks on a small pool, event loop underneath"
+},
+{
+"heading": "C# vs Rust: concurrency building blocks",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#compare",
+"text": "Concept C# / .NET Rust Thread-safety checking Documentation and review Compiler: Send / Sync , borrow rules (no data races in safe code) Data race consequence Wrong values; memory-safe Undefined behaviour, so forbidden in safe code OS thread Thread std::thread::spawn"
+},
+{
+"heading": "Common misconceptions and pitfalls",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#pitfalls",
+"text": "⚠️ \"Rust prevents concurrency bugs\" It prevents data races . Race conditions (Lab step 2, version 1) and deadlocks (Lab step 4) compile fine. Design and test for them. ⚠️ \"Each atomic access is safe, so my logic is safe\""
+},
+{
+"heading": "Real-world view: concurrency in your two products",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#real-world",
+"text": "🏗 Architecture view Workflow engine, I/O side. Thousands of runs mostly waiting on timers and external calls: async tasks on Tokio, one task per in-flight step, not one thread per run. Durable timers (chapter 10.6) feed the event loop's timer"
+},
+{
+"heading": "Check your understanding",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#check",
+"text": "Multiple choice A single-core machine runs a web server handling 200 connections, switching between them while each waits for the network. This is: Parallelism but not concurrency Neither Concurrency without parallelism Both, because there are 200 connections Parallelism needs more"
+},
+{
+"heading": "Summary",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#summary",
+"text": "Concurrency is structure (many tasks in progress); parallelism is execution (many at the same instant). Processes are isolated address spaces; threads share a process's heap but each has its own stack. OS threads are scheduled preemptively, async tasks cooperatively. A"
+},
+{
+"heading": "Go further",
+"chapter": "Concurrency concepts",
+"url": "chapters/f9-concurrency-concepts.html#go-further",
+"text": "Supplementary only: everything you need is above. All links were checked on 2026-10-31. Doc The Rustonomicon — “Data Races and Race Conditions” The precise definition of a data race and why Rust can't prevent general race conditions; quoted in this"
 }
 ];

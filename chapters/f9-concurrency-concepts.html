@@ -1,0 +1,1235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F9 Concurrency concepts</title>
+<meta name="description" content="Processes and threads, scheduling, race conditions vs data races, locks, deadlock, atomics, CPU-bound vs I/O-bound work, and event loops with readiness (epoll/kqueue) vs completion (IOCP) I/O, with an interactive scheduler and measured results.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .sch { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  @media (max-width: 760px) { .sch { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .sch-mem { grid-column: 1 / -1; order: -1; } }
+  .sch-thread, .sch-mem { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface); min-width: 0; }
+  .sch-thread h4, .sch-mem h4 { margin: 0 0 6px; font-size: .9rem; }
+  .sch-step { font: .85rem var(--font-mono); padding: 3px 6px; border-radius: 4px; color: var(--muted); }
+  .sch-step.done { color: var(--text); text-decoration: line-through; text-decoration-color: var(--muted); }
+  .sch-step.next { background: var(--amber-soft); color: var(--text); font-weight: 700; }
+  .sch-reg { font: .85rem var(--font-mono); margin-top: 6px; }
+  .sch-mem .big { font: 700 2rem var(--font-mono); text-align: center; padding: 6px 0; }
+  .sch-mem .lbl { text-align: center; font-size: .8rem; color: var(--muted); }
+  .sch-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .sch-btns button { font: inherit; font-size: .85rem; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .sch-btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sch-btns button:disabled { opacity: .45; cursor: default; }
+  .sch-trace { font: .82rem var(--font-mono); color: var(--muted); margin-top: 8px; min-height: 1.3em; overflow-wrap: anywhere; }
+  .sch-verdict { margin-top: 8px; padding: 8px 10px; border-radius: 6px; font-size: .9rem; min-height: 1.2em; }
+  .sch-verdict.ok { background: var(--green-soft); color: var(--green); }
+  .sch-verdict.bad { background: var(--red-soft); color: var(--red); }
+  .sch-all { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; margin-top: 10px; }
+  .sch-all button { font: .7rem var(--font-mono); padding: 5px 0; border-radius: 4px; border: 1px solid var(--border); background: var(--red-soft); color: var(--red); cursor: pointer; }
+  .sch-all button.ok { background: var(--green-soft); color: var(--green); }
+  .sch-all-label { font: .8rem var(--font-mono); color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body data-chapter="F9">
+<article class="content">
+<h1>Concurrency concepts</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Distinguish concurrency from parallelism, and processes from threads, and explain what the OS scheduler does with them</li>
+      <li>Tell a <em>data race</em> from a <em>race condition</em>, and say which one safe Rust rules out and which it can't</li>
+      <li>Use locks correctly, recognise the four conditions for deadlock, and prevent it with lock ordering</li>
+      <li>Explain what an atomic operation is, when it beats a lock, and why sharing itself is the expensive part</li>
+      <li>Classify work as CPU-bound or I/O-bound and pick threads or async tasks accordingly</li>
+      <li>Explain how an event loop works, and the difference between readiness I/O (epoll, kqueue) and completion I/O (IOCP, io_uring)</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>A workflow engine is concurrency in product form. Thousands of workflow runs are in flight at once, most of them waiting: for a timer, an HTTP call, a human approval. A handful of worker threads must keep all of them moving without two workers executing the same step, without losing an update to a run's state, and without freezing when two runs need the same resource. A rule engine adds the other half: evaluating a large rule set over many facts is pure computation that should use every core.</p>
+  <p>In .NET you already use <code>Task</code>, <code>async</code>/<code>await</code>, <code>lock</code> and <code>ConcurrentDictionary</code>, often without needing the vocabulary underneath. Rust asks for that vocabulary. Its headline promise, "fearless concurrency", is precise: the compiler rules out <strong>data races</strong>, but not <strong>race conditions</strong> or <strong>deadlocks</strong>. You'll measure both in this chapter. As a consultant you'll also be asked "should this service use threads or async?" and "why does Tokio behave differently from the .NET thread pool?" Module 4 answers those for Rust; this chapter gives you the concepts they rest on.</p>
+</div>
+
+<h2 id="intuition">Intuition first: a restaurant kitchen</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong>One chef, three dishes</strong> is <em>concurrency</em>: start the soup, while it simmers chop the salad, check the oven. Three dishes are in progress; only one thing happens at any instant. It works because most of each dish's time is <em>waiting</em>.</li>
+    <li><strong>Three chefs</strong> is <em>parallelism</em>: three things genuinely happen at the same instant. It only helps if there's enough work to keep three pairs of hands busy.</li>
+    <li><strong>One shared notepad of orders</strong> is <em>shared state</em>. If two chefs both read "12 portions left", both write "11", one portion vanishes from the count. That's a <em>lost update</em>.</li>
+    <li><strong>A key to the notepad's drawer</strong> is a <em>lock</em>. And if chef A holds the knife and waits for the board, while chef B holds the board and waits for the knife, nobody cooks again. That's a <em>deadlock</em>.</li>
+    <li><strong>A waiter who doesn't stand at one table</strong>, but walks to whichever table rang its bell, is an <em>event loop</em>. One waiter serves twenty tables because tables spend most of their time not needing anything.</li>
+  </ul>
+</div>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · concurrency vs parallelism</span>
+  <svg viewBox="0 0 720 270" role="img" aria-label="Timeline: one core interleaving three tasks with waits, versus three cores running three tasks at the same time">
+    <text x="20" y="24" class="svg-title">Concurrency: 1 core, 3 tasks in progress (interleaved)</text>
+    <text x="20" y="62" class="svg-mono">core 1</text>
+    <rect x="90" y="44" width="70" height="28" rx="3" class="svg-teal"/><text x="125" y="63" class="svg-mono" text-anchor="middle">A</text>
+    <rect x="160" y="44" width="60" height="28" rx="3" class="svg-purple"/><text x="190" y="63" class="svg-mono" text-anchor="middle">B</text>
+    <rect x="220" y="44" width="50" height="28" rx="3" class="svg-amber"/><text x="245" y="63" class="svg-mono" text-anchor="middle">C</text>
+    <rect x="270" y="44" width="70" height="28" rx="3" class="svg-teal"/><text x="305" y="63" class="svg-mono" text-anchor="middle">A</text>
+    <rect x="340" y="44" width="80" height="28" rx="3" class="svg-purple"/><text x="380" y="63" class="svg-mono" text-anchor="middle">B</text>
+    <rect x="420" y="44" width="60" height="28" rx="3" class="svg-amber"/><text x="450" y="63" class="svg-mono" text-anchor="middle">C</text>
+    <rect x="480" y="44" width="50" height="28" rx="3" class="svg-teal"/><text x="505" y="63" class="svg-mono" text-anchor="middle">A</text>
+    <rect x="530" y="44" width="70" height="28" rx="3" class="svg-purple"/><text x="565" y="63" class="svg-mono" text-anchor="middle">B</text>
+    <text x="90" y="94" class="svg-text-sm">A waits (disk) → run B; B waits (network) → run C … one thing at a time, all making progress</text>
+
+    <line x1="20" y1="114" x2="700" y2="114" class="svg-line-dash"/>
+    <text x="20" y="140" class="svg-title">Parallelism: 3 cores, 3 tasks at the same instant</text>
+    <text x="20" y="176" class="svg-mono">core 1</text><rect x="90" y="158" width="280" height="28" rx="3" class="svg-teal"/><text x="230" y="177" class="svg-mono" text-anchor="middle">A</text>
+    <text x="20" y="210" class="svg-mono">core 2</text><rect x="90" y="192" width="300" height="28" rx="3" class="svg-purple"/><text x="240" y="211" class="svg-mono" text-anchor="middle">B</text>
+    <text x="20" y="244" class="svg-mono">core 3</text><rect x="90" y="226" width="250" height="28" rx="3" class="svg-amber"/><text x="215" y="245" class="svg-mono" text-anchor="middle">C</text>
+    <text x="420" y="211" class="svg-text-sm">finishes sooner only if the work</text>
+    <text x="420" y="229" class="svg-text-sm">is computation, not waiting</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Concurrency is about <em>structure</em>: several tasks in progress at once, interleaved. Parallelism is about <em>execution</em>: several things happening at the same instant on different cores. As Rob Pike put it, concurrency is about <em>dealing with</em> lots of things at once; parallelism is about <em>doing</em> lots of things at once. A program can be concurrent on one core, and a parallel program is always concurrent.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="processes-threads">Processes and threads</h3>
+<p>A <dfn data-term="process" data-def="A running program with its own private address space (memory), handles and at least one thread; processes are isolated from each other and communicate via IPC, files or sockets.">process</dfn> is a running program with its own private <strong>address space</strong> (chapter F1): its own code, heap and globals, plus OS resources such as open files and sockets. One process can't read another's memory; they talk through files, pipes or sockets. A crash in one process doesn't corrupt another. That isolation is why browsers run each site in its own process, and why "one container per service" works.</p>
+<p>A <dfn data-term="thread" data-def="An independent sequence of execution inside a process, with its own stack and registers but sharing the process's heap and globals with the other threads; scheduled by the OS.">thread</dfn> is an independent line of execution <em>inside</em> a process. Every thread has its own <strong>stack</strong> (chapter F1: its own call frames and local variables) and its own CPU register values, but all threads of a process share the same heap and globals. That's what makes threads fast to communicate, since they just read the same memory, and what makes them dangerous: they can read the same memory <em>at the same time</em>. Rust's spawned threads currently get a 2 MiB stack on all Tier-1 platforms (per the <code>std::thread</code> docs). That's mostly reserved virtual memory, not touched RAM, but it's why "one OS thread per request" stops scaling somewhere in the thousands.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · processes vs threads</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Two processes with separate address spaces; process A has three threads, each with its own stack, sharing one heap">
+    <rect x="20" y="20" width="440" height="260" rx="10" class="svg-box-strong"/>
+    <text x="40" y="44" class="svg-title">Process A (one address space)</text>
+    <rect x="40" y="60" width="120" height="40" rx="5" class="svg-box"/><text x="100" y="85" class="svg-mono" text-anchor="middle">code</text>
+    <rect x="170" y="60" width="270" height="40" rx="5" class="svg-box"/><text x="305" y="85" class="svg-mono" text-anchor="middle">globals / statics</text>
+    <rect x="40" y="110" width="400" height="56" rx="5" class="svg-teal"/><text x="240" y="134" class="svg-mono" text-anchor="middle">heap: shared by every thread</text><text x="240" y="154" class="svg-text-sm" text-anchor="middle">← two threads can touch the same bytes at once</text>
+    <g>
+      <rect x="40" y="180" width="125" height="84" rx="5" class="svg-purple"/><text x="102" y="202" class="svg-mono" text-anchor="middle">thread 1</text><text x="102" y="226" class="svg-text-sm" text-anchor="middle">own stack</text><text x="102" y="246" class="svg-text-sm" text-anchor="middle">own registers</text>
+      <rect x="178" y="180" width="125" height="84" rx="5" class="svg-purple"/><text x="240" y="202" class="svg-mono" text-anchor="middle">thread 2</text><text x="240" y="226" class="svg-text-sm" text-anchor="middle">own stack</text><text x="240" y="246" class="svg-text-sm" text-anchor="middle">own registers</text>
+      <rect x="316" y="180" width="125" height="84" rx="5" class="svg-purple"/><text x="378" y="202" class="svg-mono" text-anchor="middle">thread 3</text><text x="378" y="226" class="svg-text-sm" text-anchor="middle">own stack</text><text x="378" y="246" class="svg-text-sm" text-anchor="middle">own registers</text>
+    </g>
+    <rect x="500" y="20" width="200" height="260" rx="10" class="svg-box-strong"/>
+    <text x="600" y="44" class="svg-title" text-anchor="middle">Process B</text>
+    <rect x="520" y="60" width="160" height="40" rx="5" class="svg-box"/><text x="600" y="85" class="svg-mono" text-anchor="middle">code, globals</text>
+    <rect x="520" y="110" width="160" height="56" rx="5" class="svg-teal"/><text x="600" y="143" class="svg-mono" text-anchor="middle">its own heap</text>
+    <rect x="520" y="180" width="160" height="84" rx="5" class="svg-purple"/><text x="600" y="214" class="svg-mono" text-anchor="middle">thread 1</text><text x="600" y="240" class="svg-text-sm" text-anchor="middle">own stack</text>
+    <text x="480" y="150" class="svg-text-sm" text-anchor="middle">✕</text>
+    <text x="480" y="296" class="svg-text-sm" text-anchor="middle">isolated: talk via sockets, pipes, files</text>
+  </svg>
+  <figcaption><strong>Figure 2.</strong> Threads inside one process share the heap and globals, so communication is cheap and unsynchronised access is possible. Separate processes share nothing by default: safer and more expensive to coordinate. Your workflow engine will use both: many threads inside each engine process, and several processes (replicas) coordinating through a database (chapter 10.5).</figcaption>
+</figure>
+
+<h3 id="scheduling">Scheduling</h3>
+<p>Your machine has a few cores (the lab Mac has 10: 6 performance and 4 efficiency cores) and the OS has hundreds of threads. The <dfn data-term="scheduler" data-def="The OS component (or runtime component, for async tasks) that decides which runnable thread or task runs on which core and for how long.">scheduler</dfn> decides which thread runs on which core, and for how long. Two styles matter:</p>
+<ul>
+  <li><dfn data-term="preemptive scheduling" data-def="The scheduler can interrupt a running thread at any instruction (via a timer interrupt) and switch to another; used by OS threads.">Preemptive</dfn> (OS threads): the OS gives a thread a time slice, then a timer interrupt can stop it at <em>any instruction</em> and run another thread. A thread in an infinite loop can't freeze the machine. The cost: your code can be paused between any two instructions, including in the middle of what looks like a single line, such as <code>counter += 1</code>.</li>
+  <li><dfn data-term="cooperative scheduling" data-def="Tasks run until they voluntarily yield (e.g. at an await); a task that never yields blocks its thread. Used by async runtimes such as Tokio and, at the await level, .NET's async.">Cooperative</dfn> (async tasks): a task runs until it voluntarily gives control back, in Rust and C# at an <code>.await</code>. Switching is very cheap, but a task that computes for a long time without awaiting holds its thread hostage, and every other task scheduled on that thread waits (chapter 4.7's <code>spawn_blocking</code> exists for exactly this).</li>
+</ul>
+<p>Switching between threads (a <dfn data-term="context switch" data-def="Saving one thread's registers and state and restoring another's so it can run on the core; costs microseconds and cold caches.">context switch</dfn>) means saving one thread's registers, restoring another's, and usually running with cold caches (chapter F1). That costs on the order of microseconds. Creating a thread costs more: Lab step 5 measured about 19 µs to spawn and join an OS thread, against 0.19 µs for a Tokio task, about 100× less.</p>
+
+<h3 id="races">Data races and race conditions</h3>
+<p>Here's the bug every concurrent system meets first. <code>counter += 1</code> looks like one step, but the CPU executes three: <strong>load</strong> the value into a register, <strong>add</strong> one, <strong>store</strong> it back. If two threads interleave those steps, one increment can be lost. You are the scheduler below:</p>
+
+<figure class="visual" id="sch">
+  <span class="visual-tag">Interactive · you are the scheduler</span>
+  <div class="sch">
+    <div class="sch-thread"><h4>Thread 1</h4><div id="sch-t0"></div><div class="sch-reg" id="sch-r0"></div></div>
+    <div class="sch-mem"><h4>Shared memory</h4><div class="big" id="sch-mem">0</div><div class="lbl">counter</div></div>
+    <div class="sch-thread"><h4>Thread 2</h4><div id="sch-t1"></div><div class="sch-reg" id="sch-r1"></div></div>
+  </div>
+  <div class="sch-btns">
+    <button type="button" class="primary" id="sch-run0">Run thread 1 ▶</button>
+    <button type="button" class="primary" id="sch-run1">Run thread 2 ▶</button>
+    <button type="button" id="sch-rand">Random schedule</button>
+    <button type="button" id="sch-reset">⟲ Reset</button>
+  </div>
+  <div class="sch-trace" id="sch-trace"></div>
+  <div class="sch-verdict" id="sch-verdict" aria-live="polite"></div>
+  <div class="sch-all-label">All 20 possible schedules (L = load, A = add, S = store), click one to replay it:</div>
+  <div class="sch-all" id="sch-all"></div>
+  <figcaption><strong>Figure 3.</strong> Each thread runs <code>load → add 1 → store</code> on a counter that starts at 0. Pick who runs next, step by step. There are C(6,3) = 20 possible interleavings, and only <strong>2</strong> give the right answer, 2: the ones where one thread finishes before the other starts. The other 18 end with 1. Lab step 3 enumerates all 20 in Rust and gets the same count. On real hardware the scheduler, other cores and caches choose for you, millions of times a second.</figcaption>
+</figure>
+
+<p>Two terms describe what went wrong, and the difference is central to Rust:</p>
+<ul>
+  <li>A <dfn data-term="data race" data-def="Two or more threads access the same memory location at the same time, at least one access is a write, and at least one is unsynchronised. Undefined behaviour in Rust, C and C++; impossible in safe Rust.">data race</dfn> is a specific, low-level event. The Rustonomicon defines it as two or more threads concurrently accessing a location of memory, where one or more of them is a write and one or more of them is unsynchronised. In Rust, C and C++ a data race is <em>undefined behaviour</em> (chapter 0.1): the compiler and CPU are allowed to assume it never happens, so the program may do anything. In .NET a data race isn't undefined behaviour: you get wrong numbers, as Lab step 1 shows, but memory safety holds.</li>
+  <li>A <dfn data-term="race condition" data-def="A bug where the result depends on the timing or interleaving of threads, e.g. check-then-act; can happen even with every access synchronised. Safe Rust does not prevent it.">race condition</dfn> is any bug where the outcome depends on timing. It can happen with <em>no</em> data race at all, when every individual access is synchronised but the <em>combination</em> isn't atomic. The classic shape is <strong>check-then-act</strong>: "if seats are left, take one" done as two separate steps.</li>
+</ul>
+<p><strong>Safe Rust guarantees no data races</strong>, at compile time. The program in Lab step 1 that lets four threads write one variable doesn't compile. It does <em>not</em> guarantee no race conditions. The Rustonomicon says so plainly: preventing general race conditions is "mathematically impossible" when you don't control the scheduler. Lab step 2 demonstrates it. A counter made of atomic loads and stores, each one perfectly synchronised, still loses about 3 million of 4 million updates, because "load, then store" is two operations.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>The C# compiler accepts the racy <code>counter++</code> from several threads without a word (Lab step 1). Thread safety in .NET is a matter of documentation ("instance members are not guaranteed to be thread safe") and review. In Rust it's part of the type system. Two marker traits, <dfn data-term="Send" data-def="Marker trait: values of this type may be moved to another thread. Rc is not Send; Arc is.">Send</dfn> ("may be moved to another thread") and <dfn data-term="Sync" data-def="Marker trait: references to this type may be shared between threads at the same time. Mutex&lt;T&gt; is Sync; RefCell is not.">Sync</dfn> ("may be shared between threads"), are worked out automatically for every type, and APIs like <code>thread::spawn</code> require them. Try to send an <code>Rc</code> (a non-atomic reference count) to another thread and you get error E0277 (Lab step 1). Chapter 4.1 covers these traits in full.</p>
+</div>
+
+<h3 id="locks">Locks</h3>
+<p>The basic fix is <dfn data-term="mutual exclusion" data-def="Ensuring at most one thread at a time executes a critical section; provided by a mutex (lock).">mutual exclusion</dfn>: make the whole read-modify-write a <dfn data-term="critical section" data-def="A region of code that must not be executed by more than one thread at a time.">critical section</dfn> that only one thread can be inside at a time. A <dfn data-term="mutex" data-def="Mutual-exclusion lock: a thread must acquire it before entering a critical section, and other threads block until it is released. C# lock / System.Threading.Lock; Rust Mutex&lt;T&gt;.">mutex</dfn> (mutual-exclusion lock) does that: a thread <em>acquires</em> it, others trying to acquire it wait, and it's <em>released</em> on the way out. In C# you write <code>lock (gate) { … }</code>; since .NET 9 the recommended lock object is the dedicated <code>System.Threading.Lock</code> type.</p>
+<p>Rust's <code>Mutex&lt;T&gt;</code> differs in one important way: <strong>the mutex owns the data it protects</strong>. In C# the lock and the data are separate objects connected only by convention, and nothing stops a method from touching the data without taking the lock. In Rust the only way to reach the <code>u64</code> inside a <code>Mutex&lt;u64&gt;</code> is through <code>lock()</code>, which returns a <em>guard</em>. The guard releases the lock automatically when it goes out of scope (RAII, chapter 2.2), so "forgot to unlock" and "forgot to lock" both become impossible:</p>
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">private readonly Lock _gate = new();
+private long _count;          // protected by _gate… by convention
+
+void Add()
+{
+    lock (_gate) { _count++; }
+}
+void Oops() => _count++;      // compiles; no lock taken</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">let count = Mutex::new(0u64); // the data lives INSIDE the lock
+
+{
+    let mut guard = count.lock().unwrap();
+    *guard += 1;
+} // guard dropped here: unlocked automatically
+
+// There is no way to reach the u64 without lock().</code></pre></div>
+</div>
+<p>Variants you'll meet: a <strong>reader-writer lock</strong> (<code>RwLock</code>, like .NET's <code>ReaderWriterLockSlim</code>) lets many readers in at once or one writer; and <strong>message passing</strong> avoids shared state altogether by sending values through a <strong>channel</strong> to the one thread that owns them, the actor style (chapters 4.2 and 8.4). Locks have costs: threads waiting on a contended lock do no useful work (<em>contention</em>), and a lock held for too long serialises your program. The rule of thumb is to hold locks briefly and never across slow operations: I/O, an <code>.await</code>, or a call into code you don't control.</p>
+
+<h3 id="deadlock">Deadlock</h3>
+<p>A <dfn data-term="deadlock" data-def="Two or more threads each wait for a resource another holds, so none can proceed. Requires mutual exclusion, hold-and-wait, no preemption and circular wait (Coffman, 1971).">deadlock</dfn> is a set of threads each waiting for something another one holds, so none of them can ever proceed. Coffman, Elphick and Shoshani's 1971 survey gave the four conditions that must <em>all</em> hold:</p>
+<ol>
+  <li><strong>Mutual exclusion:</strong> a resource can be held by only one thread.</li>
+  <li><strong>Hold and wait:</strong> a thread holds one resource while waiting for another.</li>
+  <li><strong>No preemption:</strong> a resource can't be taken away; it's only released voluntarily.</li>
+  <li><strong>Circular wait:</strong> there's a cycle of threads, each waiting for the next one's resource.</li>
+</ol>
+<p>Break any one and deadlock is impossible. The practical lever is usually the fourth. Draw a <strong>wait-for graph</strong> (threads and locks as vertices, "holds" and "waits for" as edges) and a deadlock is exactly a <em>cycle</em>, the same cycle detection as in chapter F6. Impose a global <strong>lock order</strong> (always lock account A before account B, say by lowest ID) and no cycle can form.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · a deadlock is a cycle in the wait-for graph</span>
+  <svg viewBox="0 0 720 260" role="img" aria-label="Left: thread 1 holds A and waits for B, thread 2 holds B and waits for A, forming a cycle. Right: both lock A first, so thread 2 waits for A and no cycle forms">
+    <defs>
+      <marker id="dl-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="dl-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="175" y="22" class="svg-title" text-anchor="middle">opposite order: deadlock</text>
+    <rect x="40" y="50" width="100" height="40" rx="6" class="svg-purple"/><text x="90" y="75" class="svg-mono" text-anchor="middle">thread 1</text>
+    <rect x="210" y="50" width="100" height="40" rx="6" class="svg-purple"/><text x="260" y="75" class="svg-mono" text-anchor="middle">thread 2</text>
+    <circle cx="90" cy="190" r="26" class="svg-teal"/><text x="90" y="195" class="svg-mono" text-anchor="middle">A</text>
+    <circle cx="260" cy="190" r="26" class="svg-teal"/><text x="260" y="195" class="svg-mono" text-anchor="middle">B</text>
+    <path d="M90 164 L90 94" class="svg-line" marker-end="url(#dl-a)"/><text x="60" y="134" class="svg-text-sm" text-anchor="end">held by</text>
+    <path d="M260 164 L260 94" class="svg-line" marker-end="url(#dl-a)"/><text x="290" y="134" class="svg-text-sm">held by</text>
+    <path d="M140 84 L236 168" class="svg-line-accent" marker-end="url(#dl-b)"/>
+    <path d="M210 84 L114 168" class="svg-line-accent" marker-end="url(#dl-b)"/>
+    <text x="175" y="236" class="svg-text-sm" text-anchor="middle">waits for (orange): T1 → B → T2 → A → T1, a cycle</text>
+
+    <line x1="360" y1="30" x2="360" y2="240" class="svg-line-dash"/>
+    <text x="545" y="22" class="svg-title" text-anchor="middle">same order (A, then B): no cycle</text>
+    <rect x="410" y="50" width="100" height="40" rx="6" class="svg-purple"/><text x="460" y="75" class="svg-mono" text-anchor="middle">thread 1</text>
+    <rect x="580" y="50" width="100" height="40" rx="6" class="svg-purple"/><text x="630" y="75" class="svg-mono" text-anchor="middle">thread 2</text>
+    <circle cx="460" cy="190" r="26" class="svg-teal"/><text x="460" y="195" class="svg-mono" text-anchor="middle">A</text>
+    <circle cx="630" cy="190" r="26" class="svg-box"/><text x="630" y="195" class="svg-mono" text-anchor="middle">B</text>
+    <path d="M460 164 L460 94" class="svg-line" marker-end="url(#dl-a)"/><text x="430" y="134" class="svg-text-sm" text-anchor="end">held by</text>
+    <path d="M580 84 L484 168" class="svg-line-accent" marker-end="url(#dl-b)"/>
+    <text x="545" y="236" class="svg-text-sm" text-anchor="middle">T2 waits for A; T1 takes B, finishes, releases both</text>
+  </svg>
+  <figcaption><strong>Figure 4.</strong> Two transfers between the same accounts in opposite directions. If each locks its <em>source</em> account first, they can end up holding one lock each and waiting for the other's forever (Lab step 4 detects this with a 2-second watchdog). If both lock in a global order, the second thread simply waits for A, and the cycle can't form. Exercise 1 applies this to a bank-transfer function.</figcaption>
+</figure>
+<p>Other defences: <code>try_lock</code> or a lock with a timeout (gives up "no preemption" by backing off), holding at most one lock at a time where possible, and never calling unknown code (callbacks, plugins) while holding a lock. Rust doesn't prevent deadlocks. The Rustonomicon explicitly classes deadlocking as "safe": wrong, but not memory-unsafe.</p>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="atomics">Atomics: indivisible operations</h3>
+<p>An <dfn data-term="atomic operation" data-def="An operation the hardware performs indivisibly: no other thread can observe it half-done. E.g. fetch_add, compare-and-swap. Rust std::sync::atomic; .NET Interlocked.">atomic operation</dfn> is one the CPU performs as a single indivisible step: no other core can see it half-done. Modern CPUs provide atomic read-modify-write instructions, and both platforms expose them. .NET has <code>Interlocked.Increment</code>, <code>Interlocked.CompareExchange</code> and friends. Rust has types like <code>AtomicU64</code>, <code>AtomicBool</code> and <code>AtomicUsize</code> with methods such as:</p>
+<ul>
+  <li><code>fetch_add(1)</code>: add and return the old value, all in one step. It fixes the counter.</li>
+  <li><dfn data-term="compare-and-swap" data-def="Atomic instruction: write a new value only if the location still holds the expected old value; otherwise report the actual value. The building block of lock-free algorithms (Rust compare_exchange, .NET Interlocked.CompareExchange).">compare-and-swap</dfn> (CAS; Rust <code>compare_exchange(expected, new)</code>): write <code>new</code> <em>only if</em> the value is still <code>expected</code>, otherwise report what it actually is. It's the tool for check-then-act. "If seats are left, take one" becomes a loop that retries when another thread got there first (Exercise 2).</li>
+</ul>
+<p>Atomics avoid the waiting a lock causes, but they're not free. Lab step 2 measured 4 threads × 1 million increments: <code>fetch_add</code> took about 51 ms and a <code>Mutex</code> about 78 ms. Counting in a local variable per thread and combining once at the end took <strong>0.4 ms</strong>, over 100× faster than either. The expensive part isn't the lock or the instruction. It's <em>sharing</em>: every write to a shared value forces that cache line (chapter F1) to move between cores. The fastest concurrent code shares as little as possible.</p>
+<p>Atomic operations also take a <code>memory ordering</code> argument (<code>Relaxed</code>, <code>Acquire</code>, <code>Release</code>, <code>SeqCst</code>). It exists because compilers and CPUs reorder memory operations for speed, and when threads communicate <em>through</em> an atomic flag (for example, "data is ready"), you must say which other reads and writes may not be moved across it. For a plain counter, <code>Relaxed</code> is enough. For anything else, until chapter 4.3 teaches the rules, use a <code>Mutex</code> or <code>SeqCst</code>.</p>
+
+<details class="deep-dive"><summary>Deep dive: false sharing — when unrelated data collides in the cache</summary><div class="body">
+  <p>Caches move memory in whole <em>lines</em>: 128 bytes on the lab Mac (measured in chapter F1). If two threads write two <em>different</em> variables that happen to sit in the same line, the line still ping-pongs between their cores on every write, as if they shared data. That's <dfn data-term="false sharing" data-def="Two threads writing different variables that share a cache line, forcing the line to bounce between cores; fixed by padding/aligning hot per-thread data to the cache-line size.">false sharing</dfn>. The program below has two threads each increment their <em>own</em> counter 20 million times, once with the counters 8 bytes apart, once with each aligned to its own 128-byte line:</p>
+<pre data-playground data-title="src/bin/false_sharing.rs"><code class="language-rust">use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::Instant;
+
+/// Two counters right next to each other: same 128-byte cache line on the lab Mac.
+struct Adjacent {
+    a: AtomicU64,
+    b: AtomicU64,
+}
+
+/// The same two counters, each forced onto its own cache line.
+#[repr(align(128))]
+struct Padded(AtomicU64);
+
+fn hammer(x: &amp;AtomicU64, y: &amp;AtomicU64) -&gt; f64 {
+    let t = Instant::now();
+    thread::scope(|s| {
+        s.spawn(|| (0..20_000_000).for_each(|_| { x.fetch_add(1, Ordering::Relaxed); }));
+        s.spawn(|| (0..20_000_000).for_each(|_| { y.fetch_add(1, Ordering::Relaxed); }));
+    });
+    t.elapsed().as_secs_f64() * 1e3
+}
+
+fn main() {
+    let adj = Adjacent { a: AtomicU64::new(0), b: AtomicU64::new(0) };
+    let (pa, pb) = (Padded(AtomicU64::new(0)), Padded(AtomicU64::new(0)));
+    println!("distance between adjacent counters: {} bytes", (&amp;adj.b as *const _ as usize) - (&amp;adj.a as *const _ as usize));
+    println!("same cache line : {:&gt;6.0} ms", hammer(&amp;adj.a, &amp;adj.b));
+    println!("own cache lines : {:&gt;6.0} ms", hammer(&amp;pa.0, &amp;pb.0));
+}</code></pre>
+<pre class="output">distance between adjacent counters: 8 bytes
+same cache line :    257 ms
+own cache lines :     40 ms</pre>
+  <p>About 6× slower (median 253 ms vs 40 ms over three runs) for no logical reason. That's why high-performance libraries pad per-thread counters and queue indices to the cache-line size (<code>#[repr(align(128))]</code> here; crossbeam provides a <code>CachePadded</code> wrapper). In .NET the same fix uses <code>[StructLayout]</code> with explicit padding. Suspect false sharing when adding threads to "independent" work makes it <em>slower</em>.</p>
+</div></details>
+
+<h3 id="cpu-io">CPU-bound vs I/O-bound work</h3>
+<p>The single most useful question to ask about a workload is: <em>what is it waiting for?</em></p>
+<ul>
+  <li><dfn data-term="CPU-bound" data-def="Work limited by computation speed: more cores help, up to the core count; e.g. evaluating rules, compression, parsing.">CPU-bound</dfn> work spends its time computing: evaluating a rule set, parsing, compressing, hashing. More cores help, up to the number of cores and no further. Lab step 5 counted primes on 1–16 threads: near-linear speed-up to 6 threads (5.7×, the 6 performance cores), a little more from the efficiency cores (6.4× at 10), and <em>nothing</em> at 16. The tools are a fixed pool of about one thread per core (.NET <code>Parallel.For</code>/PLINQ; Rust's rayon, chapter 4.4).</li>
+  <li><dfn data-term="I/O-bound" data-def="Work limited by waiting on disks, networks or other services; concurrency (many tasks in flight) helps far beyond the core count, ideally without one thread per wait.">I/O-bound</dfn> work spends its time waiting: for a database, an HTTP call, a disk. Cores are idle anyway, so the goal is to have <em>many</em> operations in flight. 1,000 requests that each wait 20 ms take 20 seconds one at a time, and about 27 ms concurrently (Lab step 5). The question is only what each in-flight operation costs while it waits.</li>
+</ul>
+<p>Lab step 5 also shows a trap: work divided into fixed, equal-sized ranges was badly balanced (larger numbers take longer to test), so 2 threads gave 1.6× instead of 2×. The balanced version hands out small blocks dynamically, so fast threads take more. Load balancing is half of parallel performance, and the core idea behind rayon's work stealing.</p>
+
+<details class="deep-dive"><summary>Deep dive: Amdahl's law — the limit of adding cores</summary><div class="body">
+  <p>Gene Amdahl's 1967 argument: if a fraction \(p\) of a job can run in parallel and the rest \((1-p)\) is sequential, the best speed-up on \(N\) cores is</p>
+  $$ S(N) = \frac{1}{(1 - p) + \dfrac{p}{N}} \qquad\Longrightarrow\qquad \lim_{N\to\infty} S(N) = \frac{1}{1-p} $$
+  <p>With 95% parallel work, no number of cores gets you past 20×; with 90%, past 10×. The sequential part (setup, a final merge, a lock everyone takes) dominates as cores grow. So when a client says "we'll scale by adding cores", ask what fraction of the request path is serialised: a global lock, a single database row everybody updates, a single-threaded event loop.</p>
+  <p>The lab's 6.4× on 10 cores is mostly <em>not</em> Amdahl. The prime count is almost perfectly parallel; the shortfall is that the M2 Pro's 4 efficiency cores are slower than its 6 performance cores. Real hardware is heterogeneous (efficiency cores, hyper-threading, thermal limits), so measure scaling rather than assuming it.</p>
+</div></details>
+
+<h3 id="threads-vs-tasks">Threads vs async tasks</h3>
+<p>For I/O-bound work there are two broad ways to keep many operations in flight:</p>
+<ol>
+  <li><strong>One OS thread per operation, blocking.</strong> Simple code: a thread calls <code>read()</code> and the OS parks it until data arrives. It works up to a few thousand concurrent operations. Beyond that, each waiting thread still costs a stack (2 MiB reserved), kernel bookkeeping and context switches. Lab step 5: 1,000 threads, 56 ms; spawning a thread, about 19 µs each.</li>
+  <li><strong>Many lightweight tasks on a few threads, non-blocking.</strong> A <dfn data-term="task" data-def="A lightweight unit of concurrent work scheduled by a runtime (e.g. a .NET Task, a Tokio task) rather than by the OS; many tasks share a few threads.">task</dfn> is a small object (in Rust and C#, a compiler-generated state machine) that runs until it would wait, then gives its thread back. A runtime runs thousands of tasks on a handful of threads. Lab step 5: 1,000 tasks on <em>one</em> thread, 27 ms; spawning a task, about 0.19 µs.</li>
+</ol>
+<p>C# <code>async</code>/<code>await</code> and Rust <code>async</code>/<code>.await</code> are both the second kind, and both compile each <code>async</code> function into a state machine. The big differences (chapter 4.5): in Rust a future does <em>nothing</em> until something polls it, and Rust has no built-in runtime, so you choose one, usually Tokio. .NET ships its thread pool, and a <code>Task</code> starts running as soon as you call the method. Either way, the runtime needs a way to learn <em>when</em> a waiting operation can continue. That's the event loop.</p>
+
+<h3 id="event-loop">Event loops and non-blocking I/O</h3>
+<p>With <dfn data-term="non-blocking I/O" data-def="I/O calls that return immediately (e.g. 'would block') instead of parking the thread; combined with an OS notification mechanism so one thread can manage many connections.">non-blocking I/O</dfn>, a read that has no data yet returns immediately with "would block" instead of parking the thread. On its own that would mean asking every socket over and over (busy polling). The missing piece is an OS facility that watches thousands of sockets and wakes you only for the ones that are ready. An <dfn data-term="event loop" data-def="A loop that waits on an OS notification mechanism (epoll, kqueue, IOCP), then runs the tasks whose I/O can proceed; the core of async runtimes like Tokio and Node.js.">event loop</dfn> is a thread that waits on that facility and runs whichever tasks it reports:</p>
+
+<figure class="visual stepper" data-interval="2800">
+  <span class="visual-tag">Animation · an event loop with readiness I/O</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Three tasks register sockets with the kernel poller; the event loop waits; when socket 2 becomes ready, task B runs">
+    <defs><marker id="ev-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker></defs>
+    <text x="100" y="22" class="svg-title" text-anchor="middle">tasks (in the runtime)</text>
+    <text x="360" y="22" class="svg-title" text-anchor="middle">event-loop thread</text>
+    <text x="610" y="22" class="svg-title" text-anchor="middle">kernel</text>
+    <rect x="30" y="44" width="140" height="44" rx="6" class="svg-teal" data-hl="1"/><text x="100" y="61" class="svg-mono" text-anchor="middle">task A</text><text x="100" y="78" class="svg-text-sm" text-anchor="middle">read socket 1</text>
+    <rect x="30" y="104" width="140" height="44" rx="6" class="svg-purple" data-hl="1,4,5"/><text x="100" y="121" class="svg-mono" text-anchor="middle">task B</text><text x="100" y="138" class="svg-text-sm" text-anchor="middle">read socket 2</text>
+    <rect x="30" y="164" width="140" height="44" rx="6" class="svg-amber" data-hl="1,6"/><text x="100" y="181" class="svg-mono" text-anchor="middle">task C</text><text x="100" y="198" class="svg-text-sm" text-anchor="middle">timer 50 ms</text>
+    <text x="100" y="236" class="svg-text-sm" text-anchor="middle" data-show="1-3">A, B, C: parked (waiting)</text>
+    <text x="100" y="236" class="svg-text-sm" text-anchor="middle" data-show="4-5">B: running; A, C parked</text>
+    <text x="100" y="236" class="svg-text-sm" text-anchor="middle" data-show="6">C: running; A, B parked</text>
+
+    <rect x="280" y="90" width="160" height="70" rx="8" class="svg-box-strong" data-hl="2,3,4,6"/>
+    <text x="360" y="118" class="svg-mono" text-anchor="middle" data-show="-2">wait(…)</text>
+    <text x="360" y="118" class="svg-mono" text-anchor="middle" data-show="3">ready: [socket 2]</text>
+    <text x="360" y="118" class="svg-mono" text-anchor="middle" data-show="4-5">run task B</text>
+    <text x="360" y="118" class="svg-mono" text-anchor="middle" data-show="6">timer due: run C</text>
+    <text x="360" y="140" class="svg-text-sm" text-anchor="middle" data-show="-2">asleep, 0% CPU</text>
+
+    <rect x="530" y="44" width="160" height="164" rx="8" class="svg-box-strong"/>
+    <text x="610" y="66" class="svg-text-sm" text-anchor="middle">poller: epoll / kqueue</text>
+    <rect x="550" y="80" width="120" height="30" rx="4" class="svg-box"/><text x="610" y="100" class="svg-mono" text-anchor="middle">socket 1</text>
+    <rect x="550" y="120" width="120" height="30" rx="4" class="svg-box" data-show="-2"/><text x="610" y="140" class="svg-mono" text-anchor="middle" data-show="-2">socket 2</text>
+    <rect x="550" y="120" width="120" height="30" rx="4" class="svg-green" data-show="3"/><text x="610" y="140" class="svg-mono" text-anchor="middle" data-show="3">socket 2 ✓</text>
+    <rect x="550" y="120" width="120" height="30" rx="4" class="svg-box" data-show="4"/><text x="610" y="140" class="svg-mono" text-anchor="middle" data-show="4">socket 2</text>
+    <rect x="550" y="160" width="120" height="30" rx="4" class="svg-box"/><text x="610" y="180" class="svg-mono" text-anchor="middle">timer wheel</text>
+
+    <path d="M175 124 L525 135" class="svg-line-accent" marker-end="url(#ev-a)" data-show="=1"/>
+    <text x="350" y="200" class="svg-text-sm" text-anchor="middle" data-show="=1">"tell me when socket 2 is readable"</text>
+    <path d="M525 135 L445 128" class="svg-line-accent" marker-end="url(#ev-a)" data-show="=3"/>
+    <path d="M280 125 L175 126" class="svg-line-accent" marker-end="url(#ev-a)" data-show="=4"/>
+    <text x="350" y="200" class="svg-text-sm" text-anchor="middle" data-show="=5">B reads (succeeds now), works, reaches next .await, parks again</text>
+    <path d="M280 150 L175 186" class="svg-line-accent" marker-end="url(#ev-a)" data-show="=6"/>
+    <text x="360" y="270" class="svg-text-sm" text-anchor="middle">one thread, thousands of sockets: it only ever touches the ones that are ready</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>Each task tries its operation. The socket has no data yet, so the non-blocking read returns "would block". The task <strong>registers interest</strong> with the kernel's poller ("wake me when socket 2 is readable") and parks. Parking a task costs a few bytes, not a thread.</li>
+    <li>With nothing runnable, the event-loop thread calls the poller's wait function (<code>epoll_wait</code> on Linux, <code>kevent</code> on macOS). The thread sleeps in the kernel and uses no CPU, however many sockets are registered.</li>
+    <li>Data arrives on socket 2. The kernel marks it ready and the wait call returns with a list containing <em>only</em> the ready sockets, so the cost is proportional to what happened, not to how many connections exist.</li>
+    <li>The loop wakes the task that was waiting on socket 2 and runs it on this thread.</li>
+    <li>Task B's read now succeeds without blocking. B processes the data until its next <code>.await</code> on something not ready, registers interest again, and parks. That's the cooperative yield.</li>
+    <li>Timers work the same way: the loop computes the nearest deadline, uses it as the wait timeout, and runs task C when it's due. Then back to step 2.</li>
+  </ol>
+  <figcaption><strong>Figure 5.</strong> The loop at the heart of Tokio, of .NET's socket engine on Linux and macOS, and of Node.js. Real runtimes run one such loop per worker thread or a shared one, plus a scheduler for the tasks (chapter 4.7). The crucial property: a waiting task costs memory, not a thread.</figcaption>
+</figure>
+
+<h3 id="readiness-completion">Readiness vs completion I/O</h3>
+<p>Operating systems offer two different models for that notification, and the difference shapes runtime design:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th></th><th><dfn data-term="readiness I/O" data-def="The OS tells you when a socket is ready to read or write without blocking; you then perform the I/O yourself. epoll (Linux), kqueue (macOS/BSD).">Readiness</dfn> model</th><th><dfn data-term="completion I/O" data-def="You submit an I/O operation with a buffer; the OS performs it and notifies you when it has finished. IOCP (Windows), io_uring (Linux).">Completion</dfn> model</th></tr></thead>
+  <tbody>
+    <tr><td>Question you ask the OS</td><td>"Tell me when this socket <em>can</em> be read without blocking"</td><td>"Read into <em>this buffer</em> and tell me when it's <em>done</em>"</td></tr>
+    <tr><td>Who does the read</td><td>You, after the notification</td><td>The kernel, before the notification</td></tr>
+    <tr><td>Who owns the buffer while waiting</td><td>You; no buffer is committed until data is there</td><td>The kernel, for the whole operation; you must not move or free it</td></tr>
+    <tr><td>OS interfaces</td><td><code>epoll</code> (Linux), <code>kqueue</code> (macOS, BSD); older <code>select</code>/<code>poll</code> scan every handle on every call</td><td>I/O completion ports, IOCP (Windows); <code>io_uring</code> (Linux, since kernel 5.1 in 2019), which uses shared submission and completion queues</td></tr>
+    <tr><td>Who uses it</td><td>Rust's <code>mio</code>, which Tokio is built on; .NET's socket engine on Linux and macOS (epoll or kqueue)</td><td>.NET on Windows (the thread pool's I/O completion threads); <code>mio</code> on Windows uses an AFD-based "wepoll" strategy to present socket readiness; io_uring runtimes such as tokio-uring</td></tr>
+  </tbody>
+</table></div>
+<p>Why does this matter to a Rust architect? Rust's async ecosystem grew up readiness-first: Tokio's I/O traits read into a buffer you lend for the duration of a call. Completion I/O needs the kernel to own the buffer until the operation finishes, even if the task waiting for it is cancelled (dropped) in the meantime. That conflicts with "borrowed for the duration of a call", so io_uring-based Rust runtimes use APIs that take <em>owned</em> buffers and hand them back. It's a direct, practical consequence of Rust's ownership model (chapters 2.2 and 4.6), and the reason "just switch Tokio to io_uring" isn't a one-line change.</p>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>Everything below was compiled and run with rustc 1.99.0 (edition 2024, release builds), Tokio 1.54.1 and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro, 6 performance + 4 efficiency cores). Timings vary between runs and machines; where it matters the text gives the median of three runs. The Rust programs live in one Cargo project: put each in <code>src/bin/</code>, add Tokio with <code>cargo add tokio --features rt,rt-multi-thread,time,macros</code>, and run <code>cargo run --release --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — the data race C# accepts and Rust refuses</h3>
+<pre data-title="f9cs/Program.cs (.NET 10)"><code class="language-csharp">// Four threads increment one shared counter a million times each.
+const int Threads = 4, PerThread = 1_000_000;
+long expected = (long)Threads * PerThread;
+
+long plain = 0;
+Run(() =&gt; { for (int i = 0; i &lt; PerThread; i++) plain++; });          // data race: compiles fine
+Report("plain counter++", plain);
+
+long interlocked = 0;
+Run(() =&gt; { for (int i = 0; i &lt; PerThread; i++) Interlocked.Increment(ref interlocked); });
+Report("Interlocked.Increment", interlocked);
+
+long locked = 0;
+var gate = new Lock();                                               // .NET 9+ System.Threading.Lock
+Run(() =&gt; { for (int i = 0; i &lt; PerThread; i++) lock (gate) { locked++; } });
+Report("lock (Lock)", locked);
+
+void Run(Action work)
+{
+    var threads = Enumerable.Range(0, Threads).Select(_ =&gt; new Thread(() =&gt; work())).ToList();
+    threads.ForEach(t =&gt; t.Start());
+    threads.ForEach(t =&gt; t.Join());
+}
+
+void Report(string label, long total) =&gt;
+    Console.WriteLine($"{label,-22} total {total,9}  {(total == expected ? "correct" : $"LOST {expected - total} updates")}");</code></pre>
+<pre class="output">plain counter++        total   1012406  LOST 2987594 updates
+Interlocked.Increment  total   4000000  correct
+lock (Lock)            total   4000000  correct</pre>
+<p>The plain <code>counter++</code> compiles without a warning and loses about three-quarters of the updates (the count was similar on all three runs: 1.01–1.06 million of 4 million). <code>Interlocked</code> and <code>lock</code> are correct. Now the same mistake in Rust:</p>
+<pre data-title="e1.rs"><code class="language-rust">use std::thread;
+
+fn main() {
+    let mut counter = 0;
+    thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| counter += 1); // four threads writing one variable, unsynchronised
+        }
+    });
+    println!("{counter}");
+}</code></pre>
+<pre class="output error">error[E0499]: cannot borrow `counter` as mutable more than once at a time
+   --&gt; errs/e1.rs:7:21
+    |
+  5 |     thread::scope(|s| {
+    |                    - has type `&amp;'1 Scope&lt;'1, '_&gt;`
+  6 |         for _ in 0..4 {
+  7 |             s.spawn(|| counter += 1); // four threads writing one variable, unsynchronised
+    |             --------^^--------------
+    |             |       |  |
+    |             |       |  borrows occur due to use of `counter` in closure
+    |             |       `counter` was mutably borrowed here in the previous iteration of the loop
+    |             argument requires that `counter` is borrowed for `'1`
+    |
+note: requirement that the value outlives `'1` introduced here
+   --&gt; ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/scoped.rs:203:35
+    |
+203 |         F: FnOnce() -&gt; T + Send + 'scope,
+    |                                   ^^^^^^</pre>
+<p>The borrow checker (chapter 2.3) refuses a second mutable borrow of <code>counter</code> while the first thread may still be using it. That's the data race, caught at compile time. Thread safety of types is checked the same way:</p>
+<pre data-title="e2.rs"><code class="language-rust">use std::rc::Rc;
+use std::thread;
+
+fn main() {
+    let config = Rc::new(String::from("tenant=acme")); // Rc: a NON-atomic reference count
+    let copy = Rc::clone(&amp;config);
+    thread::spawn(move || println!("{copy}")).join().unwrap();
+}</code></pre>
+<pre class="output error">error[E0277]: `Rc&lt;String&gt;` cannot be sent between threads safely
+   --&gt; errs/e2.rs:7:19
+    |
+  7 |     thread::spawn(move || println!("{copy}")).join().unwrap();
+    |     ------------- -------^^^^^^^^^^^^^^^^^^^
+    |     |             |
+    |     |             `Rc&lt;String&gt;` cannot be sent between threads safely
+    |     |             within this `{closure@errs/e2.rs:7:19: 7:26}`
+    |     required by a bound introduced by this call
+    |
+    = help: within `{closure@errs/e2.rs:7:19: 7:26}`, the trait `Send` is not implemented for `Rc&lt;String&gt;`
+note: required because it's used within this closure
+   --&gt; errs/e2.rs:7:19
+    |
+  7 |     thread::spawn(move || println!("{copy}")).join().unwrap();
+    |                   ^^^^^^^
+note: required by a bound in `spawn`
+   --&gt; ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/thread/functions.rs:128:8
+    |
+125 | pub fn spawn&lt;F, T&gt;(f: F) -&gt; JoinHandle&lt;T&gt;
+    |        ----- required by a bound in this function
+...
+128 |     F: Send + 'static,
+    |        ^^^^ required by this bound in `spawn`</pre>
+<p><code>Rc</code>'s reference count is a plain integer updated without synchronisation, so two threads cloning and dropping it would race. Rust marks <code>Rc</code> as not <code>Send</code>, and <code>thread::spawn</code> requires <code>Send</code>. The fix is <code>Arc</code>, the atomic version (chapter 2.12).</p>
+
+<h3 id="lab-2">Step 2 — a race condition with no data race, and three fixes</h3>
+<pre data-playground data-title="src/bin/counters.rs"><code class="language-rust">use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Instant;
+
+const THREADS: u64 = 4;
+const PER_THREAD: u64 = 1_000_000;
+
+/// Run `work` on THREADS scoped threads and report the elapsed time.
+fn timed(label: &amp;str, expected: u64, work: impl Fn() + Sync, read: impl Fn() -&gt; u64) {
+    let t = Instant::now();
+    thread::scope(|s| {
+        for _ in 0..THREADS {
+            s.spawn(&amp;work);
+        }
+    });
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    let got = read();
+    let verdict = if got == expected { "correct".to_string() } else { format!("LOST {} updates", expected - got) };
+    println!("{label:&lt;34} total {got:&gt;9}  {ms:&gt;7.1} ms  {verdict}");
+}
+
+fn main() {
+    let expected = THREADS * PER_THREAD;
+    println!("{THREADS} threads x {PER_THREAD} increments, expected total {expected}");
+
+    // 1. Race condition WITHOUT a data race: each load and store is atomic,
+    //    but "read, add one, write back" as a whole is not.
+    let a = AtomicU64::new(0);
+    timed("atomic load + store (check-then-act)", expected, || {
+        for _ in 0..PER_THREAD {
+            let v = a.load(Ordering::Relaxed);
+            a.store(v + 1, Ordering::Relaxed);
+        }
+    }, || a.load(Ordering::Relaxed));
+
+    // 2. One indivisible read-modify-write instruction.
+    let b = AtomicU64::new(0);
+    timed("atomic fetch_add", expected, || {
+        for _ in 0..PER_THREAD {
+            b.fetch_add(1, Ordering::Relaxed);
+        }
+    }, || b.load(Ordering::Relaxed));
+
+    // 3. A lock around the whole read-modify-write.
+    let m = Mutex::new(0u64);
+    timed("Mutex&lt;u64&gt;", expected, || {
+        for _ in 0..PER_THREAD {
+            *m.lock().unwrap() += 1;
+        }
+    }, || *m.lock().unwrap());
+
+    // 4. Don't share: count locally, combine once at the end.
+    let total = AtomicU64::new(0);
+    timed("per-thread count, combine once", expected, || {
+        let mut local = 0u64;
+        for _ in 0..PER_THREAD {
+            local = std::hint::black_box(local + 1);
+        }
+        total.fetch_add(local, Ordering::Relaxed);
+    }, || total.load(Ordering::Relaxed));
+}</code></pre>
+<pre class="output">4 threads x 1000000 increments, expected total 4000000
+atomic load + store (check-then-act) total   1039136      2.5 ms  LOST 2960864 updates
+atomic fetch_add                   total   4000000     55.9 ms  correct
+Mutex&lt;u64&gt;                         total   4000000     77.8 ms  correct
+per-thread count, combine once     total   4000000      0.4 ms  correct</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · 4 threads × 1,000,000 increments</span>
+  <div class="chart-box"><canvas id="counter-chart" aria-label="Bar chart of time for four counter strategies"></canvas></div>
+  <figcaption><strong>Figure 6.</strong> Median of three runs, log scale. The fastest bar is <em>wrong</em>: separate atomic load and store calls finish quickly because threads overwrite each other's work (about 2.4–3.0 million updates lost on each run). Of the correct versions, <code>fetch_add</code> (51 ms) beats the <code>Mutex</code> (78 ms), and not sharing at all (0.4 ms) beats both by over 100×.</figcaption>
+</figure>
+<p>Version 1 is the important one. It is entirely safe Rust. Every individual access is atomic, so there's no data race and no undefined behaviour, and it's still wrong, because the logic "read, add, write" isn't one indivisible step. That's the race condition the compiler can't see. The other three are correct for different reasons: one indivisible instruction (<code>fetch_add</code>), a critical section (<code>Mutex</code>), or no shared state until the very end.</p>
+
+<h3 id="lab-3">Step 3 — every possible schedule</h3>
+<p>Figure 3 claims 18 of 20 schedules lose an update. Rather than trust the widget, enumerate them:</p>
+<pre data-playground data-title="src/bin/interleavings.rs"><code class="language-rust">/// Enumerate every way the OS could interleave two threads that each run
+/// `load; add 1; store` on a shared counter starting at 0.
+fn main() {
+    let mut schedules = Vec::new();
+    // A schedule is 6 slots; choose which 3 belong to thread 1 (C(6,3) = 20 ways).
+    for mask in 0u32..64 {
+        if mask.count_ones() == 3 {
+            schedules.push(mask);
+        }
+    }
+    let mut lost = 0;
+    for &amp;mask in &amp;schedules {
+        let mut memory = 0;
+        let mut reg = [0, 0]; // each thread's private register
+        let mut pc = [0, 0];  // next micro-step per thread: 0 load, 1 add, 2 store
+        let mut trace = String::new();
+        for slot in 0..6 {
+            let t = if mask &amp; (1 &lt;&lt; slot) != 0 { 0 } else { 1 };
+            match pc[t] {
+                0 =&gt; reg[t] = memory,
+                1 =&gt; reg[t] += 1,
+                _ =&gt; memory = reg[t],
+            }
+            trace.push_str(&amp;format!("T{}{} ", t + 1, ["L", "A", "S"][pc[t]]));
+            pc[t] += 1;
+        }
+        if memory != 2 {
+            lost += 1;
+        } else {
+            println!("correct: {trace}");
+        }
+    }
+    println!("{} schedules, {} correct, {} lose an update", schedules.len(), schedules.len() - lost, lost);
+}</code></pre>
+<pre class="output">correct: T1L T1A T1S T2L T2A T2S 
+correct: T2L T2A T2S T1L T1A T1S 
+20 schedules, 2 correct, 18 lose an update</pre>
+<p>Only the two schedules where one thread runs start-to-finish before the other are correct. With more threads or longer critical sections the number of interleavings explodes, which is why testing alone can't establish that concurrent code is correct. Chapter 4.8 uses <em>loom</em>, a tool that systematically explores interleavings the way this program does.</p>
+
+<h3 id="lab-4">Step 4 — a real deadlock, and lock ordering</h3>
+<pre data-playground data-title="src/bin/deadlock.rs"><code class="language-rust">use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+/// Two transfers that take the same two locks in OPPOSITE orders.
+fn run(ordered: bool) -&gt; bool {
+    let account_a = Arc::new(Mutex::new(100));
+    let account_b = Arc::new(Mutex::new(100));
+    let (done_tx, done_rx) = mpsc::channel();
+
+    for (first, second, amount) in [(&amp;account_a, &amp;account_b, 10), (&amp;account_b, &amp;account_a, 20)] {
+        // With `ordered`, every thread locks A before B, whatever the transfer direction.
+        let (l1, l2) = if ordered { (account_a.clone(), account_b.clone()) } else { (first.clone(), second.clone()) };
+        let done_tx = done_tx.clone();
+        thread::spawn(move || {
+            let mut g1 = l1.lock().unwrap();
+            thread::sleep(Duration::from_millis(50)); // widen the window, as real work would
+            let mut g2 = l2.lock().unwrap();
+            *g1 -= amount;
+            *g2 += amount;
+            done_tx.send(()).unwrap();
+        });
+    }
+    // Watchdog: wait up to 2 s for both transfers.
+    (0..2).all(|_| done_rx.recv_timeout(Duration::from_secs(2)).is_ok())
+}
+
+fn main() {
+    println!("opposite lock order: {}", if run(false) { "finished" } else { "DEADLOCK: neither thread finished within 2 s" });
+    println!("same lock order:     {}", if run(true) { "finished" } else { "DEADLOCK" });
+    // The deadlocked threads are still blocked forever; exiting main ends the process.
+}</code></pre>
+<pre class="output">opposite lock order: DEADLOCK: neither thread finished within 2 s
+same lock order:     finished</pre>
+<p>Each thread takes its first lock, sleeps 50 ms (standing in for real work), then asks for the second lock, which the other thread holds. Neither will ever finish; the watchdog notices after 2 seconds. The deadlocked threads stay blocked until the process exits. In a server they would sit there for good, holding two accounts locked, and every later request for those accounts would join the queue. With one global order, the identical code always finishes. Notice that nothing here is <code>unsafe</code>: deadlock is a logic bug Rust can't catch.</p>
+
+<h3 id="lab-5">Step 5 — CPU-bound vs I/O-bound, measured</h3>
+<pre data-playground data-title="src/bin/workloads.rs"><code class="language-rust">use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Is `k` prime? Trial division: deliberately slow, pure CPU work.
+fn is_prime(k: u64) -&gt; bool {
+    k &gt;= 2 &amp;&amp; (2..).take_while(|d| d * d &lt;= k).all(|d| !k.is_multiple_of(d))
+}
+
+/// Count primes below `n` on `threads` threads.
+/// `dynamic`: threads repeatedly grab the next block of 1,000 numbers from a shared
+/// counter, so fast threads simply take more blocks (balanced).
+/// Otherwise each thread gets one fixed contiguous range (the last range has the
+/// biggest, slowest numbers, so its thread finishes last).
+fn cpu_bound(threads: u64, n: u64, dynamic: bool) -&gt; (u64, f64) {
+    const BLOCK: u64 = 1_000;
+    let next = AtomicU64::new(0);
+    let t = Instant::now();
+    let total = thread::scope(|s| {
+        let handles: Vec&lt;_&gt; = (0..threads)
+            .map(|i| {
+                let next = &amp;next;
+                s.spawn(move || {
+                    if dynamic {
+                        let mut count = 0;
+                        loop {
+                            let lo = next.fetch_add(BLOCK, Ordering::Relaxed);
+                            if lo &gt;= n {
+                                break count;
+                            }
+                            count += (lo..(lo + BLOCK).min(n)).filter(|&amp;k| is_prime(k)).count() as u64;
+                        }
+                    } else {
+                        let chunk = n / threads;
+                        let hi = if i == threads - 1 { n } else { (i + 1) * chunk };
+                        (i * chunk..hi).filter(|&amp;k| is_prime(k)).count() as u64
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    });
+    (total, t.elapsed().as_secs_f64() * 1e3)
+}
+
+/// Median of three runs, in milliseconds.
+fn median3(threads: u64, n: u64, dynamic: bool) -&gt; (u64, f64) {
+    let mut runs: Vec&lt;(u64, f64)&gt; = (0..3).map(|_| cpu_bound(threads, n, dynamic)).collect();
+    runs.sort_by(|a, b| a.1.total_cmp(&amp;b.1));
+    runs[1]
+}
+
+fn main() {
+    let cores = thread::available_parallelism().unwrap();
+    println!("available_parallelism = {cores}");
+
+    println!("--- CPU-bound: primes below 3,000,000 (median of 3 runs) ---");
+    cpu_bound(1, 3_000_000, true); // warm-up
+    let (_, base) = median3(1, 3_000_000, true);
+    for threads in [1, 2, 4, 6, 8, 10, 16] {
+        let (count, ms) = median3(threads, 3_000_000, true);
+        println!("{threads:&gt;2} threads: {count} primes in {ms:&gt;4.0} ms  speed-up x{:.1}", base / ms);
+    }
+    let (_, ms) = median3(2, 3_000_000, false);
+    println!(" 2 threads, fixed contiguous halves: {ms:&gt;4.0} ms  speed-up x{:.1} (unbalanced)", base / ms);
+
+    println!("--- I/O-bound (simulated): 1,000 requests that each wait 20 ms ---");
+    let wait = Duration::from_millis(20);
+    let t = Instant::now();
+    for _ in 0..100 {
+        thread::sleep(wait);
+    }
+    println!("sequential, first 100 only : {:&gt;6.0} ms (all 1,000 would take ~20 s)", t.elapsed().as_secs_f64() * 1e3);
+
+    let t = Instant::now();
+    thread::scope(|s| {
+        for _ in 0..10 {
+            s.spawn(move || (0..100).for_each(|_| thread::sleep(wait)));
+        }
+    });
+    println!("10 threads x 100 waits each: {:&gt;6.0} ms", t.elapsed().as_secs_f64() * 1e3);
+
+    let t = Instant::now();
+    thread::scope(|s| {
+        for _ in 0..1_000 {
+            s.spawn(move || thread::sleep(wait));
+        }
+    });
+    println!("1,000 threads, 1 wait each : {:&gt;6.0} ms", t.elapsed().as_secs_f64() * 1e3);
+
+    // One OS thread, 1,000 async tasks: each await gives the thread back to the event loop.
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let t = Instant::now();
+    rt.block_on(async {
+        let tasks: Vec&lt;_&gt; = (0..1_000).map(|_| tokio::spawn(tokio::time::sleep(wait))).collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+    });
+    println!("1,000 async tasks, 1 thread: {:&gt;6.0} ms", t.elapsed().as_secs_f64() * 1e3);
+}</code></pre>
+<pre class="output">available_parallelism = 10
+--- CPU-bound: primes below 3,000,000 (median of 3 runs) ---
+ 1 threads: 216816 primes in  268 ms  speed-up x1.0
+ 2 threads: 216816 primes in  136 ms  speed-up x2.0
+ 4 threads: 216816 primes in   70 ms  speed-up x3.9
+ 6 threads: 216816 primes in   47 ms  speed-up x5.7
+ 8 threads: 216816 primes in   44 ms  speed-up x6.1
+10 threads: 216816 primes in   42 ms  speed-up x6.4
+16 threads: 216816 primes in   42 ms  speed-up x6.4
+ 2 threads, fixed contiguous halves:  167 ms  speed-up x1.6 (unbalanced)
+--- I/O-bound (simulated): 1,000 requests that each wait 20 ms ---
+sequential, first 100 only :   2390 ms (all 1,000 would take ~20 s)
+10 threads x 100 waits each:   2389 ms
+1,000 threads, 1 wait each :     56 ms
+1,000 async tasks, 1 thread:     27 ms</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · CPU-bound speed-up vs threads</span>
+  <div class="chart-box"><canvas id="scale-chart" aria-label="Line chart of measured speed-up against ideal linear speed-up for 1 to 16 threads"></canvas></div>
+  <figcaption><strong>Figure 7.</strong> Measured speed-up (median of three runs) against the ideal "N threads = N× faster". Close to ideal up to 6 threads, the M2 Pro's performance cores. The 4 efficiency cores add a little (6.4× at 10), and threads beyond the core count add nothing.</figcaption>
+</figure>
+<p>Read the I/O half carefully: the "requests" are simulated with <code>sleep</code>, which waits without using CPU, the same as a network call does. Sequential: about 24 ms per wait (macOS sleeps a little longer than asked), so 1,000 would take about 24 s. A pool of 10 threads: still 2.4 s, because each thread handles 100 waits one after another. One thread per request, 1,000 threads: 56 ms. And 1,000 Tokio tasks on a <em>single</em> thread: 27 ms. For I/O-bound work, what matters is how many operations are in flight, not how many cores you have. Finally, the cost of creating each unit of concurrency:</p>
+<pre data-playground data-title="src/bin/spawn_cost.rs"><code class="language-rust">use std::time::Instant;
+
+fn main() {
+    const N: u32 = 10_000;
+    let t = Instant::now();
+    for i in 0..N {
+        std::thread::spawn(move || std::hint::black_box(i)).join().unwrap();
+    }
+    let thread_us = t.elapsed().as_secs_f64() * 1e6 / N as f64;
+
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    const M: u32 = 100_000;
+    let t = Instant::now();
+    rt.block_on(async {
+        for i in 0..M {
+            tokio::spawn(async move { std::hint::black_box(i) }).await.unwrap();
+        }
+    });
+    let task_us = t.elapsed().as_secs_f64() * 1e6 / M as f64;
+
+    println!("OS thread  spawn + join : {thread_us:&gt;6.2} µs each ({N} runs)");
+    println!("tokio task spawn + await: {task_us:&gt;6.2} µs each ({M} runs)");
+    println!("ratio: a thread costs ~{:.0}x a task", thread_us / task_us);
+}</code></pre>
+<pre class="output">OS thread  spawn + join :  19.47 µs each (10000 runs)
+tokio task spawn + await:   0.19 µs each (100000 runs)
+ratio: a thread costs ~103x a task</pre>
+<p>About 19 µs per OS thread against 0.19 µs per task, over three runs. At 10,000 concurrent workflow steps, that's the difference between spending CPU on your workflows and spending it on thread management.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs whose <code>assert!</code>s check the result (Exercise 2 five times in a row), and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — a deadlock-free transfer <span class="difficulty">★★☆ product skill</span></div>
+  <p>Write <code>transfer(from: &amp;Account, to: &amp;Account, amount)</code> where each <code>Account</code> has an <code>id</code> and a <code>Mutex&lt;i64&gt;</code> balance. Run 8 threads doing 10,000 transfers each, half in each direction between the same two accounts. It must never deadlock, and the total must stay 2,000.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::sync::{Arc, Mutex};
+use std::thread;
+
+struct Account {
+    id: u32,
+    balance: Mutex&lt;i64&gt;,
+}
+
+/// Deadlock-free transfer: always lock the account with the LOWER id first,
+/// whichever direction the money moves. One global order means no cycle can form.
+fn transfer(from: &amp;Account, to: &amp;Account, amount: i64) {
+    if from.id == to.id {
+        return;
+    }
+    let (first, second) = if from.id &lt; to.id { (from, to) } else { (to, from) };
+    let mut g1 = first.balance.lock().unwrap();
+    let mut g2 = second.balance.lock().unwrap();
+    let (from_bal, to_bal) = if from.id &lt; to.id { (&amp;mut *g1, &amp;mut *g2) } else { (&amp;mut *g2, &amp;mut *g1) };
+    *from_bal -= amount;
+    *to_bal += amount;
+}
+
+fn main() {
+    let a = Arc::new(Account { id: 1, balance: Mutex::new(1_000) });
+    let b = Arc::new(Account { id: 2, balance: Mutex::new(1_000) });
+    let handles: Vec&lt;_&gt; = (0..8)
+        .map(|i| {
+            let (a, b) = (a.clone(), b.clone());
+            thread::spawn(move || {
+                for _ in 0..10_000 {
+                    // half the threads move money a -&gt; b, the other half b -&gt; a
+                    if i % 2 == 0 { transfer(&amp;a, &amp;b, 5) } else { transfer(&amp;b, &amp;a, 5) }
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let (ba, bb) = (*a.balance.lock().unwrap(), *b.balance.lock().unwrap());
+    println!("a = {ba}, b = {bb}, total = {}", ba + bb); // total must still be 2000
+    assert_eq!(ba + bb, 2_000);
+}</code></pre>
+<pre class="output">a = 1000, b = 1000, total = 2000</pre>
+  <p>Locking by ascending <code>id</code> imposes one global order, which removes Coffman's "circular wait". The slightly fiddly line maps the two guards back to "from" and "to" after locking them in id order. The same-account check matters: locking the same <code>Mutex</code> twice on one thread deadlocks (or panics) by itself. In the workflow engine the same rule applies to rows: lock in a deterministic order (for example <code>ORDER BY id ... FOR UPDATE</code>, chapter 10.4).</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — sell exactly 500 seats <span class="difficulty">★★☆</span></div>
+  <p>500 seats, 8 threads, 100 purchase attempts each. Write <code>try_reserve(&amp;AtomicU32) -&gt; bool</code> without a <code>Mutex</code>, so that exactly 500 succeed: never oversold, never undersold. Why is <code>if remaining.load() &gt; 0 { remaining.fetch_sub(1) }</code> wrong?</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread;
+
+/// Reserve one seat if any are left. compare_exchange makes "check and decrement"
+/// a single indivisible step: it only writes `left - 1` if the value is still `left`.
+fn try_reserve(remaining: &amp;AtomicU32) -&gt; bool {
+    let mut left = remaining.load(Ordering::Relaxed);
+    loop {
+        if left == 0 {
+            return false;
+        }
+        match remaining.compare_exchange(left, left - 1, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) =&gt; return true,
+            Err(actual) =&gt; left = actual, // someone else got there first: retry with the new value
+        }
+    }
+}
+
+fn main() {
+    let remaining = AtomicU32::new(500);
+    let sold: u32 = thread::scope(|s| {
+        let handles: Vec&lt;_&gt; = (0..8)
+            .map(|_| s.spawn(|| (0..100).filter(|_| try_reserve(&amp;remaining)).count() as u32))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    });
+    println!("800 attempts, 500 seats: sold {sold}, remaining {}", remaining.load(Ordering::Relaxed));
+    assert_eq!(sold, 500); // never oversold, never undersold
+}</code></pre>
+<pre class="output">800 attempts, 500 seats: sold 500, remaining 0</pre>
+  <p>The naive version is check-then-act: two threads can both see <code>1</code>, both decrement, and the counter wraps around (or you sell seat −1). <code>compare_exchange</code> merges the check and the write into one atomic step. If another thread changed the value in between, it fails, hands back the current value, and the loop retries. This retry loop is the basic pattern of lock-free programming. Chapter 4.3 explains the <code>AcqRel</code>/<code>Relaxed</code> orderings used here.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — parallel word count, sharing nothing <span class="difficulty">★☆☆</span></div>
+  <p>Using <code>std::thread::scope</code>, count the words in 100,000 log lines on 8 threads, with no <code>Mutex</code> and no atomics. Check it matches the sequential count.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::thread;
+
+/// Count words in parallel: split the lines into one chunk per thread,
+/// count each chunk independently, then add the results. No shared mutable state.
+fn parallel_word_count(lines: &amp;[String], threads: usize) -&gt; usize {
+    let chunk = lines.len().div_ceil(threads).max(1);
+    thread::scope(|s| {
+        let handles: Vec&lt;_&gt; = lines
+            .chunks(chunk)
+            .map(|part| s.spawn(move || part.iter().map(|l| l.split_whitespace().count()).sum::&lt;usize&gt;()))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    })
+}
+
+fn main() {
+    let lines: Vec&lt;String&gt; = (0..100_000).map(|i| format!("rule {i} fired for tenant acme")).collect();
+    let sequential: usize = lines.iter().map(|l| l.split_whitespace().count()).sum();
+    let parallel = parallel_word_count(&amp;lines, 8);
+    println!("sequential {sequential}, parallel {parallel}");
+    assert_eq!(sequential, parallel);
+}</code></pre>
+<pre class="output">sequential 600000, parallel 600000</pre>
+  <p>Each thread reads its own slice (<code>chunks</code>) and returns a number; results are combined only after <code>join</code>. Scoped threads may <em>borrow</em> <code>lines</code> because the scope guarantees every thread finishes before <code>lines</code> could be dropped (chapter 4.1). This "split, compute independently, combine" shape is the fastest concurrency there is (Lab step 2's 0.4 ms), and rayon's <code>par_iter</code> (chapter 4.4) does it in one line.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which concurrency model?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Workload</th><th>Model</th><th>.NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>CPU-bound, data-parallel (evaluate rules over many facts)</td><td>~1 thread per core, split the data</td><td><code>Parallel.For</code>, PLINQ</td><td>rayon <code>par_iter</code>; <code>thread::scope</code></td></tr>
+    <tr><td>Many concurrent waits (HTTP, DB, timers)</td><td>Async tasks on a small pool, event loop underneath</td><td><code>async</code>/<code>await</code>, <code>Task</code></td><td><code>async</code>/<code>.await</code> on Tokio</td></tr>
+    <tr><td>A few long-lived background jobs</td><td>Dedicated OS threads</td><td><code>new Thread(…)</code>, <code>LongRunning</code> tasks</td><td><code>std::thread::spawn</code></td></tr>
+    <tr><td>Blocking call inside async code (legacy driver, heavy CPU)</td><td>Move it to a separate pool</td><td><code>Task.Run</code></td><td><code>tokio::task::spawn_blocking</code>, or rayon</td></tr>
+    <tr><td>State owned by one component, many requesters</td><td>Message passing / actor</td><td><code>Channel&lt;T&gt;</code>, actor frameworks</td><td><code>mpsc</code> channels, an owning task (chapter 8.4)</td></tr>
+    <tr><td>Isolation from crashes or untrusted code</td><td>Separate processes (or WASM sandboxes)</td><td>Separate services / containers</td><td>Processes; wasmtime (chapter 5.7)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: concurrency building blocks</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concept</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Thread-safety checking</td><td>Documentation and review</td><td>Compiler: <code>Send</code>/<code>Sync</code>, borrow rules (no data races in safe code)</td></tr>
+    <tr><td>Data race consequence</td><td>Wrong values; memory-safe</td><td>Undefined behaviour, so forbidden in safe code</td></tr>
+    <tr><td>OS thread</td><td><code>Thread</code></td><td><code>std::thread::spawn</code>, <code>thread::scope</code></td></tr>
+    <tr><td>Lock</td><td><code>lock</code> + <code>System.Threading.Lock</code> (.NET 9+) / <code>Monitor</code>; lock and data separate</td><td><code>Mutex&lt;T&gt;</code>: lock owns the data; guard unlocks on drop</td></tr>
+    <tr><td>Reader-writer lock</td><td><code>ReaderWriterLockSlim</code></td><td><code>RwLock&lt;T&gt;</code></td></tr>
+    <tr><td>Atomics</td><td><code>Interlocked</code>, <code>Volatile</code></td><td><code>std::sync::atomic</code> types with explicit memory ordering</td></tr>
+    <tr><td>Shared ownership across threads</td><td>Any reference (GC)</td><td><code>Arc&lt;T&gt;</code> (<code>Rc</code> is single-thread only)</td></tr>
+    <tr><td>Channels</td><td><code>System.Threading.Channels</code></td><td><code>std::sync::mpsc</code>, crossbeam, <code>tokio::sync::mpsc</code></td></tr>
+    <tr><td>Async runtime</td><td>Built in (thread pool + I/O engine); tasks start eagerly</td><td>Chosen library (Tokio); futures are lazy until polled</td></tr>
+    <tr><td>Data parallelism</td><td><code>Parallel.For</code>, PLINQ</td><td>rayon</td></tr>
+    <tr><td>Socket I/O underneath</td><td>IOCP on Windows; epoll/kqueue elsewhere</td><td>mio: epoll, kqueue; Windows via AFD (wepoll strategy)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Rust prevents concurrency bugs"</div>
+  <p>It prevents <em>data races</em>. Race conditions (Lab step 2, version 1) and deadlocks (Lab step 4) compile fine. Design and test for them.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Each atomic access is safe, so my logic is safe"</div>
+  <p>Atomicity covers one operation. Check-then-act across two atomic calls is a race. Use <code>fetch_*</code>, <code>compare_exchange</code>, or one lock around the whole decision.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ More threads for CPU-bound work</div>
+  <p>Past the core count you only add switching (Figure 7: 16 threads = 10 threads). For CPU work size the pool to the cores, and watch load balance.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Blocking inside async code</div>
+  <p>A long computation or a blocking call (<code>std::thread::sleep</code>, a synchronous DB driver) inside an async task stalls every task on that worker thread. Cooperative scheduling can't interrupt it. In .NET the thread pool eventually injects more threads; in Tokio you must move the work out (<code>spawn_blocking</code>, chapter 4.7).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Holding a lock across slow work</div>
+  <p>Across I/O, an <code>.await</code> or a callback, a lock turns your concurrent system sequential and invites deadlock. Copy what you need, release, then do the slow part. Microsoft's <code>Lock</code> docs give the same advice for C# <code>async</code> methods.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "It passed the tests, so it's thread-safe"</div>
+  <p>Only 2 of 20 schedules were correct, and a test run sees a few of them. Races hide until production load changes the timing. Prefer designs that make races impossible (no shared mutable state), and model-check the rest (chapter 4.8).</p></div>
+
+<h2 id="real-world">Real-world view: concurrency in your two products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Workflow engine, I/O side.</strong> Thousands of runs mostly waiting on timers and external calls: async tasks on Tokio, one task per in-flight step, not one thread per run. Durable timers (chapter 10.6) feed the event loop's timer wheel.</li>
+    <li><strong>Workflow engine, correctness.</strong> Two workers must never execute the same step. That's a check-then-act race across <em>processes</em>, so in-memory locks can't solve it. You'll use leases and conditional updates in the database (compare-and-swap in SQL: <code>UPDATE … WHERE version = $expected</code>, chapters 10.4–10.5), the same idea as Exercise 2.</li>
+    <li><strong>Rule engine, CPU side.</strong> Evaluating a rule set over a batch of facts is data-parallel: split the facts, evaluate independently, combine (Exercise 3; rayon in chapter 4.4). Keep it off the async worker threads that serve API requests.</li>
+    <li><strong>Hot configuration.</strong> Rule sets are read constantly and replaced rarely. Instead of a lock on every read, swap an <code>Arc</code> to the new version atomically (<code>ArcSwap</code>, chapter 9.8). Readers never wait; that's "share less" applied.</li>
+    <li><strong>Lock discipline in reviews:</strong> one documented lock order; no lock held across <code>.await</code>, I/O or plugin calls; contention measured, not guessed; per-thread or sharded counters for metrics (false sharing); a deadlock watchdog or lock timeouts in long-running services.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F9">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">A single-core machine runs a web server handling 200 connections, switching between them while each waits for the network. This is:</div>
+    <ol class="options">
+      <li data-key="a">Parallelism but not concurrency</li>
+      <li data-key="b">Neither</li>
+      <li data-key="c">Concurrency without parallelism</li>
+      <li data-key="d">Both, because there are 200 connections</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Parallelism needs more than one thing executing at the same instant, which takes more than one core.</p>
+      <p data-for="b">Many tasks in progress at once is concurrency.</p>
+      <p data-for="c">Correct. Many in progress, one executing at a time (Figure 1).</p>
+      <p data-for="d">One core can't execute two things at the same instant.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What do threads in one process share, and what does each have of its own?</div>
+    <ol class="options">
+      <li data-key="a">They share nothing; each has its own address space</li>
+      <li data-key="b">They share the heap and globals; each has its own stack and registers</li>
+      <li data-key="c">They share stacks; each has its own heap</li>
+      <li data-key="d">They share registers</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That describes separate processes.</p>
+      <p data-for="b">Correct. That's why threads can race on heap data (Figure 2).</p>
+      <p data-for="c">The reverse.</p>
+      <p data-for="d">Registers belong to whichever thread is running on a core and are saved on a context switch.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Code uses an <code>AtomicU32</code> for remaining stock: <code>if stock.load() &gt; 0 { stock.store(stock.load() - 1) }</code>. Is there a data race, and is there a bug?</div>
+    <ol class="options">
+      <li data-key="a">Data race and bug; it won't compile</li>
+      <li data-key="b">No data race and no bug, because atomics are thread-safe</li>
+      <li data-key="c">A data race, but no bug</li>
+      <li data-key="d">No data race (every access is atomic), but a race condition: two threads can both pass the check and both decrement</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It compiles: it's safe Rust.</p>
+      <p data-for="b">Each call is atomic; the sequence isn't (Lab step 2, version 1).</p>
+      <p data-for="c">Synchronised accesses aren't a data race; the bug is in the logic.</p>
+      <p data-for="d">Correct. Use <code>compare_exchange</code> (Exercise 2).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does Rust's <code>Mutex&lt;T&gt;</code> wrap the data rather than sit next to it as in C#?</div>
+    <ol class="options">
+      <li data-key="a">The data can only be reached through <code>lock()</code>, and the returned guard unlocks on drop, so "forgot to lock" and "forgot to unlock" can't happen</li>
+      <li data-key="b">It's faster</li>
+      <li data-key="c">C#'s design can't express mutual exclusion</li>
+      <li data-key="d">To make the mutex reentrant</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct.</p>
+      <p data-for="b">The motivation is correctness, not speed.</p>
+      <p data-for="c">C# locks work; they just rely on convention to connect lock and data.</p>
+      <p data-for="d"><code>std::sync::Mutex</code> isn't reentrant.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Thread 1 locks <code>orders</code> then <code>inventory</code>; thread 2 locks <code>inventory</code> then <code>orders</code>. Under load the service occasionally hangs. Which fix removes the cause?</div>
+    <ol class="options">
+      <li data-key="a">Use more threads</li>
+      <li data-key="b">Replace <code>Mutex</code> with <code>RwLock</code></li>
+      <li data-key="c">Make every code path take the two locks in the same global order, breaking the circular-wait condition</li>
+      <li data-key="d">Add a <code>sleep</code> between the two lock calls</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">More threads make the bad interleaving more likely, not less.</p>
+      <p data-for="b">Writers still need exclusive access, so the same cycle can form.</p>
+      <p data-for="c">Correct (Figure 4, Lab step 4, Exercise 1).</p>
+      <p data-for="d">That widens the window, as in Lab step 4: it makes the deadlock <em>more</em> likely.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">In Lab step 2, why was counting per thread and combining once over 100× faster than <code>fetch_add</code> on one shared counter?</div>
+    <ol class="options">
+      <li data-key="a"><code>fetch_add</code> uses a hidden mutex</li>
+      <li data-key="b">Every write to a shared value forces its cache line to move between cores; local counting has no sharing until the single final add</li>
+      <li data-key="c">The local version did less work</li>
+      <li data-key="d">Atomics are emulated in software on ARM</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It compiles to an atomic instruction.</p>
+      <p data-for="b">Correct. Sharing is the expensive part (and see the false-sharing deep dive).</p>
+      <p data-for="c">Both versions perform 4 million increments.</p>
+      <p data-for="d">ARMv8.1+ has native atomic instructions.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A rule-evaluation job is purely CPU-bound. On a 10-core machine someone proposes 64 threads "for more throughput". What do you expect?</div>
+    <ol class="options">
+      <li data-key="a">About 6× faster than 10 threads</li>
+      <li data-key="b">Exactly 64× faster than 1 thread</li>
+      <li data-key="c">It will deadlock</li>
+      <li data-key="d">No faster than ~10 threads, and possibly slower from switching. Size the pool to the cores and fix load balance instead</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">There are no extra cores to use.</p>
+      <p data-for="b">Speed-up is capped by cores (and by Amdahl).</p>
+      <p data-for="c">Thread count alone doesn't cause deadlock.</p>
+      <p data-for="d">Correct. Figure 7: 16 threads = 10 threads.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why do async tasks handle 1,000 concurrent network waits more cheaply than 1,000 OS threads?</div>
+    <ol class="options">
+      <li data-key="a">A parked task is a small state machine in memory, while each thread needs its own stack, kernel scheduling and context switches; spawning measured ~0.19 µs vs ~19 µs</li>
+      <li data-key="b">Tasks make the network faster</li>
+      <li data-key="c">Tasks run in parallel on more cores than threads can</li>
+      <li data-key="d">Threads can't wait for the network</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 5).</p>
+      <p data-for="b">The wait is the same 20 ms.</p>
+      <p data-for="c">Lab step 5 ran all 1,000 tasks on one thread.</p>
+      <p data-for="d">They can; blocking reads are exactly that. It's just costlier at scale.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What is the key difference between readiness I/O (epoll, kqueue) and completion I/O (IOCP, io_uring)?</div>
+    <ol class="options">
+      <li data-key="a">Readiness is for files, completion for sockets</li>
+      <li data-key="b">Completion I/O doesn't need an event loop</li>
+      <li data-key="c">Readiness tells you when you <em>can</em> do the I/O and you do it; completion has the kernel do the I/O into your buffer and tells you when it's <em>done</em>, so the kernel owns the buffer meanwhile</li>
+      <li data-key="d">They're two names for the same thing</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Both are used for sockets.</p>
+      <p data-for="b">Something still has to wait for and dispatch completions.</p>
+      <p data-for="c">Correct. The buffer-ownership difference is why io_uring Rust APIs take owned buffers.</p>
+      <p data-for="d">They differ in who performs the read and who owns the buffer.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Inside a Tokio task, a developer runs a 2-second CPU-heavy rule compilation before awaiting anything. Other requests on the same worker stall for 2 seconds. Why?</div>
+    <ol class="options">
+      <li data-key="a">Tokio has a global lock</li>
+      <li data-key="b">Async scheduling is cooperative: the task only yields at an <code>.await</code>, so it holds the worker thread for the whole computation. Move it to <code>spawn_blocking</code> or a rayon pool</li>
+      <li data-key="c">CPU work is forbidden in Rust async code</li>
+      <li data-key="d">The OS scheduler doesn't run Tokio threads</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">There isn't one.</p>
+      <p data-for="b">Correct. That's the cooperative-scheduling pitfall.</p>
+      <p data-for="c">It's allowed; it just needs to run somewhere other than the I/O workers.</p>
+      <p data-for="d">The OS does schedule Tokio's worker threads, but it can't interrupt one task to run another <em>task</em>.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Concurrency is structure (many tasks in progress); parallelism is execution (many at the same instant). Processes are isolated address spaces; threads share a process's heap but each has its own stack. OS threads are scheduled preemptively, async tasks cooperatively.</li>
+  <li>A data race (unsynchronised concurrent access with a write) is undefined behaviour, and safe Rust rules it out at compile time (E0499, <code>Send</code>/<code>Sync</code>). A race condition (timing-dependent logic such as check-then-act) is not prevented: separate atomic load and store calls lost about 3 million of 4 million updates in safe Rust. 18 of 20 interleavings of two increments lose one.</li>
+  <li>Locks give mutual exclusion; Rust's <code>Mutex&lt;T&gt;</code> owns its data and unlocks on drop. Deadlock needs all four Coffman conditions; break circular wait with a global lock order. Rust doesn't prevent deadlocks.</li>
+  <li>Atomics (<code>fetch_add</code>, <code>compare_exchange</code>) are indivisible hardware operations, but sharing itself is the cost: 51 ms atomic, 78 ms mutex, 0.4 ms with no sharing; false sharing made independent counters 6× slower.</li>
+  <li>CPU-bound work scales to the core count (5.7× on 6 performance cores, no gain past 10); I/O-bound work needs many operations in flight, cheapest as async tasks (0.19 µs vs 19 µs per spawn). Event loops wait on readiness APIs (epoll, kqueue: "you can read now") or completion APIs (IOCP, io_uring: "your read is done"), and the latter's kernel-owned buffers shape Rust's async I/O design.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">process</li><li class="chip">thread</li><li class="chip">scheduler</li><li class="chip">preemptive scheduling</li><li class="chip">cooperative scheduling</li>
+  <li class="chip">context switch</li><li class="chip">race condition</li><li class="chip">Send</li><li class="chip">Sync</li><li class="chip">mutual exclusion</li>
+  <li class="chip">critical section</li><li class="chip">mutex</li><li class="chip">deadlock</li><li class="chip">atomic operation</li><li class="chip">compare-and-swap</li>
+  <li class="chip">false sharing</li><li class="chip">CPU-bound</li><li class="chip">I/O-bound</li><li class="chip">task</li><li class="chip">non-blocking I/O</li>
+  <li class="chip">event loop</li><li class="chip">readiness I/O</li><li class="chip">completion I/O</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/nomicon/races.html">The Rustonomicon — “Data Races and Race Conditions”</a><span class="why">The precise definition of a data race and why Rust can't prevent general race conditions; quoted in this chapter.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch16-00-concurrency.html">The Rust Programming Language — “Fearless Concurrency”</a>, and the <a href="https://doc.rust-lang.org/std/thread/index.html"><code>std::thread</code></a>, <a href="https://doc.rust-lang.org/std/sync/struct.Mutex.html"><code>Mutex</code></a> and <a href="https://doc.rust-lang.org/std/sync/atomic/index.html"><code>atomic</code></a> docs<span class="why">The standard library pieces used in the lab, including the documented 2 MiB default stack.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/standard/threading/managed-threading-best-practices">Managed threading best practices</a>, <a href="https://learn.microsoft.com/dotnet/api/system.threading.lock"><code>System.Threading.Lock</code></a>, <a href="https://learn.microsoft.com/dotnet/api/system.threading.interlocked"><code>Interlocked</code></a><span class="why">The .NET side of the comparison, including the lock-ordering caution in the <code>Lock</code> docs.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7)</a>, <a href="https://man.freebsd.org/cgi/man.cgi?query=kqueue">kqueue(2)</a>, <a href="https://man7.org/linux/man-pages/man7/io_uring.7.html">io_uring(7)</a>, <a href="https://learn.microsoft.com/windows/win32/fileio/i-o-completion-ports">I/O Completion Ports</a><span class="why">The four OS interfaces behind every async runtime, from the source.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://github.com/tokio-rs/mio">mio</a> (README) and the <a href="https://source.dot.net/System.Net.Sockets/System/Net/Sockets/SocketAsyncEngine.Unix.cs.html">.NET <code>SocketAsyncEngine.Unix</code> source</a><span class="why">How Tokio's foundation and .NET's socket layer sit on epoll/kqueue (and, for mio on Windows, AFD).</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/356586.356588">E. G. Coffman, M. Elphick, A. Shoshani — “System Deadlocks”</a>, <em>ACM Computing Surveys</em> 3(2), 1971<span class="why">The four necessary conditions for deadlock.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/1465482.1465560">G. M. Amdahl — “Validity of the single processor approach to achieving large scale computing capabilities”</a>, AFIPS Spring Joint Computer Conference, 1967<span class="why">The origin of Amdahl's law.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/365559.365617">E. W. Dijkstra — “Solution of a problem in concurrent programming control”</a>, <em>Communications of the ACM</em> 8(9), 1965<span class="why">The first published solution to mutual exclusion: where locks begin.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=oV9rvDllKEg">“Concurrency is not Parallelism” by Rob Pike</a><span class="why">The distinction from Figure 1, with gophers. Go syntax, language-independent ideas.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=8aGhZQkoFbQ">“What the heck is the event loop anyway?” — Philip Roberts, JSConf EU</a><span class="why">The clearest visual walk-through of an event loop. JavaScript, but the same loop as Figure 5.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- you are the scheduler ----------
+  var OPS = ["load", "add 1", "store"], SHORT = ["L", "A", "S"];
+  var mem, reg, pc, trace;
+  function reset() { mem = 0; reg = [null, null]; pc = [0, 0]; trace = []; render(); }
+  function step(t) {
+    if (pc[t] > 2) return;
+    if (pc[t] === 0) reg[t] = mem; else if (pc[t] === 1) reg[t] += 1; else mem = reg[t];
+    trace.push("T" + (t + 1) + SHORT[pc[t]]);
+    pc[t]++; render();
+  }
+  function render() {
+    for (var t = 0; t < 2; t++) {
+      document.getElementById("sch-t" + t).innerHTML = OPS.map(function (o, i) {
+        var cls = i < pc[t] ? "done" : i === pc[t] ? "next" : "";
+        return '<div class="sch-step ' + cls + '">' + (i + 1) + ". " + o + "</div>";
+      }).join("");
+      document.getElementById("sch-r" + t).textContent = "register: " + (reg[t] === null ? "–" : reg[t]);
+      document.getElementById("sch-run" + t).disabled = pc[t] > 2;
+    }
+    document.getElementById("sch-mem").textContent = mem;
+    document.getElementById("sch-trace").textContent = trace.length ? "schedule: " + trace.join(" ") : "Pick which thread runs its next step.";
+    var v = document.getElementById("sch-verdict");
+    if (pc[0] > 2 && pc[1] > 2) {
+      if (mem === 2) { v.className = "sch-verdict ok"; v.textContent = "✓ counter = 2. One thread finished before the other read the value."; }
+      else { v.className = "sch-verdict bad"; v.textContent = "✗ counter = " + mem + ": an update was lost. Both threads loaded the same old value, so the second store overwrote the first."; }
+    } else { v.className = "sch-verdict"; v.textContent = ""; }
+  }
+  // all 20 schedules: bit i set = slot i belongs to thread 1
+  var masks = []; for (var m = 0; m < 64; m++) { var c = 0, x = m; while (x) { c += x & 1; x >>= 1; } if (c === 3) masks.push(m); }
+  function outcome(mask) { var me = 0, r = [0, 0], p = [0, 0]; for (var s = 0; s < 6; s++) { var t = (mask >> s) & 1 ? 0 : 1; if (p[t] === 0) r[t] = me; else if (p[t] === 1) r[t]++; else me = r[t]; p[t]++; } return me; }
+  function label(mask) { var p = [0, 0], out = []; for (var s = 0; s < 6; s++) { var t = (mask >> s) & 1 ? 0 : 1; out.push((t + 1) + SHORT[p[t]++]); } return out.join(" "); }
+  var allBox = document.getElementById("sch-all"), okCount = 0;
+  masks.forEach(function (mask, i) {
+    var b = document.createElement("button"); b.type = "button";
+    var good = outcome(mask) === 2; if (good) { b.className = "ok"; okCount++; }
+    b.textContent = "#" + (i + 1); b.title = label(mask) + " → " + outcome(mask);
+    b.onclick = function () { reset(); for (var s = 0; s < 6; s++) step((mask >> s) & 1 ? 0 : 1); };
+    allBox.appendChild(b);
+  });
+  document.querySelector(".sch-all-label").textContent += "  (" + okCount + " of " + masks.length + " correct; green = correct)";
+  document.getElementById("sch-run0").onclick = function () { step(0); };
+  document.getElementById("sch-run1").onclick = function () { step(1); };
+  document.getElementById("sch-reset").onclick = reset;
+  document.getElementById("sch-rand").onclick = function () { reset(); while (pc[0] < 3 || pc[1] < 3) { var t = pc[0] > 2 ? 1 : pc[1] > 2 ? 0 : (Math.random() < .5 ? 0 : 1); step(t); } };
+  reset();
+  window.__sch = { masks: masks, outcome: outcome };
+
+  // ---------- measured charts ----------
+  Course.chart("counter-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["load + store (WRONG)", "fetch_add", "Mutex<u64>", "per-thread, combine once"],
+        datasets: [{ label: "ms (median of 3)", data: [2.5, 51.0, 77.7, 0.4], backgroundColor: [c.red, c.teal, c.purple, c.green], borderRadius: 5 }]
+      },
+      options: {
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (ctx) { return ctx.parsed.y + " ms"; } } } },
+        scales: { y: { type: "logarithmic", min: 0.1, title: { display: true, text: "ms for 4 × 1,000,000 increments (log scale)" } } }
+      }
+    };
+  });
+  Course.chart("scale-chart", function (c) {
+    var threads = [1, 2, 4, 6, 8, 10, 16], measured = [1.0, 2.0, 3.9, 5.7, 6.1, 6.4, 6.4];
+    return {
+      type: "line",
+      data: {
+        datasets: [
+          { label: "measured speed-up", data: threads.map(function (t, i) { return { x: t, y: measured[i] }; }), borderColor: c.accent, backgroundColor: c.accent, tension: 0.2 },
+          { label: "ideal (N×)", data: [{ x: 1, y: 1 }, { x: 16, y: 16 }], borderColor: c.muted, borderDash: [6, 4], pointRadius: 0 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        scales: { x: { type: "linear", min: 1, max: 16, ticks: { stepSize: 1 }, title: { display: true, text: "threads" } }, y: { min: 0, max: 16, title: { display: true, text: "speed-up vs 1 thread" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

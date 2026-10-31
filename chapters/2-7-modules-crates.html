@@ -1,0 +1,1232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.7 Modules, crates and packages</title>
+<meta name="description" content="Packages, crates and modules, how files map to the module tree, visibility from private to pub(crate) and pub(in path), paths and use, re-exports and preludes, compared with .NET solutions, assemblies and namespaces, with a visibility explorer checked against rustc.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .vx-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .vx-tree { border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); color: var(--code-text); padding: 8px 0; font: .8rem var(--font-mono); }
+  .vx-tree div { padding: 2px 10px; white-space: pre; overflow-x: auto; }
+  .vx-tree button { font: inherit; color: inherit; background: none; border: 0; padding: 1px 4px; border-radius: 4px; cursor: pointer; text-align: left; }
+  .vx-tree button.item[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .vx-tree .site { color: var(--muted); }
+  .vx-tree .site.on { color: var(--text); background: var(--amber-soft); border-radius: 4px; }
+  .vx-tree .site.ok::after { content: "  ✓"; color: var(--green); }
+  .vx-tree .site.no::after { content: "  ✗"; color: var(--red); }
+  .vx-sites { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .vx-sites button { font: .78rem var(--font-body); padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .vx-sites button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .vx-call { font: .82rem var(--font-mono); margin: 6px 0; overflow-wrap: anywhere; }
+  .vx-out { font: .82rem var(--font-mono); min-height: 1.4em; overflow-wrap: anywhere; }
+  .vx-out.ok { color: var(--green); } .vx-out.bad { color: var(--red); }
+  .vx-why { font-size: .84rem; margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: var(--surface-2); }
+</style>
+</head>
+<body data-chapter="2.7">
+<article class="content">
+<h1>Modules, crates and packages</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Distinguish packages, crates (library and binary) and modules, and map each to its .NET counterpart</li>
+      <li>Lay out a multi-file crate: how <code>mod</code> declarations map to files, and the errors you get when they don't</li>
+      <li>Control visibility with private items, <code>pub</code>, <code>pub(crate)</code>, <code>pub(super)</code> and <code>pub(in path)</code>, and predict what code can see what</li>
+      <li>Write paths (<code>crate::</code>, <code>self::</code>, <code>super::</code>, external crates) and every form of <code>use</code></li>
+      <li>Design a crate's public API with re-exports (<code>pub use</code>) and a prelude, independent of its internal file layout</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>So far every program has lived in one file. Your rule engine and workflow engine will be tens of thousands of lines across many files and several crates, with a public API that customers build against and internals you need to be free to change. In .NET you organise that with a solution, projects, namespaces and the <code>public</code>/<code>internal</code> keywords, and namespaces in particular carry no protection at all: Microsoft's own docs say "Namespaces have no access restrictions."</p>
+  <p>Rust's equivalent is smaller and stricter. A <em>module</em> is both a namespace and a privacy boundary. Everything is private unless you say otherwise, and a crate's public API is exactly the set of items you chose to expose, whatever its file layout. Get this right and you can refactor freely behind a stable API. Get it wrong and every internal type becomes a promise you can't break without a major version bump (chapter 3.5).</p>
+</div>
+
+<h2 id="intuition">Intuition first: the company, the departments and the reception desk</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong>A package is a company</strong>, with one registration document (<code>Cargo.toml</code>).</li>
+    <li><strong>A crate is a building</strong> the company runs: at most one office building that other companies can visit (the <em>library crate</em>), and any number of factories that each make one product you can run (<em>binary crates</em>). Visitors from outside only ever see the lobby.</li>
+    <li><strong>Modules are departments and rooms</strong> inside a building, nested like an org chart. By default every room is staff-only. A department can see into its own sub-rooms, and sub-rooms can see their parent's rooms, but other departments can't walk in.</li>
+    <li><strong><code>pub</code> puts a door on the corridor</strong>; <code>pub(crate)</code> means staff badges only; <code>pub(super)</code> means "the department next level up may come in".</li>
+    <li><strong>Re-exports are the reception desk</strong>: visitors ask for "the engine" at the front desk, and never need to know it lives in room 3.14 of the east wing. You can move the room; reception still answers.</li>
+  </ul>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C# / .NET</div>
+<pre><code class="language-csharp">// RulesLib.csproj → RulesLib.dll (an assembly)
+namespace RulesLib.Parsing      // a name, not a boundary
+{
+    internal static class Lexer { … }   // this assembly only
+    public static class Parser { … }    // everyone
+}
+// App.csproj references RulesLib.csproj
+using RulesLib.Parsing;          // brings names into scope</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">// Cargo.toml [package] name = "ruleset" → library crate ruleset
+mod parser {                     // a name AND a privacy boundary
+    pub(crate) fn tokenize() {}  // this crate only
+    pub fn parse_rule() {}       // public, if every module on the path is
+}
+pub use parser::parse_rule;      // re-export: ruleset::parse_rule
+// src/main.rs is a separate crate that depends on the library
+// use ruleset::parse_rule;</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="crates-packages">Crates and packages</h3>
+<p>The Book's definitions, which you'll hear people use loosely and should use precisely:</p>
+<ul>
+  <li>"A <dfn data-term="crate" data-def="The smallest unit the Rust compiler compiles at a time: a library crate (no main; shared code) or a binary crate (has main; an executable). A crate has a root file and a tree of modules. Roughly a .NET project/assembly.">crate</dfn> is the smallest amount of code that the Rust compiler considers at a time." It's either a <dfn data-term="library crate" data-def="A crate without main that compiles to a library other crates can depend on; its root is src/lib.rs by convention. A package has at most one.">library crate</dfn> ("Library crates don't have a <code>main</code> function, and they don't compile to an executable") or a <strong>binary crate</strong>, a program with a <code>main</code>. Each crate has a <dfn data-term="crate root" data-def="The source file the compiler starts from when building a crate (src/lib.rs for the library, src/main.rs or src/bin/*.rs for binaries); it forms the root module of the crate's module tree.">crate root</dfn>, the file the compiler starts from.</li>
+  <li>"A <dfn data-term="package" data-def="A bundle of one or more crates described by one Cargo.toml: at most one library crate and any number of binary crates. Roughly a .NET project, or a NuGet package when published.">package</dfn> is a bundle of one or more crates that provides a set of functionality. A package contains a <code>Cargo.toml</code> file that describes how to build those crates." And: "A package can contain as many binary crates as you like, but at most only one library crate."</li>
+</ul>
+<p>Cargo finds the crates by convention. <code>src/lib.rs</code> is the library crate's root, <code>src/main.rs</code> is a binary crate's root, and "each file [in <code>src/bin</code>] will be a separate binary crate". All of them are named after the package unless configured otherwise. Lab step 1's <code>cargo build -v</code> shows the compiler being invoked three times for one package: once for the library, then once per binary, each binary linking the library with <code>--extern</code>. A binary crate in the same package is <em>not</em> inside the library. It uses the library through its public API exactly as another company's code would, which makes it a good test of that API.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · package, crates and modules, and their .NET counterparts</span>
+  <svg viewBox="0 0 720 330" role="img" aria-label="The ruleset package contains a library crate with a module tree and two binary crates that depend on it; mapped to a .NET solution, projects, assemblies and namespaces">
+    <defs><marker id="pk-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker></defs>
+    <rect x="14" y="14" width="470" height="300" rx="10" class="svg-box-strong"/>
+    <text x="28" y="36" class="svg-title">package "ruleset"  (Cargo.toml)</text>
+    <rect x="30" y="50" width="250" height="250" rx="8" class="svg-teal"/>
+    <text x="44" y="72" class="svg-mono">library crate  src/lib.rs</text>
+    <text x="54" y="100" class="svg-mono">crate (root module)</text>
+    <text x="68" y="124" class="svg-mono">├─ engine      private</text>
+    <text x="68" y="148" class="svg-mono">├─ model       pub</text>
+    <text x="68" y="172" class="svg-mono">├─ parser      private</text>
+    <text x="68" y="196" class="svg-mono">│  └─ lexer    private</text>
+    <text x="68" y="220" class="svg-mono">└─ prelude     pub</text>
+    <text x="44" y="252" class="svg-text-sm">public API = pub items reachable</text>
+    <text x="44" y="268" class="svg-text-sm">through pub paths, incl. re-exports</text>
+    <rect x="310" y="60" width="160" height="60" rx="8" class="svg-purple"/>
+    <text x="322" y="84" class="svg-mono">binary crate</text><text x="322" y="104" class="svg-text-sm">src/main.rs → "ruleset"</text>
+    <rect x="310" y="150" width="160" height="60" rx="8" class="svg-purple"/>
+    <text x="322" y="174" class="svg-mono">binary crate</text><text x="322" y="194" class="svg-text-sm">src/bin/explain.rs</text>
+    <path d="M310 92 L284 120" class="svg-line-accent" marker-end="url(#pk-a)"/>
+    <path d="M310 180 L284 170" class="svg-line-accent" marker-end="url(#pk-a)"/>
+    <text x="390" y="240" class="svg-text-sm" text-anchor="middle">binaries use the library</text>
+    <text x="390" y="256" class="svg-text-sm" text-anchor="middle">like any other crate:</text>
+    <text x="390" y="272" class="svg-text-sm" text-anchor="middle">only its public API</text>
+
+    <text x="600" y="36" class="svg-title" text-anchor="middle">.NET</text>
+    <rect x="510" y="50" width="196" height="40" rx="6" class="svg-box"/><text x="608" y="75" class="svg-text-sm" text-anchor="middle">workspace ≈ solution (.sln)</text>
+    <rect x="510" y="100" width="196" height="40" rx="6" class="svg-box"/><text x="608" y="125" class="svg-text-sm" text-anchor="middle">package ≈ project (.csproj)</text>
+    <rect x="510" y="150" width="196" height="40" rx="6" class="svg-box"/><text x="608" y="175" class="svg-text-sm" text-anchor="middle">crate ≈ assembly (.dll/.exe)</text>
+    <rect x="510" y="200" width="196" height="40" rx="6" class="svg-box"/><text x="608" y="217" class="svg-text-sm" text-anchor="middle">module ≈ namespace</text><text x="608" y="232" class="svg-text-sm" text-anchor="middle">+ a privacy boundary</text>
+    <rect x="510" y="250" width="196" height="40" rx="6" class="svg-box"/><text x="608" y="267" class="svg-text-sm" text-anchor="middle">pub(crate) ≈ internal</text><text x="608" y="282" class="svg-text-sm" text-anchor="middle">pub ≈ public</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> The package built in Lab step 1. The mapping on the right is approximate in one important way: a C# project produces one assembly, while a Cargo package can produce one library and several executables. And a Rust module restricts access, while a C# namespace only groups names.</figcaption>
+</figure>
+
+<h3 id="modules">Modules and the module tree</h3>
+<p>Inside a crate, code is organised into a tree of <dfn data-term="module" data-def="A named scope inside a crate, declared with mod name { ... } or mod name; (loading name.rs or name/mod.rs). Modules form a tree from the crate root and are both namespaces and privacy boundaries.">modules</dfn>. The crate root is the top module, called <code>crate</code>. You declare a module with <code>mod</code>, either inline:</p>
+<pre data-title="an inline module"><code class="language-rust">mod billing {
+    pub fn total(net: u32) -> u32 {
+        net + vat(net)
+    }
+    fn vat(net: u32) -> u32 {
+        net * 21 / 100 // private: only billing (and its children) can call it
+    }
+}
+
+fn main() {
+    println!("{}", billing::total(10_000));
+}</code></pre>
+<p>or, as soon as it grows, in its own file: <code>mod billing;</code> with a semicolon tells the compiler to load the module's contents from a file. The rules, for a module <code>engine</code> declared in the crate root:</p>
+<ul>
+  <li>The compiler looks for <code>src/engine.rs</code>, or the older style <code>src/engine/mod.rs</code>. Having both is error E0761; having neither is E0583 (Lab step 2).</li>
+  <li>A child module declared inside <code>src/parser.rs</code> (<code>mod lexer;</code>) lives in <code>src/parser/lexer.rs</code>. Since the 2018 edition "a <code>foo.rs</code> and <code>foo/</code> subdirectory may coexist; <code>mod.rs</code> is no longer needed", and <code>parser.rs</code> + <code>parser/lexer.rs</code> is the modern layout.</li>
+  <li><strong>A file is never compiled just because it exists.</strong> It becomes part of the crate only when some module declares it with <code>mod</code>. This is the opposite of a C# project, where every <code>.cs</code> file in the folder is compiled. A forgotten <code>mod</code> line means "unused file", not "missing class".</li>
+  <li>A module is declared <em>once</em>, by its parent. Elsewhere you refer to it with a path or <code>use</code>, never a second <code>mod</code>; the E0583 help says exactly that.</li>
+</ul>
+
+<figure class="visual stepper" data-interval="3000">
+  <span class="visual-tag">Animation · how mod declarations become a module tree</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="The compiler starts at src/lib.rs, follows each mod declaration to a file, and builds the module tree; src/main.rs is a separate crate root">
+    <defs><marker id="md-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker></defs>
+    <text x="150" y="22" class="svg-title" text-anchor="middle">files</text>
+    <text x="540" y="22" class="svg-title" text-anchor="middle">module tree (library crate)</text>
+    <rect x="20" y="36" width="260" height="34" rx="5" class="svg-box" data-hl="1"/><text x="32" y="58" class="svg-mono">src/lib.rs</text>
+    <rect x="40" y="78" width="240" height="30" rx="5" class="svg-box" data-hl="2"/><text x="52" y="98" class="svg-mono">src/engine.rs</text>
+    <rect x="40" y="114" width="240" height="30" rx="5" class="svg-box" data-hl="3"/><text x="52" y="134" class="svg-mono">src/model.rs</text>
+    <rect x="40" y="150" width="240" height="30" rx="5" class="svg-box" data-hl="4"/><text x="52" y="170" class="svg-mono">src/parser.rs</text>
+    <rect x="60" y="186" width="220" height="30" rx="5" class="svg-box" data-hl="5"/><text x="72" y="206" class="svg-mono">src/parser/lexer.rs</text>
+    <rect x="20" y="236" width="260" height="34" rx="5" class="svg-box" data-hl="6"/><text x="32" y="258" class="svg-mono">src/main.rs</text>
+
+    <g data-show="1-"><rect x="430" y="36" width="220" height="34" rx="5" class="svg-teal"/><text x="442" y="58" class="svg-mono">crate</text></g>
+    <g data-show="2-"><rect x="450" y="78" width="200" height="30" rx="5" class="svg-teal"/><text x="462" y="98" class="svg-mono">crate::engine</text></g>
+    <g data-show="3-"><rect x="450" y="114" width="200" height="30" rx="5" class="svg-teal"/><text x="462" y="134" class="svg-mono">crate::model  (pub)</text></g>
+    <g data-show="4-"><rect x="450" y="150" width="200" height="30" rx="5" class="svg-teal"/><text x="462" y="170" class="svg-mono">crate::parser</text></g>
+    <g data-show="5-"><rect x="470" y="186" width="180" height="30" rx="5" class="svg-teal"/><text x="482" y="206" class="svg-mono">parser::lexer</text></g>
+    <g data-show="6-"><rect x="430" y="236" width="220" height="34" rx="5" class="svg-purple"/><text x="442" y="258" class="svg-mono">another crate: main</text></g>
+
+    <text x="355" y="58" class="svg-text-sm" text-anchor="middle" data-show="=1">crate root</text>
+    <text x="355" y="86" class="svg-text-sm" text-anchor="middle" data-show="=2">mod engine;</text>
+    <text x="355" y="122" class="svg-text-sm" text-anchor="middle" data-show="=3">pub mod model;</text>
+    <text x="355" y="158" class="svg-text-sm" text-anchor="middle" data-show="=4">mod parser;</text>
+    <text x="370" y="194" class="svg-text-sm" text-anchor="middle" data-show="=5">mod lexer; (in parser.rs)</text>
+    <text x="355" y="258" class="svg-text-sm" text-anchor="middle" data-show="=6">use ruleset::…</text>
+    <path d="M280 93 L446 93" class="svg-line-accent" marker-end="url(#md-a)" data-show="=2"/>
+    <path d="M280 129 L446 129" class="svg-line-accent" marker-end="url(#md-a)" data-show="=3"/>
+    <path d="M280 165 L446 165" class="svg-line-accent" marker-end="url(#md-a)" data-show="=4"/>
+    <path d="M280 201 L466 201" class="svg-line-accent" marker-end="url(#md-a)" data-show="=5"/>
+    <text x="360" y="292" class="svg-text-sm" text-anchor="middle" data-show="=7">a .rs file that no `mod` declares is simply not compiled</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>Cargo hands the compiler <code>src/lib.rs</code>: the library crate's root and the top of its module tree, <code>crate</code>.</li>
+    <li><code>mod engine;</code> in <code>lib.rs</code> loads <code>src/engine.rs</code> as the module <code>crate::engine</code>, private because the declaration has no <code>pub</code>.</li>
+    <li><code>pub mod model;</code> loads <code>src/model.rs</code>, and makes the module itself reachable from outside the crate.</li>
+    <li><code>mod parser;</code> loads <code>src/parser.rs</code>.</li>
+    <li>Inside <code>parser.rs</code>, <code>mod lexer;</code> loads <code>src/parser/lexer.rs</code>: a child module lives in a folder named after its parent.</li>
+    <li><code>src/main.rs</code> is <em>not</em> in this tree. It's the root of a separate binary crate that refers to the library by name, <code>ruleset::…</code>, and sees only its public items.</li>
+    <li>The tree is defined by <code>mod</code> declarations, not by the folder. That's why a file without a <code>mod</code> line is ignored, and why E0583 and E0761 exist.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> The module tree of Lab step 1's library. Each module's path (<code>crate::parser::lexer</code>) mirrors the file path (<code>src/parser/lexer.rs</code>), but only because the <code>mod</code> declarations say so.</figcaption>
+</figure>
+
+<h3 id="visibility">Visibility: private by default</h3>
+<p>The Reference: "By default, everything is <em>private</em>, with two exceptions: Associated items in a <code>pub</code> Trait are public by default; Enum variants in a <code>pub</code> enum are also public by default." Private means visible in the current module and its descendants. Two rules decide every access:</p>
+<ol>
+  <li>"If an item is public, then it can be accessed externally from some module <code>m</code> if you can access all the item's ancestor modules from <code>m</code>."</li>
+  <li>"If an item is private, it may be accessed by the current module and its descendants."</li>
+</ol>
+<p>So <dfn data-term="visibility" data-def="Whether an item can be named from a given place. Rust items are private by default (visible in their module and its descendants); pub, pub(crate), pub(super) and pub(in path) widen that. A public item is reachable only if every module on its path is too.">visibility</dfn> runs <em>down</em> the tree: children see their ancestors' private items, so a child module can be a private helper of its parent with full access, but parents don't see their children's privates. And rule 1 means a <code>pub fn</code> inside a private module is still unreachable from outside that module's parent, because the path to it is blocked. Between private and <code>pub</code> there are scoped levels:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Written</th><th>Visible in</th><th>C# nearest</th></tr></thead>
+  <tbody>
+    <tr><td>(nothing)</td><td>This module and its descendants</td><td><code>private</code> (but per module, not per class)</td></tr>
+    <tr><td><code>pub(super)</code></td><td>The parent module (and its descendants)</td><td>—</td></tr>
+    <tr><td><code>pub(in crate::a)</code></td><td>The named ancestor module (and its descendants)</td><td>—</td></tr>
+    <tr><td><dfn data-term="pub(crate)" data-def="Visibility meaning 'anywhere in this crate, nowhere outside it'; Rust's equivalent of C# internal.">pub(crate)</dfn></td><td>The whole crate</td><td><code>internal</code></td></tr>
+    <tr><td><code>pub</code></td><td>Everywhere the path is reachable, including other crates</td><td><code>public</code></td></tr>
+  </tbody>
+</table></div>
+<p>Two details matter for struct design. Making a struct <code>pub</code> doesn't make its <strong>fields</strong> public: each field is private unless marked <code>pub</code>. And if any field is private, code outside the module can't build the struct with a literal (error E0451) or read that field (E0616). It must go through a constructor, which is how a type enforces its invariants (Lab step 2). Enum variants, by contrast, are public with the enum, because a <code>match</code> outside the module must be able to name them.</p>
+
+<h3 id="paths-use">Paths and <code>use</code></h3>
+<p>Every item has a <dfn data-term="path" data-def="The name of an item through the module tree: absolute from the crate root (crate::parser::parse_rule), relative (self::, super::, or a child module name), or from another crate (std::collections::HashMap, ruleset::Engine).">path</dfn>, and there are four ways to start one:</p>
+<ul>
+  <li><code>crate::model::Rule</code>: <strong>absolute</strong>, from this crate's root. Robust when code moves within a module.</li>
+  <li><code>self::tax::rate</code> and plain <code>tax::rate</code>: <strong>relative</strong> to the current module.</li>
+  <li><code>super::DEFAULT_RATE</code>: from the <strong>parent</strong> module, like <code>..</code> in a file path.</li>
+  <li><code>std::collections::HashMap</code>, <code>ruleset::Engine</code>: from <strong>another crate</strong>, by name. Dependencies in <code>Cargo.toml</code> are available this way without any <code>extern crate</code> line (unneeded "in 99% of circumstances" since Rust 2018). A leading <code>::std::…</code> forces the external-crate meaning if a local module has the same name.</li>
+</ul>
+<p>A <dfn data-term="use declaration" data-def="use path; brings a name into the current scope (like a C# using directive, but for any item, not just namespaces). Forms: groups {a, b}, self, as renames, globs (*), and pub use re-exports.">use declaration</dfn> brings a path's last name into scope so you don't repeat it. Unlike C#'s <code>using</code>, it imports any item (a type, a function, a module, an enum variant), not just namespaces. Lab step 3 shows all of its forms:</p>
+<pre data-title="forms of use"><code class="language-rust">use std::collections::{BTreeMap, HashMap}; // several names from one module
+use std::fmt::{self, Display};             // the module itself, plus an item
+use std::io::Result as IoResult;           // rename to avoid a clash
+use std::collections::*;                   // glob: everything public (use sparingly)
+
+fn main() {
+    let a: HashMap&lt;u8, u8&gt; = HashMap::new();
+    let b: BTreeMap&lt;u8, u8&gt; = BTreeMap::new();
+    let c: VecDeque&lt;u8&gt; = VecDeque::new(); // came from the glob
+    let r: IoResult&lt;()&gt; = Ok(());
+    println!("{} {} {} {:?} {}", a.len(), b.len(), c.len(), r, &amp;1 as &amp;dyn Display);
+    let _ = fmt::Error;
+}</code></pre>
+<p>Conventions the community follows (and rustfmt and Clippy nudge you towards): import <em>types</em> by their own name (<code>use std::collections::HashMap;</code> then <code>HashMap::new()</code>), but import <em>functions</em> by their parent module (<code>use std::mem;</code> then <code>mem::take(…)</code>), so a call site shows where the function comes from. Some names need no import at all: the <dfn data-term="prelude" data-def="A set of names imported automatically: std's prelude (Vec, String, Option, Some, None, Result, Ok, Err, Box, Clone, …) in every module; also a crate's own pub mod prelude, a convention for 'import everything you usually need' via use crate_name::prelude::*.">prelude</dfn> (<code>Vec</code>, <code>String</code>, <code>Option</code>/<code>Some</code>/<code>None</code>, <code>Result</code>/<code>Ok</code>/<code>Err</code>, <code>Box</code>, the common traits) is in scope in every module. Forgetting a <code>use</code> gives error E0433, with the exact line to add (Lab step 2).</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <ul>
+    <li><strong>Namespaces vs modules.</strong> A C# namespace is only a name, and any number of assemblies can add types to it. A Rust module is a single place in one crate's tree, with privacy attached. There's no partial module spread across crates.</li>
+    <li><strong>Defaults.</strong> In C#, top-level types default to <code>internal</code> and class members to <code>private</code> (Microsoft Learn). In Rust everything, items and fields alike, defaults to private to its <em>module</em>, a finer grain than the assembly.</li>
+    <li><strong><code>internal</code> ↔ <code>pub(crate)</code>.</strong> Lab step 4 shows C# rejecting access to an <code>internal</code> class from another assembly with CS0122. For an <code>internal</code> constructor, though, it reports CS1729, "does not contain a constructor that takes 1 arguments", hiding the constructor rather than saying it's inaccessible. Rust's errors name the item and say it's private (E0624).</li>
+    <li><strong>No <code>InternalsVisibleTo</code>.</strong> Rust unit tests live inside the crate (a <code>#[cfg(test)] mod tests</code>, chapter 3.4) and see private items as descendants; integration tests in <code>tests/</code> are separate crates and see only the public API, deliberately.</li>
+    <li><strong>Compilation by declaration.</strong> A C# project compiles every <code>.cs</code> file in its folder; a Rust crate compiles only files reached through <code>mod</code> declarations.</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="explorer">Predicting visibility</h3>
+<p>The rules above are short, but applying them across a tree takes practice. Pick a function and a place to call it from:</p>
+
+<figure class="visual" id="vx">
+  <span class="visual-tag">Interactive · visibility explorer</span>
+  <div class="vx-sites" id="vx-sites" role="group" aria-label="Call from"></div>
+  <div class="vx-wrap">
+    <div class="vx-tree" id="vx-tree"></div>
+    <div>
+      <div class="vx-call" id="vx-call"></div>
+      <div class="vx-out" id="vx-out" aria-live="polite"></div>
+      <div class="vx-why" id="vx-why"></div>
+    </div>
+  </div>
+  <figcaption><strong>Figure 3.</strong> Click a function in the tree and choose where the call is written; the ✓/✗ marks show the chosen function's visibility from every place at once. All 60 combinations (10 functions × 6 call sites, including a call from another crate) were compiled with rustc 1.99. The explorer reproduces every verdict and error message exactly (0 mismatches).</figcaption>
+</figure>
+
+<p>The two cases that surprise C# developers most: <code>a::c::pub_fn</code> is <code>pub</code>, yet unreachable from the crate root, because module <code>c</code> is private to <code>a</code> (rule 1); and <code>a::b::super_fn</code>, marked <code>pub(super)</code>, can be called from <code>a</code> and from <code>a::b::d</code>, but not from <code>x</code> or the crate root.</p>
+
+<h3 id="reexports">Re-exports and preludes: designing the public API</h3>
+<p>Without re-exports, a crate's public paths mirror its files: <code>ruleset::engine::Engine</code>, <code>ruleset::parser::parse_rule</code>. That leaks the layout into every caller, and moving a file becomes a breaking change. A <dfn data-term="re-export" data-def="pub use path; makes an item available under a new public path (often the crate root), so callers don't depend on internal module layout. The original module can stay private.">re-export</dfn>, <code>pub use</code>, publishes an item under a new path:</p>
+<ul>
+  <li><code>pub use engine::{Engine, Verdict};</code> in <code>lib.rs</code> makes them <code>ruleset::Engine</code> and <code>ruleset::Verdict</code>, while <code>engine</code> stays a private module that you can split, rename or reorganise at will. Lab step 1's <code>cargo doc</code> output shows the result: the documented API is exactly the re-exported items plus the <code>pub</code> modules, and <code>engine</code>, <code>parser</code> and <code>lexer</code> don't appear. Error e1 shows the other side: <code>ruleset::engine::Engine</code> is rejected, with the note "struct <code>Engine</code> is not publicly re-exported" through that path.</li>
+  <li>A <code>pub mod prelude { pub use …; }</code> collects what a typical caller needs, so they write <code>use ruleset::prelude::*;</code> once. The standard library, <code>tokio</code>, <code>bevy</code> and many others do this. Keep a prelude small: everything in it lands in callers' scopes through a glob.</li>
+</ul>
+<p>The design rule for both products: <strong>decide the public API first, as a small set of re-exported names, and keep every module private unless callers genuinely need to navigate it.</strong> Chapter 3.5 adds the semantic-versioning consequences: everything reachable is a promise.</p>
+
+<details class="deep-dive"><summary>Deep dive: the module system as information hiding</summary><div class="body">
+  <p>David Parnas's 1972 paper "On the criteria to be used in decomposing systems into modules" argued that a system should be split along <em>decisions likely to change</em>, with each module hiding one such decision behind an interface. Rust's design builds that in: the default is hidden, every widening of visibility is explicit and scoped (<code>pub(super)</code>, <code>pub(crate)</code>), and re-exports separate the interface (the paths callers use) from the decomposition (the files). The lexer in Lab step 1 is a small example: <code>Token</code> and <code>tokenize</code> are <code>pub(super)</code>, so only the parser knows tokens exist at all, and you could replace the lexer with a hand-written state machine without touching any other module.</p>
+  <p>The compiler enforces one more Parnas-style rule. A <code>pub</code> function can't expose a type that's less visible than itself in its signature (the <code>private_interfaces</code> and <code>private_bounds</code> lints warn about it). That stops a public API from leaking a type callers can't name.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: one crate or several?</summary><div class="body">
+  <p>Modules organise code inside a crate; crates are the unit of compilation, of parallelism in the build, of dependency, and of <code>pub(crate)</code> privacy. Signs that a module wants to become its own crate in a workspace (chapter 3.5): it's useful on its own (the rule language parser, without the engine); it has heavy dependencies that most of the code doesn't need; or build times suffer because a small change recompiles one huge crate. The cost: anything shared across the boundary must be <code>pub</code>, and the API becomes a real contract. A common shape for your products is a workspace of a few crates, for example <code>rules-core</code> (model, parser), <code>rules-engine</code>, <code>rules-server</code> (binary), each with a deliberately small public API.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were built and run with rustc 1.99.0 and Cargo (edition 2024) and the .NET 10.0.201 SDK on the lab Mac; outputs are verbatim.</p>
+
+<h3 id="lab-1">Step 1 — a multi-file package: one library, two binaries</h3>
+<pre class="output">ruleset/
+├── Cargo.toml
+└── src/
+    ├── lib.rs           the library crate's root
+    ├── main.rs          binary crate "ruleset"
+    ├── bin/
+    │   └── explain.rs   binary crate "explain"
+    ├── engine.rs        mod engine
+    ├── model.rs         mod model
+    ├── parser.rs        mod parser
+    └── parser/
+        └── lexer.rs     mod parser::lexer</pre>
+<pre data-title="src/lib.rs"><code class="language-rust">//! A tiny rule-set library: parse rules like `amount &gt;= 100` and evaluate them.
+
+// Declare the crate's top-level modules; the compiler loads each from its own file.
+mod engine; // src/engine.rs   (private module: an implementation detail)
+pub mod model; // src/model.rs (public module: part of the API)
+mod parser; // src/parser.rs, with a child module in src/parser/lexer.rs
+
+// Re-exports: give callers short, stable paths, independent of the internal layout.
+pub use engine::{Engine, Verdict};
+pub use parser::{ParseError, parse_rule};
+
+/// Everything a typical caller needs, in one `use ruleset::prelude::*;`.
+pub mod prelude {
+    pub use crate::model::{Op, Rule};
+    pub use crate::{Engine, ParseError, Verdict, parse_rule};
+}</code></pre>
+<pre data-title="src/model.rs"><code class="language-rust">//! The rule data model.
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Op {
+    Gt,
+    Ge,
+    Eq,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rule {
+    pub field: String,
+    pub op: Op,
+    pub value: i64,
+    source_line: usize, // private: callers can read it through a method, never set it
+}
+
+impl Rule {
+    // pub(crate): the parser (same crate) may construct rules; other crates may not.
+    pub(crate) fn new(field: &amp;str, op: Op, value: i64, source_line: usize) -&gt; Rule {
+        Rule { field: field.to_string(), op, value, source_line }
+    }
+
+    pub fn source_line(&amp;self) -&gt; usize {
+        self.source_line
+    }
+}</code></pre>
+<pre data-title="src/parser.rs"><code class="language-rust">//! Turns rule text into `Rule`s.
+
+mod lexer; // a child module: src/parser/lexer.rs
+
+use crate::model::{Op, Rule}; // absolute path from the crate root
+use lexer::{Token, tokenize}; // relative path into the child module
+
+#[derive(Debug, PartialEq)]
+pub enum ParseError {
+    Shape(usize),
+    UnknownOperator(usize, String),
+    BadNumber(usize),
+}
+
+pub fn parse_rule(line_no: usize, text: &amp;str) -&gt; Result&lt;Rule, ParseError&gt; {
+    let tokens = tokenize(text);
+    let [Token::Word(field), Token::Symbol(op), Token::Word(value)] = tokens.as_slice() else {
+        return Err(ParseError::Shape(line_no));
+    };
+    let op = match op.as_str() {
+        "&gt;" =&gt; Op::Gt,
+        "&gt;=" =&gt; Op::Ge,
+        "==" =&gt; Op::Eq,
+        other =&gt; return Err(ParseError::UnknownOperator(line_no, other.to_string())),
+    };
+    let value = value.parse().map_err(|_| ParseError::BadNumber(line_no))?;
+    Ok(Rule::new(field, op, value, line_no))
+}</code></pre>
+<pre data-title="src/parser/lexer.rs"><code class="language-rust">//! Splits rule text into tokens. Only the parser needs this.
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Token {
+    Word(String),
+    Symbol(String),
+}
+
+// pub(super): visible to the parent module (parser), and nowhere else.
+pub(super) fn tokenize(text: &amp;str) -&gt; Vec&lt;Token&gt; {
+    text.split_whitespace()
+        .map(|t| {
+            if t.chars().all(|c| "&lt;&gt;=!".contains(c)) {
+                Token::Symbol(t.to_string())
+            } else {
+                Token::Word(t.to_string())
+            }
+        })
+        .collect()
+}</code></pre>
+<pre data-title="src/engine.rs"><code class="language-rust">//! Evaluates rules against facts.
+
+use std::collections::HashMap;
+
+use crate::model::{Op, Rule};
+
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    Pass,
+    Fail,
+    MissingField(String),
+}
+
+pub struct Engine {
+    rules: Vec&lt;Rule&gt;, // private: the engine controls its own rule list
+}
+
+impl Engine {
+    pub fn new(rules: Vec&lt;Rule&gt;) -&gt; Engine {
+        Engine { rules }
+    }
+
+    pub fn evaluate(&amp;self, facts: &amp;HashMap&lt;&amp;str, i64&gt;) -&gt; Vec&lt;(usize, Verdict)&gt; {
+        self.rules.iter().map(|r| (r.source_line(), check(r, facts))).collect()
+    }
+}
+
+// Private helper: not visible outside this module.
+fn check(rule: &amp;Rule, facts: &amp;HashMap&lt;&amp;str, i64&gt;) -&gt; Verdict {
+    let Some(&amp;actual) = facts.get(rule.field.as_str()) else {
+        return Verdict::MissingField(rule.field.clone());
+    };
+    let ok = match rule.op {
+        Op::Gt =&gt; actual &gt; rule.value,
+        Op::Ge =&gt; actual &gt;= rule.value,
+        Op::Eq =&gt; actual == rule.value,
+    };
+    if ok { Verdict::Pass } else { Verdict::Fail }
+}</code></pre>
+<pre data-title="src/main.rs"><code class="language-rust">// The binary crate: a separate crate that uses the library by its package name.
+use std::collections::HashMap;
+
+use ruleset::prelude::*;
+
+fn main() {
+    let text = "amount &gt;= 100\ncountry == 31\nvip =&gt; 1\nscore &gt; lots";
+    let mut rules = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        match parse_rule(i + 1, line) {
+            Ok(rule) =&gt; rules.push(rule),
+            Err(e) =&gt; println!("skipped: {e:?}"),
+        }
+    }
+    let first: &amp;Rule = &amp;rules[0];
+    println!("loaded {} rules; first: {} {:?} {} (line {})", rules.len(), first.field, first.op, first.value, first.source_line());
+
+    let engine = Engine::new(rules);
+    let facts = HashMap::from([("amount", 250), ("vip", 1)]);
+    for (line, verdict) in engine.evaluate(&amp;facts) {
+        println!("line {line}: {verdict:?}");
+    }
+    assert_eq!(engine.evaluate(&amp;facts)[0].1, Verdict::Pass);
+}</code></pre>
+<pre data-title="src/bin/explain.rs"><code class="language-rust">// A second binary in the same package: src/bin/*.rs files are binary crates too.
+use ruleset::model::Op; // the public module path works as well as the prelude
+
+fn main() {
+    for op in [Op::Gt, Op::Ge, Op::Eq] {
+        let meaning = match op {
+            Op::Gt =&gt; "greater than",
+            Op::Ge =&gt; "at least",
+            Op::Eq =&gt; "exactly",
+        };
+        println!("{op:?}: {meaning}");
+    }
+}</code></pre>
+<p><code>cargo build -v</code> shows one <code>rustc</code> invocation per crate (abridged to the crate name, root file and type):</p>
+<pre class="output">rustc --crate-name ruleset  src/lib.rs          --crate-type lib
+rustc --crate-name ruleset  src/main.rs         --crate-type bin   --extern ruleset=…
+rustc --crate-name explain  src/bin/explain.rs  --crate-type bin   --extern ruleset=…</pre>
+<p><code>cargo run --bin ruleset</code> and <code>cargo run --bin explain</code>:</p>
+<pre class="output">skipped: UnknownOperator(3, "=&gt;")
+skipped: BadNumber(4)
+loaded 2 rules; first: amount Ge 100 (line 1)
+line 1: Pass
+line 2: MissingField("country")</pre>
+<pre class="output">Gt: greater than
+Ge: at least
+Eq: exactly</pre>
+<p>And the public API as rustdoc sees it: the files generated by <code>cargo doc --no-deps</code> under <code>target/doc/ruleset/</code>:</p>
+<pre class="output">all.html
+enum.ParseError.html
+enum.Verdict.html
+fn.parse_rule.html
+index.html
+struct.Engine.html
+model/:
+  enum.Op.html
+  index.html
+  struct.Rule.html
+prelude/:
+  index.html</pre>
+<p><code>Engine</code>, <code>Verdict</code>, <code>parse_rule</code> and <code>ParseError</code> are documented at the crate root, where the re-exports put them; <code>engine</code>, <code>parser</code> and <code>lexer</code> don't exist as far as users are concerned. <code>Rule::new</code> is <code>pub(crate)</code>, so only the parser creates rules, and every <code>Rule</code> a caller holds came from a successful parse.</p>
+
+<h3 id="lab-2">Step 2 — what the compiler enforces</h3>
+<p>Each of these files was placed in <code>src/bin/</code>, so it's a separate crate using the library, exactly like a customer's code.</p>
+<pre data-title="e1.rs — a private module"><code class="language-rust">// From another crate: reaching into a private module.
+use ruleset::engine::Engine;
+
+fn main() {
+    let _ = Engine::new(Vec::new());
+}</code></pre>
+<pre class="output error">error[E0603]: module `engine` is private
+ --&gt; src/bin/e1.rs:2:14
+  |
+2 | use ruleset::engine::Engine;
+  |              ^^^^^^  ------ struct `Engine` is not publicly re-exported
+  |              |
+  |              private module
+  |
+note: the module `engine` is defined here
+ --&gt; src/lib.rs:4:1
+  |
+4 | mod engine; // src/engine.rs   (private module: an implementation detail)
+  | ^^^^^^^^^^</pre>
+<pre data-title="e2.rs — a struct literal with a private field"><code class="language-rust">// From another crate: building a Rule with a struct literal.
+use ruleset::prelude::*;
+
+fn main() {
+    let r = Rule { field: "amount".into(), op: Op::Ge, value: 100, source_line: 1 };
+    println!("{r:?}");
+}</code></pre>
+<pre class="output error">error[E0451]: field `source_line` of struct `ruleset::model::Rule` is private
+ --&gt; src/bin/e2.rs:5:68
+  |
+5 |     let r = Rule { field: "amount".into(), op: Op::Ge, value: 100, source_line: 1 };
+  |                                                                    ^^^^^^^^^^^ private field</pre>
+<pre data-title="e3.rs — a pub(crate) constructor and a private field"><code class="language-rust">// From another crate: calling a pub(crate) constructor and reading a private field.
+use ruleset::prelude::*;
+
+fn main() {
+    let r = Rule::new("amount", Op::Ge, 100, 1);
+    println!("{}", r.source_line);
+}</code></pre>
+<pre class="output error">error[E0624]: associated function `new` is private
+  --&gt; src/bin/e3.rs:5:19
+   |
+ 5 |     let r = Rule::new("amount", Op::Ge, 100, 1);
+   |                   ^^^ private associated function
+   |
+  ::: src/model.rs:20:5
+   |
+20 |     pub(crate) fn new(field: &amp;str, op: Op, value: i64, source_line: usize) -&gt; Rule {
+   |     ------------------------------------------------------------------------------ private associated function defined here
+
+error[E0616]: field `source_line` of struct `ruleset::model::Rule` is private
+ --&gt; src/bin/e3.rs:6:22
+  |
+6 |     println!("{}", r.source_line);
+  |                      ^^^^^^^^^^^ private field
+  |
+help: a method `source_line` also exists, call it with parentheses
+  |
+6 |     println!("{}", r.source_line());
+  |                                 ++</pre>
+<pre data-title="e4.rs — a missing use"><code class="language-rust">// Forgetting the `use` declaration.
+fn main() {
+    let mut facts = HashMap::new();
+    facts.insert("amount", 250);
+    println!("{facts:?}");
+}</code></pre>
+<pre class="output error">error[E0433]: cannot find type `HashMap` in this scope
+ --&gt; src/bin/e4.rs:3:21
+  |
+3 |     let mut facts = HashMap::new();
+  |                     ^^^^^^^ use of undeclared type `HashMap`
+  |
+help: consider importing this struct
+  |
+2 + use std::collections::HashMap;
+  |</pre>
+<p>And the two file-layout errors, from a separate package whose <code>src/main.rs</code> declares <code>mod rules;</code> (with both <code>src/rules.rs</code> and <code>src/rules/mod.rs</code> present) and <code>mod audit;</code> (with no file):</p>
+<pre class="output error">error[E0761]: file for module `rules` found at both "src/rules.rs" and "src/rules/mod.rs"
+ --&gt; src/main.rs:1:1
+  |
+1 | mod rules;
+  | ^^^^^^^^^^
+  |
+  = help: delete or rename one of them to remove the ambiguity
+
+error[E0583]: file not found for module `audit`
+ --&gt; src/main.rs:2:1
+  |
+2 | mod audit;
+  | ^^^^^^^^^^
+  |
+  = help: to create the module `audit`, create file "src/audit.rs" or "src/audit/mod.rs"
+  = note: if there is a `mod audit` elsewhere in the crate already, import it with `use crate::...` instead</pre>
+
+<h3 id="lab-3">Step 3 — every form of path and use</h3>
+<pre data-playground data-title="src/main.rs"><code class="language-rust">// Every form of `use` and of paths, in one file (inline modules: `mod name { ... }`).
+use std::collections::{BTreeMap, HashMap}; // a nested group
+use std::fmt::{self, Display}; // `self` imports the module itself too
+use std::io::Result as IoResult; // rename with `as` to avoid a clash with Result
+
+mod billing {
+    pub mod tax {
+        pub fn rate(country: &amp;str) -&gt; u32 {
+            match country {
+                "NL" =&gt; 21,
+                "DE" =&gt; 19,
+                _ =&gt; super::DEFAULT_RATE, // super: the parent module (billing)
+            }
+        }
+    }
+
+    const DEFAULT_RATE: u32 = 20; // private to billing, visible to its child `tax`
+
+    pub fn total(net: u32, country: &amp;str) -&gt; u32 {
+        net + net * self::tax::rate(country) / 100 // self: this module
+    }
+}
+
+struct Money(u32);
+
+impl Display for Money {
+    fn fmt(&amp;self, f: &amp;mut fmt::Formatter&lt;'_&gt;) -&gt; fmt::Result {
+        write!(f, "€{}.{:02}", self.0 / 100, self.0 % 100)
+    }
+}
+
+fn read_config() -&gt; IoResult&lt;String&gt; {
+    Ok(String::from("ok")) // String, Ok and Vec need no import: they're in the prelude
+}
+
+fn main() {
+    use billing::tax::rate; // `use` works inside a function too, scoped to it
+    use crate::billing::total; // absolute path from this crate's root
+
+    let mut by_country: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+    let mut sorted = BTreeMap::new();
+    for c in ["NL", "DE", "BE"] {
+        by_country.insert(c, total(10_000, c));
+        sorted.insert(c, rate(c));
+    }
+    println!("rates (sorted): {sorted:?}");
+    println!("NL total: {}", Money(by_country["NL"]));
+    println!("::std path: {}", ::std::cmp::max(3, 7)); // leading :: = an external crate's root
+    println!("config: {:?}", read_config());
+}</code></pre>
+<pre class="output">rates (sorted): {"BE": 20, "DE": 19, "NL": 21}
+NL total: €121.00
+::std path: 7
+config: Ok("ok")</pre>
+<p><code>DEFAULT_RATE</code> is private to <code>billing</code>, yet <code>billing::tax::rate</code> reads it through <code>super::</code>: children see their ancestors' private items. The <code>use</code> declarations inside <code>main</code> apply only within <code>main</code>.</p>
+
+<h3 id="lab-4">Step 4 — the same boundary in .NET</h3>
+<pre data-title="RulesLib/Rules.cs"><code class="language-csharp">namespace RulesLib.Model
+{
+    public class Rule
+    {
+        public string Field { get; }
+        internal Rule(string field) =&gt; Field = field; // like pub(crate): only this assembly
+    }
+}
+
+namespace RulesLib.Parsing
+{
+    internal static class Lexer // like a private module: invisible outside the assembly
+    {
+        public static string[] Tokenize(string s) =&gt; s.Split(' ');
+    }
+
+    public static class Parser
+    {
+        public static Model.Rule Parse(string s) =&gt; new Model.Rule(Lexer.Tokenize(s)[0]);
+    }
+}</code></pre>
+<pre data-title="App/Program.cs (references RulesLib)"><code class="language-csharp">using RulesLib.Model;
+using RulesLib.Parsing;
+
+var ok = Parser.Parse("amount &gt;= 100");           // public API: fine
+Console.WriteLine(ok.Field);
+var tokens = Lexer.Tokenize("amount &gt;= 100");      // internal class from another assembly
+var rule = new Rule("amount");                     // internal constructor from another assembly</code></pre>
+<pre class="output error">App/Program.cs(6,14): error CS0122: 'Lexer' is inaccessible due to its protection level
+App/Program.cs(7,16): error CS1729: 'Rule' does not contain a constructor that takes 1 arguments</pre>
+<p>The assembly boundary works like Rust's crate boundary for <code>internal</code> types (CS0122). Notice what's missing: <code>RulesLib.Parsing</code> and <code>RulesLib.Model</code> are just names. Any type in the same assembly can use any <code>internal</code> member in any namespace, and there's no way to say "only the parser may create rules" short of a separate assembly or nesting classes. Rust's <code>pub(crate)</code>, <code>pub(super)</code> and private modules express exactly that, inside one crate.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">Solutions 1 and 2 were compiled and run and are Clippy-clean; every Exercise 3 verdict comes from rustc.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — make it compile with the least visibility <span class="difficulty">★☆☆</span></div>
+  <p>This program has four visibility errors. Fix them while keeping everything as private as possible: in particular, <code>main</code> must not be able to change <code>attempts</code>, and nothing outside <code>workflow</code> may call <code>should_retry</code>.</p>
+<pre data-title="broken.rs"><code class="language-rust">mod workflow {
+    pub struct Step {
+        name: String,
+        attempts: u32,
+    }
+
+    impl Step {
+        fn new(name: &amp;str) -&gt; Step {
+            Step { name: name.to_string(), attempts: 0 }
+        }
+    }
+
+    mod retry {
+        fn should_retry(step: &amp;super::Step) -&gt; bool {
+            step.attempts &lt; 3
+        }
+    }
+
+    pub fn run(step: &amp;mut Step) -&gt; bool {
+        step.attempts += 1;
+        retry::should_retry(step)
+    }
+}
+
+fn main() {
+    let mut s = workflow::Step::new("charge");
+    println!("retry? {}", workflow::run(&amp;mut s));
+    println!("{} attempts on {}", s.attempts, s.name);
+}</code></pre>
+<pre class="output error">error[E0603]: function `should_retry` is private
+error[E0624]: associated function `new` is private
+error[E0616]: field `attempts` of struct `workflow::Step` is private
+error[E0616]: field `name` of struct `workflow::Step` is private</pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">mod workflow {
+    pub struct Step {
+        name: String,
+        attempts: u32,
+    }
+
+    impl Step {
+        pub fn new(name: &amp;str) -&gt; Step {
+            Step { name: name.to_string(), attempts: 0 }
+        }
+
+        // Read-only access instead of making the fields public.
+        pub fn name(&amp;self) -&gt; &amp;str {
+            &amp;self.name
+        }
+
+        pub fn attempts(&amp;self) -&gt; u32 {
+            self.attempts
+        }
+    }
+
+    mod retry {
+        // pub(super): the parent (workflow) may call it; nothing else can.
+        pub(super) fn should_retry(step: &amp;super::Step) -&gt; bool {
+            step.attempts &lt; 3 // a child module may read its ancestor's private fields
+        }
+    }
+
+    pub fn run(step: &amp;mut Step) -&gt; bool {
+        step.attempts += 1;
+        retry::should_retry(step)
+    }
+}
+
+fn main() {
+    let mut s = workflow::Step::new("charge");
+    println!("retry? {}", workflow::run(&amp;mut s));
+    println!("{} attempts on {}", s.attempts(), s.name());
+}</code></pre>
+<pre class="output">retry? true
+1 attempts on charge</pre>
+  <p><code>new</code> must be <code>pub</code> for <code>main</code> to construct a step. The fields stay private, and read-only accessor methods give <code>main</code> what it needs without letting it change them. <code>should_retry</code> becomes <code>pub(super)</code>, visible to <code>workflow</code> (where <code>run</code> calls it) and nowhere else; plain <code>pub</code> would also compile, because <code>retry</code> is private, but <code>pub(super)</code> states the intent. Notice that <code>should_retry</code> reads <code>step.attempts</code>, a private field of <code>Step</code>, without any change: <code>retry</code> is a descendant of <code>workflow</code>, where <code>Step</code> is defined.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — design a crate's public API <span class="difficulty">★★☆ product skill</span></div>
+  <p>A workflow library has three internal modules: <code>state</code> (an enum), <code>step</code> (a struct with a private state field) and <code>engine</code> (a <code>run_all</code> function). Arrange visibility and re-exports so that callers write <code>use flow::prelude::*;</code> and can use <code>Step</code>, <code>State</code> and <code>run_all</code>, while all three modules stay private. Write it as inline modules so it runs as one file.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">// The library, written inline so the solution runs as one file. In a real crate each
+// `mod x { ... }` below is its own file and `mod flow` is the crate root (lib.rs).
+mod flow {
+    mod state {
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum State {
+            Pending,
+            Running { attempt: u32 },
+            Completed,
+        }
+    }
+
+    mod step {
+        use super::state::State;
+
+        #[derive(Debug)]
+        pub struct Step {
+            pub name: String,
+            state: State,
+        }
+
+        impl Step {
+            pub fn new(name: &amp;str) -&gt; Step {
+                Step { name: name.to_string(), state: State::Pending }
+            }
+            pub fn state(&amp;self) -&gt; &amp;State {
+                &amp;self.state
+            }
+            pub fn start(&amp;mut self) {
+                self.state = State::Running { attempt: 1 };
+            }
+            pub fn complete(&amp;mut self) {
+                self.state = State::Completed;
+            }
+        }
+    }
+
+    mod engine {
+        use super::step::Step;
+
+        pub fn run_all(steps: &amp;mut [Step]) -&gt; usize {
+            for s in steps.iter_mut() {
+                s.start();
+                s.complete();
+            }
+            steps.len()
+        }
+    }
+
+    // The public API: flat, short paths, independent of the files above.
+    pub use engine::run_all;
+    pub use state::State;
+    pub use step::Step;
+
+    pub mod prelude {
+        pub use super::{State, Step, run_all};
+    }
+}
+
+use flow::prelude::*;
+
+fn main() {
+    let mut steps = vec![Step::new("validate"), Step::new("charge")];
+    println!("before: {:?}", steps[0].state());
+    let n = run_all(&amp;mut steps);
+    println!("ran {n} steps; {} is {:?}", steps[1].name, steps[1].state());
+    assert_eq!(steps[1].state(), &amp;State::Completed);
+    println!("ok");
+}</code></pre>
+<pre class="output">before: Pending
+ran 2 steps; charge is Completed
+ok</pre>
+  <p>The three modules are private; the items inside them are <code>pub</code>, which makes them visible to the parent <code>flow</code>, but outsiders can't reach them through the private module paths. The <code>pub use</code> lines then publish them at <code>flow::Step</code> and so on, and the prelude re-exports those again. Inside the library, sibling modules use each other with <code>super::state::State</code>. Split into files, this is exactly <code>lib.rs</code> + <code>state.rs</code> + <code>step.rs</code> + <code>engine.rs</code>, and you can later move <code>Step</code> into <code>step/model.rs</code> without changing a single caller.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — which calls compile? <span class="difficulty">★★☆</span></div>
+  <p>For each marked call (a)–(g), decide whether it compiles. Then check.</p>
+<pre data-title="puzzle.rs"><code class="language-rust">mod billing {
+    pub fn invoice() {}
+    fn audit() {}
+    pub(crate) fn export() {}
+
+    pub mod tax {
+        pub(super) fn rate() {}
+        pub fn label() {
+            super::audit(); // (a)
+        }
+    }
+
+    mod ledger {
+        pub fn post() {}
+    }
+
+    pub fn close() {
+        tax::rate(); // (b)
+        ledger::post(); // (c)
+    }
+}
+
+fn main() {
+    billing::invoice(); // (d)
+    billing::export(); // (e)
+    billing::tax::rate(); // (f)
+    billing::ledger::post(); // (g)
+}</code></pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">(a) compiles   tax is a child of billing; children see their ancestors' private items
+(b) compiles   pub(super) in tax = visible in billing, where close() is
+(c) compiles   ledger is private to billing, and close() is inside billing
+(d) compiles   invoice is pub, billing is visible from the crate root
+(e) compiles   pub(crate): anywhere in this crate
+(f) error[E0603]: function `rate` is private      (main is outside billing)
+(g) error[E0603]: module `ledger` is private      (the module blocks the path)</pre>
+  <p>The two failures are the two rules. (f): <code>rate</code> is <code>pub(super)</code>, which is <code>billing</code>, and <code>main</code> is outside it. (g): <code>post</code> is <code>pub</code>, but the module <code>ledger</code> on its path is private to <code>billing</code>. To let <code>main</code> post to the ledger without exposing the module, re-export: <code>pub use ledger::post;</code> inside <code>billing</code>, then call <code>billing::post()</code>.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which visibility?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>The item is…</th><th>Use</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>An implementation detail of one module</td><td>(private)</td><td>A helper like <code>check</code> in <code>engine.rs</code></td></tr>
+    <tr><td>A helper for the parent module only</td><td><code>pub(super)</code></td><td><code>tokenize</code> in <code>parser::lexer</code></td></tr>
+    <tr><td>Shared between modules, but not part of the API</td><td><code>pub(crate)</code></td><td><code>Rule::new</code>, used by the parser</td></tr>
+    <tr><td>Part of the API callers use</td><td><code>pub</code>, re-exported at a short path</td><td><code>pub use engine::Engine;</code></td></tr>
+    <tr><td>A group of API items callers navigate by name</td><td><code>pub mod</code></td><td><code>ruleset::model</code></td></tr>
+    <tr><td>Data whose invariants the type must protect</td><td>Private fields + constructor + accessors</td><td><code>Rule::source_line()</code></td></tr>
+    <tr><td>Plain data with no invariants</td><td><code>pub</code> fields</td><td><code>Rule::field</code>, <code>Rule::value</code></td></tr>
+    <tr><td>What most callers need</td><td><code>pub mod prelude</code> with re-exports</td><td><code>use ruleset::prelude::*;</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: code organisation</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Group of projects</td><td>Solution (<code>.sln</code>)</td><td>Workspace (chapter 3.5)</td></tr>
+    <tr><td>Build description</td><td><code>.csproj</code></td><td><code>Cargo.toml</code> (one package)</td></tr>
+    <tr><td>Compilation unit</td><td>Assembly (one per project)</td><td>Crate (one library + any number of binaries per package)</td></tr>
+    <tr><td>Which files compile</td><td>Every <code>.cs</code> in the folder</td><td>Only files reached by <code>mod</code> declarations</td></tr>
+    <tr><td>Grouping names</td><td>Namespace (no access control)</td><td>Module (namespace + privacy boundary)</td></tr>
+    <tr><td>Default visibility</td><td>Types <code>internal</code>; members <code>private</code> to the class</td><td>Everything private to the module (fields too)</td></tr>
+    <tr><td>Assembly/crate-wide</td><td><code>internal</code></td><td><code>pub(crate)</code></td></tr>
+    <tr><td>Finer scopes</td><td><code>private</code>, <code>protected</code>, <code>file</code></td><td>private, <code>pub(super)</code>, <code>pub(in path)</code></td></tr>
+    <tr><td>Bringing names in</td><td><code>using Namespace;</code> (namespaces only)</td><td><code>use path;</code> (any item), <code>as</code>, globs</td></tr>
+    <tr><td>Publishing under another name</td><td>Type forwarding (rare)</td><td><code>pub use</code> (everyday)</td></tr>
+    <tr><td>Tests seeing internals</td><td><code>InternalsVisibleTo</code></td><td>Unit tests are child modules (chapter 3.4)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Creating a file and expecting it to compile</div>
+  <p>Nothing happens until its parent declares <code>mod name;</code>. And declare each module once: elsewhere, refer to it with <code>use crate::…</code>, never a second <code>mod</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "It's <code>pub</code>, so it's public"</div>
+  <p>Only if every module on its path is reachable (rule 1). Conversely, a <code>pub</code> item in a private module is a convenient way to share something among siblings without exposing it.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Making every module <code>pub</code> to fix errors</div>
+  <p>Each <code>pub mod</code> turns a file layout into public API. Keep modules private and re-export the items callers need.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>pub</code> fields on types with invariants</div>
+  <p>If a <code>Lease</code> must always have an expiry after its start, public fields let anyone break that. Private fields plus a validating constructor make invalid values unrepresentable outside the module (chapter F8).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Glob imports in library code</div>
+  <p><code>use some_crate::*;</code> can silently change meaning when that crate adds a name. Use globs for preludes, tests and enum variants in a <code>match</code>, and explicit imports elsewhere.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Expecting <code>mod.rs</code></div>
+  <p>Both layouts work, but don't mix them for one module (E0761). New code uses <code>name.rs</code> + <code>name/</code>, so editor tabs don't all read <code>mod.rs</code>.</p></div>
+
+<h2 id="real-world">Real-world view: structuring your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine:</strong> a small public API at the crate root (<code>Engine</code>, <code>Rule</code>, <code>parse</code>, <code>EvalError</code>, a prelude), with private modules for the lexer, parser, compiler and evaluator. <code>pub(crate)</code> constructors guarantee that every compiled rule passed validation.</li>
+    <li><strong>Workflow engine:</strong> a workspace of crates: a core crate (state machine, events), a persistence crate, a worker binary and an SDK crate for customers. The SDK's public API is the product; everything else stays <code>pub(crate)</code> or private (chapters 3.5, 10.8).</li>
+    <li><strong>API stability:</strong> re-exports let you reorganise internals between releases without breaking customers; anything reachable is covered by semver (chapter 3.5).</li>
+    <li><strong>Documentation:</strong> <code>cargo doc</code> documents exactly the public API, so reviewing its output is a quick check that nothing leaked (Lab step 1).</li>
+    <li><strong>Review checklist:</strong> <code>pub mod</code> that should be private with re-exports; <code>pub</code> fields on types with invariants; <code>pub</code> where <code>pub(crate)</code> would do; glob imports in library code; files without <code>mod</code> declarations; public functions exposing less-visible types.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.7">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How many library and binary crates can one package contain?</div>
+    <ol class="options">
+      <li data-key="a">Exactly one of each</li>
+      <li data-key="b">Any number of each</li>
+      <li data-key="c">At most one library crate, and any number of binary crates (at least one crate in total)</li>
+      <li data-key="d">One crate only</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">A package can be library-only or binary-only.</p>
+      <p data-for="b">Only one library.</p>
+      <p data-for="c">Correct (the Book; Lab step 1 has one library and two binaries).</p>
+      <p data-for="d">See <code>src/bin/</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You add <code>src/audit.rs</code> with a public function, but nothing can call it and there's no error. Why?</div>
+    <ol class="options">
+      <li data-key="a">No module declares it with <code>mod audit;</code>, so the file isn't part of the crate at all</li>
+      <li data-key="b">The function needs <code>pub(crate)</code></li>
+      <li data-key="c">Files must be listed in <code>Cargo.toml</code></li>
+      <li data-key="d">Rust only compiles <code>main.rs</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Figure 2, step 7).</p>
+      <p data-for="b">Visibility doesn't matter for an uncompiled file.</p>
+      <p data-for="c">Cargo doesn't list source files; <code>mod</code> does.</p>
+      <p data-for="d">It compiles every file reached by <code>mod</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">A module <code>retry</code> inside <code>workflow</code> reads a private field of <code>workflow::Step</code>. Does it compile?</div>
+    <ol class="options">
+      <li data-key="a">No: private fields are only for <code>impl Step</code></li>
+      <li data-key="b">Only with <code>pub(super)</code> on the field</li>
+      <li data-key="c">Only if <code>retry</code> is <code>pub</code></li>
+      <li data-key="d">Yes: private items are visible to their module and its descendants, and <code>retry</code> is a descendant of <code>workflow</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Privacy is per module, not per type.</p>
+      <p data-for="b">Not needed for descendants.</p>
+      <p data-for="c"><code>retry</code>'s own visibility doesn't matter here.</p>
+      <p data-for="d">Correct (Exercise 1).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>mod ledger { pub fn post() {} }</code> is declared inside <code>mod billing</code> (both private). Can <code>main</code> call <code>billing::ledger::post()</code>?</div>
+    <ol class="options">
+      <li data-key="a">Yes, <code>post</code> is <code>pub</code></li>
+      <li data-key="b">No: <code>ledger</code> is private to <code>billing</code>, so the path is blocked (E0603 "module <code>ledger</code> is private"); re-export it from <code>billing</code> to allow it</li>
+      <li data-key="c">Only with <code>use</code></li>
+      <li data-key="d">Only from another crate</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Rule 1: every ancestor module must be reachable.</p>
+      <p data-for="b">Correct (Exercise 3 (g)).</p>
+      <p data-for="c"><code>use</code> follows the same rules.</p>
+      <p data-for="d">Other crates see even less.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What's the Rust equivalent of C#'s <code>internal</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>pub(super)</code></li>
+      <li data-key="b">Private (no keyword)</li>
+      <li data-key="c"><code>pub(crate)</code></li>
+      <li data-key="d"><code>pub</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the parent module only.</p>
+      <p data-for="b">That's the current module and its descendants.</p>
+      <p data-for="c">Correct: the whole crate, nothing outside.</p>
+      <p data-for="d">That's <code>public</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Customers write <code>use ruleset::engine::Engine;</code>, and you want to split <code>engine.rs</code> into several files. What should you have done?</div>
+    <ol class="options">
+      <li data-key="a">Kept <code>engine</code> private and re-exported <code>pub use engine::Engine;</code>, so callers use <code>ruleset::Engine</code> and the layout can change freely</li>
+      <li data-key="b">Made every module <code>pub</code></li>
+      <li data-key="c">Put everything in <code>lib.rs</code></li>
+      <li data-key="d">Nothing; Rust paths can't change</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 1, e1).</p>
+      <p data-for="b">That's what made the layout part of the API.</p>
+      <p data-for="c">It works, but doesn't scale.</p>
+      <p data-for="d">They can, with re-exports.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does <code>Rule { field, op, value, source_line: 1 }</code> fail outside the library?</div>
+    <ol class="options">
+      <li data-key="a"><code>Rule</code> isn't public</li>
+      <li data-key="b">Struct literals are never allowed outside a module</li>
+      <li data-key="c">It needs <code>Rule::default()</code></li>
+      <li data-key="d"><code>source_line</code> is a private field, so outside code can't build the struct with a literal (E0451) and must use a constructor</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>Rule</code> is public, via the prelude.</p>
+      <p data-for="b">They're allowed when every field is visible.</p>
+      <p data-for="c">There's no <code>Default</code> impl here.</p>
+      <p data-for="d">Correct (e2).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Inside <code>billing::tax</code>, what does <code>super::DEFAULT_RATE</code> refer to?</div>
+    <ol class="options">
+      <li data-key="a">A constant in the crate root</li>
+      <li data-key="b">A constant in the parent module, <code>billing</code></li>
+      <li data-key="c">A constant in <code>tax</code></li>
+      <li data-key="d">The standard library</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>crate::</code>.</p>
+      <p data-for="b">Correct (Lab step 3).</p>
+      <p data-for="c">That's <code>self::</code>.</p>
+      <p data-for="d">That's <code>std::</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your <code>src/main.rs</code> wants to use the library in the same package. How does it refer to it?</div>
+    <ol class="options">
+      <li data-key="a"><code>mod lib;</code></li>
+      <li data-key="b"><code>crate::Engine</code></li>
+      <li data-key="c">By the package name, as a separate crate: <code>use ruleset::Engine;</code>, seeing only the public API</li>
+      <li data-key="d"><code>super::Engine</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That would compile <code>lib.rs</code> a second time as a module of the binary, a common mistake.</p>
+      <p data-for="b"><code>crate</code> is the binary crate itself.</p>
+      <p data-for="c">Correct (Lab step 1; <code>cargo build -v</code> shows <code>--extern ruleset</code>).</p>
+      <p data-for="d">The crate root has no parent.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why do many crates offer a <code>prelude</code> module?</div>
+    <ol class="options">
+      <li data-key="a">So callers can import the commonly needed items with one <code>use crate_name::prelude::*;</code></li>
+      <li data-key="b">It's required by Cargo</li>
+      <li data-key="c">It makes code faster</li>
+      <li data-key="d">To make private items public</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct; it's a re-export convention, like std's own prelude.</p>
+      <p data-for="b">It's a convention only.</p>
+      <p data-for="c">Imports don't affect performance.</p>
+      <p data-for="d">It can only re-export items that are already visible to it.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>A package (<code>Cargo.toml</code>) holds at most one library crate (<code>src/lib.rs</code>) and any number of binary crates (<code>src/main.rs</code>, <code>src/bin/*.rs</code>); binaries use the library by name, through its public API.</li>
+  <li>Modules form a tree from the crate root, built by <code>mod</code> declarations: <code>mod x;</code> loads <code>x.rs</code> (or <code>x/mod.rs</code>), and children live in <code>x/</code>. Files without a <code>mod</code> line aren't compiled (E0583 and E0761 for missing or ambiguous files).</li>
+  <li>Everything is private by default, visible in its module and descendants; <code>pub(super)</code>, <code>pub(in path)</code>, <code>pub(crate)</code> and <code>pub</code> widen it, and a public item is reachable only if every module on its path is. Fields are private separately from their struct (E0451, E0616).</li>
+  <li>Paths start at <code>crate::</code>, <code>self::</code>, <code>super::</code> or another crate's name; <code>use</code> imports any item, with groups, <code>self</code>, <code>as</code> and globs; the std prelude needs no import.</li>
+  <li><code>pub use</code> re-exports and a <code>prelude</code> module define a small, stable public API independent of the file layout. Unlike C# namespaces, Rust modules enforce privacy.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">package</li><li class="chip">library crate</li><li class="chip">crate root</li><li class="chip">module</li><li class="chip">visibility</li>
+  <li class="chip">pub(crate)</li><li class="chip">path</li><li class="chip">use declaration</li><li class="chip">re-export</li><li class="chip">prelude</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html">The Rust Programming Language — Packages, Crates, and Modules</a> (chapter 7)<span class="why">The definitions quoted here, and the restaurant example that builds a module tree step by step.</span></li>
+  <li><span class="ref-type doc">Doc</span>The Rust Reference: <a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a>, <a href="https://doc.rust-lang.org/reference/items/modules.html">Modules</a>, <a href="https://doc.rust-lang.org/reference/items/use-declarations.html">Use declarations</a><span class="why">The two access rules and the exact meaning of each <code>pub(…)</code> form, quoted in this chapter.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html">Edition Guide — Path and module system changes (2018)</a> and <a href="https://doc.rust-lang.org/cargo/reference/cargo-targets.html">Cargo — Targets</a><span class="why">Why <code>extern crate</code> and <code>mod.rs</code> are no longer needed, and how Cargo discovers library, binary, example and test crates.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://rust-lang.github.io/api-guidelines/">Rust API Guidelines</a><span class="why">The community checklist for public APIs: naming, re-exports, and what to keep private.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/accessibility-levels">Accessibility levels (C#)</a><span class="why">The .NET defaults compared in this chapter, including "Namespaces have no access restrictions."</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/361598.361623">“On the Criteria to Be Used in Decomposing Systems into Modules”</a> — David L. Parnas, Communications of the ACM 15(12), 1972<span class="why">The foundational argument for information hiding that Rust's private-by-default modules put into practice.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=5RPXgDQrjio">“Rust's Module System Explained!”</a> — Let's Get Rusty<span class="why">Packages, crates, modules and paths walked through on screen, a good second pass over Figures 1 and 2.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=969j0qnJGi8">“Rust Modules - Explained Like I'm 5”</a> — Let's Get Rusty<span class="why">A short, very concrete take on the file-to-module mapping.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- visibility explorer (Figure 3) ----------
+  // Each item: its path and visibility scope ("pub" = everywhere incl. other crates, "crate", or a module path; "" = crate root).
+  var ITEMS = [
+    { path: "a::pub_fn",        decl: "pub fn pub_fn()",                scope: "pub" },
+    { path: "a::crate_fn",      decl: "pub(crate) fn crate_fn()",       scope: "crate" },
+    { path: "a::super_fn",      decl: "pub(super) fn super_fn()",       scope: "" },
+    { path: "a::private_fn",    decl: "fn private_fn()",                scope: "a" },
+    { path: "a::b::pub_fn",     decl: "pub fn pub_fn()",                scope: "pub" },
+    { path: "a::b::crate_fn",   decl: "pub(crate) fn crate_fn()",       scope: "crate" },
+    { path: "a::b::super_fn",   decl: "pub(super) fn super_fn()",       scope: "a" },
+    { path: "a::b::in_a_fn",    decl: "pub(in crate::a) fn in_a_fn()",  scope: "a" },
+    { path: "a::b::private_fn", decl: "fn private_fn()",                scope: "a::b" },
+    { path: "a::c::pub_fn",     decl: "pub fn pub_fn()",                scope: "pub", privateModule: { name: "c", scope: "a" } }
+  ];
+  var SITES = [["", "crate root"], ["x", "mod x (sibling of a)"], ["a", "mod a"], ["a::b", "mod a::b"], ["a::b::d", "mod a::b::d"], ["external", "another crate"]];
+  function within(site, scope) {
+    if (scope === "pub") return true;
+    if (site === "external") return false;
+    if (scope === "crate" || scope === "") return true;
+    return site === scope || site.indexOf(scope + "::") === 0;
+  }
+  function access(item, site) {
+    if (item.privateModule && !within(site, item.privateModule.scope))
+      return "error[E0603]: module `" + item.privateModule.name + "` is private";
+    if (!within(site, item.scope)) return "error[E0603]: function `" + item.path.split("::").pop() + "` is private";
+    return null;
+  }
+  window.__vx = { access: access, items: ITEMS, sites: SITES.map(function (s) { return s[0]; }) };
+
+  var state = { item: 9, site: 0 };
+  function el(id) { return document.getElementById(id); }
+  SITES.forEach(function (s, i) {
+    var b = document.createElement("button"); b.type = "button"; b.textContent = "call from " + s[1];
+    b.onclick = function () { state.site = i; render(); };
+    el("vx-sites").appendChild(b);
+  });
+  function why(item, site, err) {
+    var where = site === "" ? "the crate root" : site === "external" ? "another crate" : "module " + site;
+    if (item.privateModule && !within(site, item.privateModule.scope))
+      return "The function is pub, but module c is private to a, so the path a::c is blocked from " + where + " (rule 1: every module on the path must be reachable).";
+    var scopeText = item.scope === "pub" ? "everywhere its path is reachable" : item.scope === "crate" ? "anywhere in this crate" : item.scope === "" ? "the crate root and everything below it (pub(super) in a), but not other crates" : "module " + item.scope + " and its descendants";
+    return (err ? "Not visible: " : "Visible: ") + item.decl + " is visible in " + scopeText + "; the call is in " + where + ".";
+  }
+  function line(indent, html) { return "<div>" + indent + html + "</div>"; }
+  function itemBtn(i) {
+    var it = ITEMS[i];
+    return '<button type="button" class="item" data-i="' + i + '" aria-pressed="' + (state.item === i) + '">' + it.decl + " {}</button>";
+  }
+  function siteMark(i) {
+    var r = access(ITEMS[state.item], SITES[i][0]);
+    return '<span class="site ' + (r ? "no" : "ok") + (state.site === i ? " on" : "") + '">// call site: ' + SITES[i][1] + "</span>";
+  }
+  function render() {
+    var h = "";
+    h += line("", "pub mod a {");
+    [0, 1, 2, 3].forEach(function (i) { h += line("    ", itemBtn(i)); });
+    h += line("    ", siteMark(2));
+    h += line("    ", "pub mod b {");
+    [4, 5, 6, 7, 8].forEach(function (i) { h += line("        ", itemBtn(i)); });
+    h += line("        ", siteMark(3));
+    h += line("        ", "pub mod d {");
+    h += line("            ", siteMark(4));
+    h += line("        ", "}");
+    h += line("    ", "}");
+    h += line("    ", "mod c {");
+    h += line("        ", itemBtn(9));
+    h += line("    ", "}");
+    h += line("", "}");
+    h += line("", "pub mod x {");
+    h += line("    ", siteMark(1));
+    h += line("", "}");
+    h += line("", siteMark(0));
+    h += line("", siteMark(5));
+    el("vx-tree").innerHTML = h;
+    Array.prototype.forEach.call(el("vx-tree").querySelectorAll("button.item"), function (b) {
+      b.onclick = function () { state.item = +b.dataset.i; render(); };
+    });
+    Array.prototype.forEach.call(el("vx-sites").children, function (b, i) { b.setAttribute("aria-pressed", String(i === state.site)); });
+    var it = ITEMS[state.item], site = SITES[state.site][0], err = access(it, site);
+    el("vx-call").textContent = (site === "external" ? "rules::" : "crate::") + it.path + "();   // written in " + SITES[state.site][1];
+    var out = el("vx-out");
+    out.className = "vx-out " + (err ? "bad" : "ok");
+    out.textContent = err || "✓ compiles";
+    el("vx-why").textContent = why(it, site, err);
+  }
+  render();
+});
+</script>
+</body>
+</html>

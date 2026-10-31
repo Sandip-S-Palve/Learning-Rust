@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.8 Standard collections</title>
+<meta name="description" content="Vec, VecDeque, HashMap, BTreeMap, HashSet and BinaryHeap in everyday Rust: ownership of elements, the four ways to iterate, the Entry API, key requirements, ordered and range queries, compared with .NET collections, with a collection chooser and measured counting costs in both languages.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .cc-q { margin-bottom: 10px; }
+  .cc-q h5 { margin: 0 0 4px; font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .cc-q div { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cc-q button { font: .8rem var(--font-body); padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .cc-q button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cc-q.hidden { display: none; }
+  .cc-result { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface); margin-top: 6px; }
+  .cc-result h4 { margin: 0 0 6px; font: 700 1.05rem var(--font-mono); }
+  .cc-costs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .cc-costs span { font: .76rem var(--font-mono); padding: 2px 6px; border-radius: 4px; background: var(--surface-2); }
+  .cc-result p { margin: 4px 0; font-size: .86rem; }
+</style>
+</head>
+<body data-chapter="2.8">
+<article class="content">
+<h1>Standard collections</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Use <code>Vec</code>, <code>VecDeque</code>, <code>HashMap</code>, <code>BTreeMap</code>, <code>HashSet</code> and <code>BinaryHeap</code> idiomatically, and choose between them from their costs</li>
+      <li>Explain how ownership works for elements: moving values in and out, borrowing them, and the four ways to iterate (<code>iter</code>, <code>iter_mut</code>, <code>into_iter</code>, <code>drain</code>)</li>
+      <li>Use the Entry API for insert-or-update in one lookup, and look up <code>String</code> keys with <code>&amp;str</code></li>
+      <li>State what a key type needs (<code>Eq + Hash</code>, or <code>Ord</code>), and read the errors when it's missing</li>
+      <li>Map each collection to its .NET counterpart, and recognise where Rust's borrow rules turn .NET run-time hazards into compile errors</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Chapters F3 to F5 taught what dynamic arrays, hash tables, B-trees and heaps <em>are</em> and what they cost. This chapter is about using Rust's versions well, which differs from .NET in ways that matter every day. A collection <em>owns</em> its elements, so putting a <code>String</code> into a <code>Vec</code> moves it, and iterating can borrow, mutate or consume. The borrow checker stops you holding a reference into a map while you insert into it, the bug that .NET only catches at run time or documents as "don't do this". And the Entry API makes "insert or update" a single lookup, with a trap around owned keys that Lab step 5 measures.</p>
+  <p>For your products these are the core building blocks: the rule engine indexes rules by field in a <code>HashMap</code>, the workflow engine keeps timers in a <code>BinaryHeap</code>, an audit trail in a <code>BTreeMap</code> answers "what happened between 10:00 and 10:05", and a <code>HashSet</code> of processed event ids makes redelivered messages harmless (Lab step 4).</p>
+</div>
+
+<h2 id="intuition">Intuition first: an office's storage</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong><code>Vec</code></strong> is a shelf of numbered boxes: grab box 7 instantly, add to the end cheaply, but inserting at the front means shifting everything.</li>
+    <li><strong><code>VecDeque</code></strong> is a circular conveyor: load and unload at either end.</li>
+    <li><strong><code>HashMap</code></strong> is a wall of pigeonholes labelled by a code computed from the name: go straight to the right hole, in no meaningful order.</li>
+    <li><strong><code>BTreeMap</code></strong> is a filing cabinet in alphabetical order: a few steps to find anything, and "everything from Jansen to Kok" is one easy pull.</li>
+    <li><strong><code>HashSet</code></strong>/<strong><code>BTreeSet</code></strong> are the same pigeonholes or cabinet holding only names: "have we seen this before?"</li>
+    <li><strong><code>BinaryHeap</code></strong> is a triage desk: whatever is most urgent is always on top, and nothing else is sorted.</li>
+  </ul>
+  <p>And the Rust part: every item on the shelf <em>belongs</em> to the shelf. You can look at it (borrow), adjust it in place (borrow mutably), or take it away (move it out). While someone is reading a label, nobody may rearrange the shelf.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">var ids = new List&lt;int&gt; { 42, 7 };
+var counts = new Dictionary&lt;string, int&gt;();
+foreach (var w in words)
+{
+    counts.TryGetValue(w, out var c);  // lookup 1
+    counts[w] = c + 1;                 // lookup 2
+}
+var byTime = new SortedDictionary&lt;long, string&gt;();
+var timers = new PriorityQueue&lt;string, long&gt;(); // min-heap</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">use std::collections::{BTreeMap, BinaryHeap, HashMap};
+let words = ["charge", "refund", "charge"];
+let ids = vec![42, 7];
+let mut counts: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+for w in words {
+    *counts.entry(w).or_insert(0) += 1; // one lookup
+}
+let by_time: BTreeMap&lt;u64, String&gt; = BTreeMap::new();
+let timers: BinaryHeap&lt;u64&gt; = BinaryHeap::new(); // max-heap
+println!("{ids:?} {counts:?} {} {}", by_time.len(), timers.len());</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="family">The family</h3>
+<p>Everything except <code>Vec</code> lives in <code>std::collections</code>. The standard library's own guidance, condensed:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Type</th><th>Use it when (std docs)</th><th>Key costs (std docs)</th><th>.NET</th></tr></thead>
+  <tbody>
+    <tr><td><dfn data-term="Vec" data-def="Vec&lt;T&gt;: Rust's growable, contiguous array (pointer, length, capacity); amortised O(1) push, O(1) indexing, O(n−i) insert/remove at i. C# List&lt;T&gt;.">Vec&lt;T&gt;</dfn></td><td>"a sequence of elements in a particular order", appending at the end; a stack</td><td><code>get</code> O(1), <code>push</code> O(1)*, <code>insert(i)</code> O(n−i)*</td><td><code>List&lt;T&gt;</code></td></tr>
+    <tr><td><dfn data-term="VecDeque" data-def="VecDeque&lt;T&gt;: a growable ring buffer with O(1) amortised push/pop at both ends and O(1) indexing; Rust's queue and deque. .NET has Queue&lt;T&gt; (one end) but no built-in deque.">VecDeque&lt;T&gt;</dfn></td><td>"efficient insertion at both ends"; a queue</td><td><code>get</code> O(1), push/pop at either end O(1)*</td><td><code>Queue&lt;T&gt;</code> (no built-in deque)</td></tr>
+    <tr><td><dfn data-term="HashMap" data-def="HashMap&lt;K, V&gt;: an unordered hash table (SwissTable layout, SipHash-1-3 by default); expected O(1) get/insert/remove. Keys need Eq + Hash. C# Dictionary&lt;K, V&gt;.">HashMap&lt;K, V&gt;</dfn></td><td>"associate arbitrary keys with an arbitrary value"; a cache</td><td><code>get</code>/<code>insert</code>/<code>remove</code> O(1)~</td><td><code>Dictionary&lt;K, V&gt;</code></td></tr>
+    <tr><td><dfn data-term="BTreeMap" data-def="BTreeMap&lt;K, V&gt;: an ordered map built as a B-tree (nodes of up to 11 keys); O(log n) get/insert/remove, sorted iteration, range queries, first/last. Keys need Ord. C# SortedDictionary&lt;K, V&gt;.">BTreeMap&lt;K, V&gt;</dfn></td><td>"a map sorted by its keys"; ranges; smallest/largest</td><td>O(log n); <code>range</code> O(log n) to start</td><td><code>SortedDictionary&lt;K, V&gt;</code></td></tr>
+    <tr><td><code>HashSet&lt;T&gt;</code>, <code>BTreeSet&lt;T&gt;</code></td><td>"remember which keys you've seen"</td><td>As the matching map</td><td><code>HashSet&lt;T&gt;</code>, <code>SortedSet&lt;T&gt;</code></td></tr>
+    <tr><td><dfn data-term="BinaryHeap" data-def="BinaryHeap&lt;T&gt;: a priority queue stored as an array-backed binary max-heap: push O(1) expected, pop O(log n), peek O(1). Wrap items in std::cmp::Reverse for a min-heap. C# PriorityQueue is a min-heap.">BinaryHeap&lt;T&gt;</dfn></td><td>"only ever want to process the biggest or most important one"</td><td><code>push</code> O(1)~, <code>pop</code> O(log n), <code>peek</code> O(1)</td><td><code>PriorityQueue&lt;E, P&gt;</code> (a min-heap)</td></tr>
+  </tbody>
+</table></div>
+<p class="small muted">* amortised (resizing averaged over many operations); ~ expected (a hash table can do worse with collisions, chapter F4). From the <code>std::collections</code> performance table and the <code>BinaryHeap</code> docs. <code>LinkedList</code> exists too, but chapter F3 showed why it rarely wins; the docs agree that "where ties occur, <code>Vec</code> is generally faster than <code>VecDeque</code>, and <code>VecDeque</code> is generally faster than <code>LinkedList</code>."</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · what each collection looks like in memory</span>
+  <svg viewBox="0 0 720 330" role="img" aria-label="Memory layout sketches: Vec contiguous with spare capacity; VecDeque ring buffer with head wrapping around; HashMap control bytes and slots; BTreeMap nodes of up to 11 keys; BinaryHeap array viewed as a tree">
+    <text x="20" y="26" class="svg-title">Vec&lt;T&gt;</text>
+    <g><rect x="20" y="36" width="40" height="26" rx="3" class="svg-teal"/><rect x="60" y="36" width="40" height="26" rx="3" class="svg-teal"/><rect x="100" y="36" width="40" height="26" rx="3" class="svg-teal"/><rect x="140" y="36" width="40" height="26" rx="3" class="svg-teal"/><rect x="180" y="36" width="40" height="26" rx="3" class="svg-box"/><rect x="220" y="36" width="40" height="26" rx="3" class="svg-box"/></g>
+    <text x="20" y="80" class="svg-text-sm">len 4, capacity 6: one block, in order</text>
+
+    <text x="300" y="26" class="svg-title">VecDeque&lt;T&gt;</text>
+    <g><rect x="300" y="36" width="40" height="26" rx="3" class="svg-purple"/><rect x="340" y="36" width="40" height="26" rx="3" class="svg-purple"/><rect x="380" y="36" width="40" height="26" rx="3" class="svg-box"/><rect x="420" y="36" width="40" height="26" rx="3" class="svg-box"/><rect x="460" y="36" width="40" height="26" rx="3" class="svg-purple"/><rect x="500" y="36" width="40" height="26" rx="3" class="svg-purple"/></g>
+    <text x="480" y="76" class="svg-text-sm" text-anchor="middle">head ↑</text>
+    <text x="300" y="92" class="svg-text-sm">a ring: the front can wrap around the end</text>
+
+    <text x="20" y="128" class="svg-title">HashMap&lt;K, V&gt;</text>
+    <g><rect x="20" y="138" width="22" height="20" rx="2" class="svg-amber"/><rect x="42" y="138" width="22" height="20" rx="2" class="svg-box"/><rect x="64" y="138" width="22" height="20" rx="2" class="svg-amber"/><rect x="86" y="138" width="22" height="20" rx="2" class="svg-amber"/><rect x="108" y="138" width="22" height="20" rx="2" class="svg-box"/><rect x="130" y="138" width="22" height="20" rx="2" class="svg-amber"/><rect x="152" y="138" width="22" height="20" rx="2" class="svg-box"/><rect x="174" y="138" width="22" height="20" rx="2" class="svg-box"/></g>
+    <text x="206" y="153" class="svg-text-sm">control bytes (hash bits)</text>
+    <g><rect x="20" y="166" width="22" height="34" rx="2" class="svg-amber"/><rect x="42" y="166" width="22" height="34" rx="2" class="svg-box"/><rect x="64" y="166" width="22" height="34" rx="2" class="svg-amber"/><rect x="86" y="166" width="22" height="34" rx="2" class="svg-amber"/><rect x="108" y="166" width="22" height="34" rx="2" class="svg-box"/><rect x="130" y="166" width="22" height="34" rx="2" class="svg-amber"/><rect x="152" y="166" width="22" height="34" rx="2" class="svg-box"/><rect x="174" y="166" width="22" height="34" rx="2" class="svg-box"/></g>
+    <text x="206" y="188" class="svg-text-sm">(K, V) slots: no order (F4)</text>
+
+    <text x="420" y="128" class="svg-title">BTreeMap&lt;K, V&gt;</text>
+    <rect x="490" y="138" width="130" height="26" rx="4" class="svg-teal"/><text x="555" y="156" class="svg-mono" text-anchor="middle">20 | 50</text>
+    <rect x="420" y="190" width="90" height="26" rx="4" class="svg-teal"/><text x="465" y="208" class="svg-mono" text-anchor="middle">3 7 12</text>
+    <rect x="520" y="190" width="80" height="26" rx="4" class="svg-teal"/><text x="560" y="208" class="svg-mono" text-anchor="middle">31 40</text>
+    <rect x="610" y="190" width="90" height="26" rx="4" class="svg-teal"/><text x="655" y="208" class="svg-mono" text-anchor="middle">63 77 90</text>
+    <path d="M505 164 L470 190" class="svg-line"/><path d="M555 164 L560 190" class="svg-line"/><path d="M605 164 L650 190" class="svg-line"/>
+    <text x="420" y="234" class="svg-text-sm">sorted nodes of up to 11 keys (B = 6 in std's source)</text>
+
+    <text x="20" y="252" class="svg-title">BinaryHeap&lt;T&gt;</text>
+    <g><rect x="20" y="262" width="40" height="26" rx="3" class="svg-red"/><rect x="60" y="262" width="40" height="26" rx="3" class="svg-purple"/><rect x="100" y="262" width="40" height="26" rx="3" class="svg-purple"/><rect x="140" y="262" width="40" height="26" rx="3" class="svg-box"/><rect x="180" y="262" width="40" height="26" rx="3" class="svg-box"/><rect x="220" y="262" width="40" height="26" rx="3" class="svg-box"/></g>
+    <text x="40" y="280" class="svg-mono" text-anchor="middle">9</text><text x="80" y="280" class="svg-mono" text-anchor="middle">7</text><text x="120" y="280" class="svg-mono" text-anchor="middle">3</text><text x="160" y="280" class="svg-mono" text-anchor="middle">1</text><text x="200" y="280" class="svg-mono" text-anchor="middle">6</text><text x="240" y="280" class="svg-mono" text-anchor="middle">2</text>
+    <text x="20" y="306" class="svg-text-sm">an array read as a tree: children of i at 2i+1, 2i+2; the max at index 0</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> The shapes behind the costs, in brief; chapters F3 (arrays, rings), F4 (SwissTable) and F5 (B-trees, heaps) develop each one. All of them keep their elements in large contiguous blocks, which is why they're fast on modern CPUs, and why a reference into one can be invalidated when it grows.</figcaption>
+</figure>
+
+<h3 id="ownership">Collections own their elements</h3>
+<p>A collection owns what's in it (chapter 2.2). <code>v.push(s)</code> <em>moves</em> <code>s</code> into the vector; dropping the vector drops every element. Getting things back out follows the same rules as everything else:</p>
+<ul>
+  <li><strong>Borrow</strong>: <code>&amp;v[i]</code>, <code>v.get(i)</code> (an <code>Option&lt;&amp;T&gt;</code>, no panic), <code>map.get(&amp;k)</code>, <code>v.first()</code>.</li>
+  <li><strong>Borrow mutably</strong>: <code>&amp;mut v[i]</code>, <code>v.get_mut(i)</code>, <code>map.get_mut(&amp;k)</code>.</li>
+  <li><strong>Move out</strong>: <code>v.pop()</code>, <code>v.remove(i)</code>, <code>v.swap_remove(i)</code>, <code>map.remove(&amp;k)</code>, all returning the value. <code>let s = v[0];</code> is error E0507 for non-<code>Copy</code> elements, because the vector would be left with a hole (chapter 2.2).</li>
+</ul>
+<p>And the borrow rules apply <em>across</em> the collection. While you hold a reference to an element, you can't call anything that might reorganise the storage (<code>push</code>, <code>insert</code>, <code>remove</code>), because a reallocation would leave your reference dangling (Lab step 2, e1: E0502). It's chapter 2.3's rule, and it's exactly the hazard Microsoft documents for <code>CollectionsMarshal.GetValueRefOrAddDefault</code>: "Items should not be added to or removed from the Dictionary while the ref TValue is in use." In C# that's a sentence in the docs; in Rust it's a compile error.</p>
+
+<h3 id="iteration">Four ways to iterate</h3>
+<p>What a loop hands you depends on how you ask:</p>
+<figure class="visual stepper" data-interval="3000">
+  <span class="visual-tag">Animation · iter, iter_mut, into_iter and drain</span>
+  <svg viewBox="0 0 720 260" role="img" aria-label="A Vec of three prices iterated four ways: shared references, mutable references, by value consuming the Vec, and drain which empties it but keeps it">
+    <text x="20" y="28" class="svg-mono">let mut prices = vec![100, 250, 40];</text>
+    <rect x="20" y="44" width="300" height="56" rx="8" class="svg-box-strong"/>
+    <text x="32" y="64" class="svg-mono">prices: Vec&lt;i32&gt;</text>
+    <g data-show="-2"><rect x="150" y="70" width="50" height="24" rx="3" class="svg-teal"/><rect x="200" y="70" width="50" height="24" rx="3" class="svg-teal"/><rect x="250" y="70" width="50" height="24" rx="3" class="svg-teal"/></g>
+    <g data-show="=1"><text x="175" y="87" class="svg-mono" text-anchor="middle">100</text><text x="225" y="87" class="svg-mono" text-anchor="middle">250</text><text x="275" y="87" class="svg-mono" text-anchor="middle">40</text></g>
+    <g data-show="=2"><text x="175" y="87" class="svg-mono" text-anchor="middle">101</text><text x="225" y="87" class="svg-mono" text-anchor="middle">251</text><text x="275" y="87" class="svg-mono" text-anchor="middle">41</text></g>
+    <g data-show="=3"><rect x="20" y="44" width="300" height="56" rx="8" class="svg-red"/><text x="170" y="88" class="svg-text-sm" text-anchor="middle">moved: unusable after the loop</text></g>
+    <g data-show="=4"><rect x="150" y="70" width="150" height="24" rx="3" class="svg-box"/><text x="225" y="87" class="svg-text-sm" text-anchor="middle">empty, capacity kept</text></g>
+
+    <text x="360" y="64" class="svg-mono" data-show="=1">for p in &amp;prices        // or prices.iter()</text>
+    <text x="360" y="64" class="svg-mono" data-show="=2">for p in &amp;mut prices    // or iter_mut()</text>
+    <text x="360" y="64" class="svg-mono" data-show="=3">for p in prices         // or into_iter()</text>
+    <text x="360" y="64" class="svg-mono" data-show="=4">for p in prices.drain(..)</text>
+    <text x="360" y="90" class="svg-text-sm" data-show="=1">p: &amp;i32: read; prices still usable afterwards</text>
+    <text x="360" y="90" class="svg-text-sm" data-show="=2">p: &amp;mut i32: *p += 1 changes it in place</text>
+    <text x="360" y="90" class="svg-text-sm" data-show="=3">p: i32: each element moved out, the Vec consumed</text>
+    <text x="360" y="90" class="svg-text-sm" data-show="=4">p: i32: elements moved out, the Vec stays (empty)</text>
+
+    <g data-show="1-"><rect x="20" y="130" width="160" height="40" rx="6" class="svg-teal" data-hl="1"/><text x="100" y="155" class="svg-mono" text-anchor="middle">&amp;T  (borrow)</text></g>
+    <g data-show="2-"><rect x="196" y="130" width="160" height="40" rx="6" class="svg-purple" data-hl="2"/><text x="276" y="155" class="svg-mono" text-anchor="middle">&amp;mut T</text></g>
+    <g data-show="3-"><rect x="372" y="130" width="160" height="40" rx="6" class="svg-red" data-hl="3"/><text x="452" y="155" class="svg-mono" text-anchor="middle">T  (consume)</text></g>
+    <g data-show="4-"><rect x="548" y="130" width="160" height="40" rx="6" class="svg-amber" data-hl="4"/><text x="628" y="155" class="svg-mono" text-anchor="middle">T  (drain)</text></g>
+    <text x="360" y="210" class="svg-text-sm" text-anchor="middle" data-show="=5">same for every collection: map.iter() gives (&amp;K, &amp;V), map.iter_mut() (&amp;K, &amp;mut V),</text>
+    <text x="360" y="230" class="svg-text-sm" text-anchor="middle" data-show="=5">for (k, v) in map consumes it, map.drain() empties it; keys are never mutable (that would break the table)</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>for p in &amp;prices</code> (or <code>prices.iter()</code>) lends each element as <code>&amp;i32</code>. The vector is borrowed for the loop and fully usable afterwards. This is the default choice.</li>
+    <li><code>for p in &amp;mut prices</code> (or <code>iter_mut()</code>) lends each as <code>&amp;mut i32</code>, so <code>*p += 1</code> changes the elements in place, still without moving anything.</li>
+    <li><code>for p in prices</code> (or <code>into_iter()</code>) moves each element out and consumes the vector. Using <code>prices</code> afterwards is E0382 (Lab step 2, e2). Use it when you're done with the collection, for example to move <code>String</code>s into another structure without cloning.</li>
+    <li><code>prices.drain(..)</code> also moves elements out, but leaves the vector in place, empty, with its capacity kept for reuse. A range drains just part of it.</li>
+    <li>The same four forms exist for every collection. For maps, keys are always lent immutably, because changing a key in place would put it in the wrong slot.</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> One question decides the form: after the loop, do you still need the collection, and do you need to change or take its elements? These are chapter 2.2's ownership and chapter 2.3's borrowing, applied to loops. Iterator adapters (<code>map</code>, <code>filter</code>, <code>collect</code>) come in chapter 2.10.</figcaption>
+</figure>
+
+<p>Two more consuming tools you'll use constantly: <code>v.retain(|x| keep(x))</code> removes elements in place (the fix for "remove while iterating", e5), and <code>v.extend(other)</code> appends another collection's elements. Lab step 1 runs them all.</p>
+
+<h3 id="entry">The Entry API</h3>
+<p>"Add to the count if present, insert 1 if not" is the most common map operation. The naive version looks the key up twice. The <dfn data-term="Entry API" data-def="map.entry(key) returns an Entry (Occupied or Vacant) after one lookup; or_insert, or_insert_with, or_default and and_modify then update or insert in place. Requires an owned key. Like C#'s CollectionsMarshal.GetValueRefOrAddDefault, but borrow-checked.">Entry API</dfn> looks it up once and hands you a view of the slot, either occupied or vacant:</p>
+<pre data-title="the Entry API"><code class="language-rust">use std::collections::HashMap;
+
+let mut counts: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+for e in ["charge", "refund", "charge"] {
+    *counts.entry(e).or_insert(0) += 1; // insert 0 if vacant, then add 1
+}
+let mut by_field: HashMap&lt;&amp;str, Vec&lt;u32&gt;&gt; = HashMap::new();
+by_field.entry("amount").or_default().push(1); // Vec::new() if vacant
+let mut cache: HashMap&lt;u32, String&gt; = HashMap::new();
+cache.entry(7).and_modify(|v| v.push('!')).or_insert_with(|| "computed".into());
+println!("{counts:?} {by_field:?} {cache:?}");</code></pre>
+<p><code>or_insert(v)</code> inserts a ready value, <code>or_insert_with(|| …)</code> computes one only when needed, <code>or_default()</code> uses <code>Default</code>, and <code>and_modify(|v| …)</code> changes an existing value. Each returns <code>&amp;mut V</code>, so you can update in place. That reference borrows the map, so the compiler guarantees nothing else touches the map while you use it, which is the guarantee C#'s <code>CollectionsMarshal</code> can only ask for in its documentation.</p>
+<p>One catch: <code>entry</code> takes the key <em>by value</em>. With <code>String</code> keys, <code>map.entry(word.to_string())</code> allocates a new <code>String</code> on every call, even when the key is already present. Lab step 5 measures that at about 2.3× slower than looking up first with <code>get_mut(&amp;str)</code> and allocating only for new keys.</p>
+
+<h3 id="keys">What a key needs</h3>
+<ul>
+  <li><strong><code>HashMap</code>/<code>HashSet</code> keys need <code>Eq + Hash</code></strong>, and equal values must have equal hashes (chapter F4). Strings, integers, <code>char</code>, <code>bool</code>, tuples of them, and your own types with <code>#[derive(PartialEq, Eq, Hash)]</code> qualify. <strong><code>f64</code> doesn't</strong>, because <code>NaN != NaN</code> breaks <code>Eq</code> (Lab step 2, e3). Use integer cents or an ordered-float wrapper.</li>
+  <li><strong><code>BTreeMap</code>/<code>BTreeSet</code> keys need <code>Ord</code></strong>, a total order: <code>#[derive(PartialEq, Eq, PartialOrd, Ord)]</code>. The derived order compares fields in declaration order (e4; its help mentions <code>Ord</code>, but deriving <code>Ord</code> also requires <code>PartialOrd</code>, <code>Eq</code> and <code>PartialEq</code>).</li>
+  <li><strong>Don't change a key while it's in a map.</strong> Rust only lends keys immutably, so this can't happen by accident, unlike a C# key object whose fields you can still mutate.</li>
+</ul>
+<p>Lookups don't need an owned key: a <code>HashMap&lt;String, V&gt;</code> accepts <code>map.get("daily")</code> with a <code>&amp;str</code>. That works because <code>String</code> implements <code>Borrow&lt;str&gt;</code>, which promises that a <code>String</code> and its <code>&amp;str</code> hash and compare identically. The same applies to <code>Vec&lt;T&gt;</code> and <code>&amp;[T]</code>, and <code>Box&lt;T&gt;</code> and <code>&amp;T</code>. You'll never write <code>map.get(&amp;"daily".to_string())</code>.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <ul>
+    <li><strong><code>List&lt;T&gt;</code> ↔ <code>Vec&lt;T&gt;</code></strong>, nearly one to one (both a pointer, a count and a capacity). <code>RemoveAll</code> ↔ <code>retain</code> (with the opposite predicate), <code>Sort</code> ↔ <code>sort</code>/<code>sort_unstable</code>, <code>BinarySearch</code> ↔ <code>binary_search</code> (returning <code>Result&lt;usize, usize&gt;</code> instead of a negative number).</li>
+    <li><strong><code>Dictionary</code> ↔ <code>HashMap</code>.</strong> <code>TryGetValue</code> ↔ <code>get</code> (an <code>Option</code>); <code>TryAdd</code> ↔ <code>entry(k).or_insert(v)</code>; <code>CollectionsMarshal.GetValueRefOrAddDefault</code> ↔ <code>entry(k).or_default()</code>, measured at the same speed-up over the double lookup in both languages (Lab step 5). Both iterate in an unspecified order; Rust's default hasher is randomly seeded per map against HashDoS (chapter F4), so the order varies <em>between runs</em>.</li>
+    <li><strong><code>PriorityQueue</code> is the opposite way round.</strong> Microsoft's docs call it "an array-backed, quaternary min-heap": the lowest priority comes out first. Rust's <code>BinaryHeap</code> is a max-heap; wrap items in <code>Reverse</code> to get min-first behaviour.</li>
+    <li><strong>No built-in deque in .NET.</strong> <code>Queue&lt;T&gt;</code> is one-ended and <code>LinkedList&lt;T&gt;</code> is node-based; Rust's <code>VecDeque</code> is a ring buffer with both ends cheap.</li>
+    <li><strong>Modify while iterating.</strong> .NET throws <code>InvalidOperationException</code> at run time (chapter 2.3); Rust rejects it at compile time and offers <code>retain</code>/<code>drain</code>/<code>extract_if</code>.</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="choosing">Choosing a collection</h3>
+<p>Answer two or three questions about how the data is used, and the choice follows from the costs above:</p>
+<figure class="visual" id="cc">
+  <span class="visual-tag">Interactive · collection chooser</span>
+  <div class="cc-q" id="cc-q1"><h5>How will you get items back out?</h5><div></div></div>
+  <div class="cc-q" id="cc-q2"><h5>Do you need the keys in sorted order, or ranges of keys?</h5><div></div></div>
+  <div class="cc-q" id="cc-q3"><h5>Is there a value for each key, or only the key?</h5><div></div></div>
+  <div class="cc-q" id="cc-q4"><h5>Where do you add and remove?</h5><div></div></div>
+  <div class="cc-result" id="cc-result" aria-live="polite"></div>
+  <figcaption><strong>Figure 3.</strong> The recommendations follow the "When should you use which collection?" guidance in the <code>std::collections</code> docs; the costs are copied from its performance table and the <code>BinaryHeap</code> docs (* amortised, ~ expected); the .NET column from Microsoft Learn. When in doubt between <code>Vec</code> and something cleverer, measure: contiguous arrays win more often than the big-O suggests (chapter F3).</figcaption>
+</figure>
+
+<h3 id="sorting">Sorting, searching and deduplicating</h3>
+<p><code>sort</code> is stable (equal elements keep their order) and <code>sort_unstable</code> isn't, but is generally faster and allocates nothing; prefer it unless ties must keep their input order. <code>sort_by_key(|x| key)</code> and <code>sort_by(|a, b| …)</code> customise the order, and <code>.then(...)</code> on an <code>Ordering</code> chains tie-breakers (Lab step 3). <code>dedup</code> removes only <em>consecutive</em> duplicates, so sort first, or collect into a <code>HashSet</code>/<code>BTreeSet</code>. <code>binary_search</code> on a sorted slice returns <code>Ok(index)</code> if found and <code>Err(insertion_point)</code> if not, so <code>v.insert(i, x)</code> keeps it sorted. That's often a simpler ordered collection than a <code>BTreeMap</code> for small, read-mostly data.</p>
+
+<h3 id="capacity">Capacity and reuse</h3>
+<p>Every growable collection reserves spare capacity and reallocates when it runs out (chapter F3's amortised doubling; chapter 2.4 watched a <code>String</code> grow). When you know the size, <code>Vec::with_capacity(n)</code> and <code>HashMap::with_capacity(n)</code> allocate once. In a loop, <code>clear()</code> keeps the capacity for the next round, which is chapter 2.4's buffer-reuse lesson. <code>shrink_to_fit()</code> returns memory after a big collection has been trimmed. These matter in a rule engine evaluating millions of facts; they're noise in a CLI that runs once.</p>
+
+<details class="deep-dive"><summary>Deep dive: why the Entry API needs an owned key, and the ways around it</summary><div class="body">
+  <p><code>entry(key)</code> must be able to <em>insert</em> the key if the slot is vacant, so it takes <code>K</code> by value. If <code>K</code> is <code>String</code> and you only have a <code>&amp;str</code>, you must allocate before knowing whether you'll need to. The options:</p>
+  <ul>
+    <li>Look up first with <code>get_mut(&amp;str)</code> and allocate only on a miss (Lab step 5's variant B, the fastest here for mostly-hits workloads).</li>
+    <li>Use borrowed keys, <code>HashMap&lt;&amp;str, V&gt;</code>, when the strings outlive the map (variant D: no allocation at all). Chapter 2.11 explains the lifetime this needs.</li>
+    <li>Intern the strings into ids once (chapter 2.4's deep dive) and key the map by <code>u32</code>.</li>
+    <li>The <code>hashbrown</code> crate (the implementation behind std's <code>HashMap</code>) offers an entry API that accepts a borrowed key and converts it only when inserting.</li>
+  </ul>
+  <div class="callout verify"><div class="callout-title">⚠ Verify</div><p>In Lab step 5, variant D (borrowed keys, no allocations) measured slower than variant B (owned keys, allocating only on a miss): about 22 vs 17 ns per token, consistently over 3 runs and in either run order. I tested and ruled out key locality and run order as the cause, and haven't established the reason. Don't generalise from this one benchmark: measure your own workload before choosing.</p></div>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: iteration order and determinism</summary><div class="body">
+  <p><code>HashMap</code> and <code>HashSet</code> iterate in an order that depends on the hash function's random seed, which is chosen per map at run time to resist HashDoS attacks (chapter F4). The order differs between runs and between two maps with the same contents. That's harmless for lookups and fatal for anything that must be reproducible: snapshot tests, signatures over serialised data, and above all a workflow engine that replays history and must make the same decisions every time (chapter 10.7). The rules: sort before output (Lab step 3 sorts the counts), use <code>BTreeMap</code> where order is part of the meaning, or use an insertion-ordered map such as the <code>indexmap</code> crate. Never let a <code>HashMap</code>'s order leak into persisted state.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim.</p>
+
+<h3 id="lab-1">Step 1 — Vec, the workhorse</h3>
+<pre data-playground data-title="src/bin/vecs.rs"><code class="language-rust">fn main() {
+    // 1. Building: capacity is reserved space, len is what's used.
+    let mut ids: Vec&lt;u32&gt; = Vec::with_capacity(8);
+    ids.extend([42, 7, 19, 7, 3]);
+    ids.push(25);
+    println!("1. {ids:?} len {} cap {}", ids.len(), ids.capacity());
+
+    // 2. Reading: indexing panics when out of range, get returns an Option.
+    println!("2. ids[0] = {}, get(10) = {:?}, first = {:?}, contains(&amp;19) = {}", ids[0], ids.get(10), ids.first(), ids.contains(&amp;19));
+
+    // 3. Removing: remove keeps order (shifts, O(n)); swap_remove moves the last into the hole (O(1)).
+    let mut a = ids.clone();
+    let removed = a.remove(1);
+    let mut b = ids.clone();
+    let swapped = b.swap_remove(1);
+    println!("3. remove(1) -&gt; {removed}, {a:?}   swap_remove(1) -&gt; {swapped}, {b:?}");
+
+    // 4. Sorting and friends.
+    let mut s = ids.clone();
+    s.sort();
+    s.dedup(); // removes consecutive duplicates: sort first
+    println!("4. sorted+dedup {s:?}, binary_search(&amp;19) = {:?}, binary_search(&amp;20) = {:?}", s.binary_search(&amp;19), s.binary_search(&amp;20));
+    let mut words = vec!["validate", "ship", "charge", "notify"];
+    words.sort_by_key(|w| w.len()); // stable: equal keys keep their order
+    println!("   sort_by_key(len): {words:?}");
+    words.sort_unstable_by(|x, y| y.cmp(x)); // descending; unstable is faster, no order guarantee for ties
+    println!("   sort_unstable_by(desc): {words:?}");
+
+    // 5. Keeping, splitting, draining.
+    let mut queue: Vec&lt;u32&gt; = (1..=10).collect();
+    queue.retain(|n| n % 3 != 0); // keep only what passes
+    let tail = queue.split_off(5); // queue keeps [..5], tail gets the rest
+    let first_two: Vec&lt;u32&gt; = queue.drain(..2).collect(); // take out a range, keep the Vec
+    println!("5. retain/split/drain -&gt; queue {queue:?}, tail {tail:?}, drained {first_two:?}");
+
+    // 6. The three ways to iterate, and what they hand you.
+    let mut prices = vec![100, 250, 40];
+    for p in &amp;prices { print!("{p} "); } // &amp;i32: borrow
+    for p in &amp;mut prices { *p += 1; } // &amp;mut i32: change in place
+    let total: i32 = prices.into_iter().sum(); // i32: consumes the Vec
+    println!("\n6. total after +1 each = {total}");
+}</code></pre>
+<pre class="output">1. [42, 7, 19, 7, 3, 25] len 6 cap 8
+2. ids[0] = 42, get(10) = None, first = Some(42), contains(&amp;19) = true
+3. remove(1) -&gt; 7, [42, 19, 7, 3, 25]   swap_remove(1) -&gt; 7, [42, 25, 19, 7, 3]
+4. sorted+dedup [3, 7, 19, 25, 42], binary_search(&amp;19) = Ok(2), binary_search(&amp;20) = Err(3)
+   sort_by_key(len): ["ship", "charge", "notify", "validate"]
+   sort_unstable_by(desc): ["validate", "ship", "notify", "charge"]
+5. retain/split/drain -&gt; queue [4, 5, 7], tail [8, 10], drained [1, 2]
+100 250 40 
+6. total after +1 each = 393</pre>
+<p>Section 3 shows the trade-off between <code>remove</code> (order kept, everything after shifts) and <code>swap_remove</code> (the last element jumps into the hole, O(1)). For a work list whose order doesn't matter, <code>swap_remove</code> is the fast choice. Section 4: <code>binary_search(&amp;20)</code> returned <code>Err(3)</code>, the index where 20 would be inserted to keep the vector sorted.</p>
+
+<h3 id="lab-2">Step 2 — what the compiler rejects</h3>
+<pre data-title="e1.rs — a reference into a map across an insert"><code class="language-rust">// Holding a reference into a map while inserting into it.
+use std::collections::HashMap;
+
+fn main() {
+    let mut limits: HashMap&lt;&amp;str, u32&gt; = HashMap::from([("daily", 100)]);
+    let daily = limits.get("daily").unwrap(); // a reference into the map's storage
+    limits.insert("weekly", 700); // may reallocate the table...
+    println!("daily is {daily}"); // ...so `daily` could dangle here
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `limits` as mutable because it is also borrowed as immutable
+ --&gt; e1.rs:7:5
+  |
+6 |     let daily = limits.get("daily").unwrap(); // a reference into the map's storage
+  |                 ------ immutable borrow occurs here
+7 |     limits.insert("weekly", 700); // may reallocate the table...
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+8 |     println!("daily is {daily}"); // ...so `daily` could dangle here
+  |                         ----- immutable borrow later used here</pre>
+<p>If <code>daily</code> is used only <em>in</em> the insert's arguments, <code>limits.insert("weekly", daily * 7)</code>, the program compiles: the argument is computed before <code>insert</code> takes its mutable borrow, the two-phase borrow from chapter 2.3 (checked).</p>
+<pre data-title="e2.rs — for consumes the Vec"><code class="language-rust">// `for x in v` consumes the Vec.
+fn main() {
+    let steps = vec![String::from("validate"), String::from("charge")];
+    for s in steps {
+        println!("{s}");
+    }
+    println!("{} steps", steps.len());
+}</code></pre>
+<pre class="output error">error[E0382]: borrow of moved value: `steps`
+   --&gt; e2.rs:7:26
+    |
+  3 |     let steps = vec![String::from("validate"), String::from("charge")];
+    |         ----- move occurs because `steps` has type `Vec&lt;String&gt;`, which does not implement the `Copy` trait
+  4 |     for s in steps {
+    |              ----- `steps` moved due to this implicit call to `.into_iter()`
+...
+  7 |     println!("{} steps", steps.len());
+    |                          ^^^^^ value borrowed here after move
+    |
+note: the `for` loop is desugared into a call to `std::iter::IntoIterator::into_iter`, which takes ownership of the receiver `self`, which moves `steps`
+   --&gt; ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/iter/traits/collect.rs:312:18
+    |
+312 |     fn into_iter(self) -&gt; Self::IntoIter;
+    |                  ^^^^
+help: consider iterating over a slice of the `Vec&lt;String&gt;`'s content to avoid moving into the `for` loop
+    |
+  4 |     for s in &amp;steps {
+    |              +</pre>
+<pre data-title="e3.rs — f64 keys"><code class="language-rust">// f64 can't be a HashMap key: it isn't Eq or Hash (NaN != NaN).
+use std::collections::HashMap;
+
+fn main() {
+    let mut by_rate: HashMap&lt;f64, &amp;str&gt; = HashMap::new();
+    by_rate.insert(0.21, "NL");
+    println!("{by_rate:?}");
+}</code></pre>
+<pre class="output error">error[E0599]: the method `insert` exists for struct `HashMap&lt;f64, &amp;str&gt;`, but its trait bounds were not satisfied
+ --&gt; e3.rs:6:13
+  |
+6 |     by_rate.insert(0.21, "NL");
+  |             ^^^^^^
+  |
+  = note: the following trait bounds were not satisfied:
+          `f64: Eq`
+          `f64: Hash`</pre>
+<pre data-title="e4.rs — a BTreeMap key without Ord"><code class="language-rust">// A BTreeMap key must be ordered (Ord).
+use std::collections::BTreeMap;
+
+#[derive(Debug, PartialEq, Eq)]
+struct StepId(u64);
+
+fn main() {
+    let mut started: BTreeMap&lt;StepId, u64&gt; = BTreeMap::new();
+    started.insert(StepId(7), 1_000);
+    println!("{started:?}");
+}</code></pre>
+<pre class="output error">error[E0277]: the trait bound `StepId: Ord` is not satisfied
+    --&gt; e4.rs:9:13
+     |
+   9 |     started.insert(StepId(7), 1_000);
+     |             ^^^^^^ the trait `Ord` is not implemented for `StepId`
+     |
+note: required by a bound in `BTreeMap::&lt;K, V, A&gt;::insert`
+    --&gt; ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/collections/btree/map.rs:1047:12
+     |
+1045 |     pub fn insert(&amp;mut self, key: K, value: V) -&gt; Option&lt;V&gt;
+     |            ------ required by a bound in this associated function
+1046 |     where
+1047 |         K: Ord,
+     |            ^^^ required by this bound in `BTreeMap::&lt;K, V, A&gt;::insert`
+help: consider annotating `StepId` with `#[derive(Ord)]`
+     |
+   5 + #[derive(Ord)]
+   6 | struct StepId(u64);
+     |</pre>
+<pre data-title="e5.rs — removing while iterating"><code class="language-rust">// Removing entries while iterating over the same map.
+use std::collections::HashMap;
+
+fn main() {
+    let mut leases: HashMap&lt;u32, u64&gt; = HashMap::from([(1, 900), (2, 2_000), (3, 950)]);
+    let now = 1_000;
+    for (id, expires) in &amp;leases {
+        if *expires &lt; now {
+            leases.remove(id);
+        }
+    }
+    println!("{leases:?}");
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `leases` as mutable because it is also borrowed as immutable
+  --&gt; e5.rs:9:13
+   |
+ 7 |       for (id, expires) in &amp;leases {
+   |       -                    -------
+   |       |                    |
+   |       |                    immutable borrow occurs here
+   |  _____|                    immutable borrow later used here
+   | |
+ 8 | |         if *expires &lt; now {
+ 9 | |             leases.remove(id);
+   | |             ^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+10 | |         }
+11 | |     }
+   | |_____- this for loop borrows `leases` immutably, preventing mutation within its body
+   |
+   = help: consider using an index-based loop instead, or collecting modifications into a separate collection</pre>
+<p>The fix for e5 is one line, <code>leases.retain(|_, expires| *expires &gt;= now);</code>, which also beats the C# workaround of collecting keys into a list and removing them in a second loop.</p>
+
+<h3 id="lab-3">Step 3 — maps, sets, heaps and deques</h3>
+<pre data-playground data-title="src/bin/maps.rs"><code class="language-rust">use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
+
+fn main() {
+    // 1. HashMap basics: insert returns the old value; get borrows; remove gives the value back.
+    let mut limits: HashMap&lt;String, u32&gt; = HashMap::new();
+    let old = limits.insert(String::from("daily"), 100);
+    let replaced = limits.insert(String::from("daily"), 150);
+    limits.insert(String::from("monthly"), 2_000);
+    // Lookup with &amp;str although the keys are String (String: Borrow&lt;str&gt;).
+    println!("1. insert -&gt; {old:?} then {replaced:?}; get(\"daily\") = {:?}, contains_key(\"weekly\") = {}",
+        limits.get("daily"), limits.contains_key("weekly"));
+    if let Some(v) = limits.get_mut("monthly") {
+        *v += 500;
+    }
+    println!("   remove(\"monthly\") = {:?}, len now {}", limits.remove("monthly"), limits.len());
+
+    // 2. The Entry API: one lookup, then insert or update.
+    let events = ["charge", "refund", "charge", "charge", "notify", "refund"];
+    let mut counts: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+    for e in events {
+        *counts.entry(e).or_insert(0) += 1;
+    }
+    let mut by_count: Vec&lt;(&amp;str, u32)&gt; = counts.into_iter().collect();
+    by_count.sort_by(|a, b| b.1.cmp(&amp;a.1).then(a.0.cmp(b.0)));
+    println!("2. counts: {by_count:?}");
+
+    let rules = [("amount", 1), ("country", 2), ("amount", 3), ("vip", 4), ("amount", 5)];
+    let mut by_field: HashMap&lt;&amp;str, Vec&lt;u32&gt;&gt; = HashMap::new();
+    for (field, id) in rules {
+        by_field.entry(field).or_default().push(id); // or_default: Vec::new() if vacant
+    }
+    let mut cache: HashMap&lt;u32, String&gt; = HashMap::new();
+    cache.entry(7).and_modify(|v| v.push('!')).or_insert_with(|| String::from("computed"));
+    cache.entry(7).and_modify(|v| v.push('!')).or_insert_with(|| String::from("computed"));
+    println!("   by_field[\"amount\"] = {:?}; cache[7] = {:?}", by_field["amount"], cache[&amp;7]);
+
+    // 3. BTreeMap: sorted by key, so iteration order and range queries are meaningful.
+    let mut audit: BTreeMap&lt;u64, &amp;str&gt; = BTreeMap::new();
+    for (ts, what) in [(1_030, "ship"), (1_000, "validate"), (1_020, "charge"), (1_045, "notify")] {
+        audit.insert(ts, what);
+    }
+    println!("3. in key order: {audit:?}");
+    println!("   range(1_010..1_040): {:?}", audit.range(1_010..1_040).collect::&lt;Vec&lt;_&gt;&gt;());
+    println!("   first {:?}, last {:?}", audit.first_key_value(), audit.last_key_value());
+
+    // 4. HashSet: membership and set algebra.
+    let allowed: HashSet&lt;&amp;str&gt; = ["NL", "DE", "BE"].into_iter().collect();
+    let seen: HashSet&lt;&amp;str&gt; = ["DE", "FR", "NL"].into_iter().collect();
+    let mut both: Vec&lt;_&gt; = allowed.intersection(&amp;seen).collect();
+    let mut blocked: Vec&lt;_&gt; = seen.difference(&amp;allowed).collect();
+    both.sort();
+    blocked.sort();
+    println!("4. allowed ∩ seen = {both:?}; seen − allowed = {blocked:?}; insert dup -&gt; {}",
+        allowed.clone().insert("NL"));
+
+    // 5. BinaryHeap is a max-heap; wrap in Reverse for smallest-first (a timer queue).
+    let mut heap = BinaryHeap::from([3, 9, 1, 7]);
+    println!("5. max-heap pops: {:?} {:?} {:?}", heap.pop(), heap.pop(), heap.peek());
+    let mut timers: BinaryHeap&lt;Reverse&lt;(u64, &amp;str)&gt;&gt; = BinaryHeap::new();
+    timers.push(Reverse((1_500, "retry charge")));
+    timers.push(Reverse((900, "lease expiry")));
+    timers.push(Reverse((1_200, "send reminder")));
+    while let Some(Reverse((due, what))) = timers.pop() {
+        print!("{}{due}:{what}", if due == 900 { "   timers by due time: " } else { ", " });
+    }
+    println!();
+
+    // 6. VecDeque: a ring buffer with cheap pushes and pops at both ends.
+    let mut work: VecDeque&lt;&amp;str&gt; = VecDeque::from(["b", "c"]);
+    work.push_front("a");
+    work.push_back("d");
+    let front = work.pop_front();
+    work.rotate_left(1);
+    println!("6. pop_front {front:?}, after rotate_left(1): {work:?}");
+}</code></pre>
+<pre class="output">1. insert -&gt; None then Some(100); get("daily") = Some(150), contains_key("weekly") = false
+   remove("monthly") = Some(2500), len now 1
+2. counts: [("charge", 3), ("refund", 2), ("notify", 1)]
+   by_field["amount"] = [1, 3, 5]; cache[7] = "computed!"
+3. in key order: {1000: "validate", 1020: "charge", 1030: "ship", 1045: "notify"}
+   range(1_010..1_040): [(1020, "charge"), (1030, "ship")]
+   first Some((1000, "validate")), last Some((1045, "notify"))
+4. allowed ∩ seen = ["DE", "NL"]; seen − allowed = ["FR"]; insert dup -&gt; false
+5. max-heap pops: Some(9) Some(7) Some(3)
+   timers by due time: 900:lease expiry, 1200:send reminder, 1500:retry charge
+6. pop_front Some("a"), after rotate_left(1): ["c", "d", "b"]</pre>
+<p>Section 1 looks up <code>String</code> keys with <code>&amp;str</code> (<code>Borrow</code>), and <code>insert</code> returns the previous value, here <code>Some(100)</code>. Section 2 sorts the counts before printing, because a <code>HashMap</code>'s order changes from run to run; the <code>BTreeMap</code> in section 3 needs no sorting. Section 5's timers come out by due time thanks to <code>Reverse</code>.</p>
+
+<h3 id="lab-4">Step 4 — collections in the products</h3>
+<pre data-playground data-title="src/bin/engine.rs"><code class="language-rust">use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+
+struct Rule {
+    id: u32,
+    field: &amp;'static str,
+    min: i64,
+}
+
+fn main() {
+    // A. Rule engine: index rules by the field they test, so an order only meets relevant rules.
+    let rules = [
+        Rule { id: 1, field: "amount", min: 10_000 },
+        Rule { id: 2, field: "country_code", min: 31 },
+        Rule { id: 3, field: "amount", min: 50_000 },
+        Rule { id: 4, field: "vip", min: 1 },
+    ];
+    let mut index: HashMap&lt;&amp;str, Vec&lt;usize&gt;&gt; = HashMap::new();
+    for (pos, r) in rules.iter().enumerate() {
+        index.entry(r.field).or_default().push(pos);
+    }
+    let order: HashMap&lt;&amp;str, i64&gt; = HashMap::from([("amount", 25_000), ("vip", 1)]);
+    let mut fired: Vec&lt;u32&gt; = order
+        .iter()
+        .flat_map(|(field, value)| {
+            let candidates = index.get(field).map(Vec::as_slice).unwrap_or(&amp;[]);
+            candidates.iter().map(|&amp;p| &amp;rules[p]).filter(move |r| *value &gt;= r.min).map(|r| r.id)
+        })
+        .collect();
+    fired.sort_unstable();
+    println!("A. checked {} of {} rules; fired {fired:?}",
+        order.keys().map(|f| index.get(f).map_or(0, Vec::len)).sum::&lt;usize&gt;(), rules.len());
+
+    // B. Workflow engine: a timer queue, earliest first.
+    let mut timers: BinaryHeap&lt;Reverse&lt;(u64, u32)&gt;&gt; = BinaryHeap::new();
+    for (due, step) in [(1_500, 7), (900, 3), (1_200, 5), (2_000, 9)] {
+        timers.push(Reverse((due, step)));
+    }
+    let now = 1_300;
+    let mut due_now = Vec::new();
+    while let Some(&amp;Reverse((due, step))) = timers.peek() {
+        if due &gt; now {
+            break;
+        }
+        timers.pop();
+        due_now.push(step);
+    }
+    println!("B. at t={now}: run steps {due_now:?}; next timer at {:?}", timers.peek().map(|r| r.0.0));
+
+    // C. Idempotency: a delivered-twice event is processed once.
+    let deliveries = ["evt-1", "evt-2", "evt-1", "evt-3", "evt-2"];
+    let mut processed: HashSet&lt;&amp;str&gt; = HashSet::new();
+    let handled: Vec&lt;&amp;str&gt; = deliveries.iter().copied().filter(|id| processed.insert(id)).collect();
+    println!("C. delivered {} times, handled {handled:?}", deliveries.len());
+
+    // D. Audit log: ordered by timestamp, queried by time window.
+    let audit: BTreeMap&lt;u64, &amp;str&gt; = BTreeMap::from([(1_000, "started"), (1_250, "retry"), (1_900, "completed"), (1_100, "charged")]);
+    let window: Vec&lt;&amp;str&gt; = audit.range(1_050..=1_300).map(|(_, e)| *e).collect();
+    println!("D. events in [1050, 1300]: {window:?}");
+}</code></pre>
+<pre class="output">A. checked 3 of 4 rules; fired [1, 4]
+B. at t=1300: run steps [3, 5]; next timer at Some(1500)
+C. delivered 5 times, handled ["evt-1", "evt-2", "evt-3"]
+D. events in [1050, 1300]: ["charged", "retry"]</pre>
+<p>A: the field index means an order with two facts meets 3 candidate rules, not all 4; with thousands of rules over hundreds of fields that difference is the whole performance story, and chapter 9.4's Rete network generalises it. B: <code>peek</code> before <code>pop</code> leaves future timers in place. C: <code>HashSet::insert</code> returns <code>false</code> for a duplicate, which is all an idempotency check needs (chapter 10.1). D: one <code>range</code> call answers a time-window query.</p>
+
+<h3 id="lab-5">Step 5 — counting words: Entry, double lookups and owned keys</h3>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::collections::HashMap;
+use std::hint::black_box;
+use std::time::Instant;
+
+const TOKENS: usize = 1_000_000;
+const DISTINCT: usize = 10_000;
+
+// A: the Entry API with String keys: entry() needs an owned key, so every call allocates.
+fn entry_owned(words: &amp;[String]) -&gt; usize {
+    let mut m: HashMap&lt;String, u32&gt; = HashMap::new();
+    for w in words {
+        *m.entry(w.to_string()).or_insert(0) += 1;
+    }
+    m.len()
+}
+
+// B: look up by &amp;str first; allocate a key only for new words.
+fn get_mut_then_insert(words: &amp;[String]) -&gt; usize {
+    let mut m: HashMap&lt;String, u32&gt; = HashMap::new();
+    for w in words {
+        if let Some(c) = m.get_mut(w.as_str()) {
+            *c += 1;
+        } else {
+            m.insert(w.clone(), 1);
+        }
+    }
+    m.len()
+}
+
+// C: the C#-habit double lookup: contains_key, then get_mut.
+fn contains_then_get(words: &amp;[String]) -&gt; usize {
+    let mut m: HashMap&lt;String, u32&gt; = HashMap::new();
+    for w in words {
+        if m.contains_key(w.as_str()) {
+            *m.get_mut(w.as_str()).unwrap() += 1;
+        } else {
+            m.insert(w.clone(), 1);
+        }
+    }
+    m.len()
+}
+
+// D: borrowed keys (&amp;str) that outlive the map: the Entry API with no allocation at all.
+fn entry_borrowed(words: &amp;[String]) -&gt; usize {
+    let mut m: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+    for w in words {
+        *m.entry(w.as_str()).or_insert(0) += 1;
+    }
+    m.len()
+}
+
+fn ns_per_token(words: &amp;[String], f: fn(&amp;[String]) -&gt; usize) -&gt; f64 {
+    (0..5)
+        .map(|_| {
+            let t = Instant::now();
+            assert_eq!(black_box(f(black_box(words))), DISTINCT);
+            t.elapsed().as_secs_f64() * 1e9 / TOKENS as f64
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn main() {
+    let words: Vec&lt;String&gt; = (0..TOKENS).map(|i| format!("key{}", (i * 7_919) % DISTINCT)).collect();
+    println!("{TOKENS} tokens, {DISTINCT} distinct, best of 5, ns per token:");
+    println!("  A entry(w.to_string())          {:&gt;6.1}", ns_per_token(&amp;words, entry_owned));
+    println!("  B get_mut(&amp;str), else insert    {:&gt;6.1}", ns_per_token(&amp;words, get_mut_then_insert));
+    println!("  C contains_key + get_mut        {:&gt;6.1}", ns_per_token(&amp;words, contains_then_get));
+    println!("  D HashMap&lt;&amp;str, _&gt; + entry(w)   {:&gt;6.1}", ns_per_token(&amp;words, entry_borrowed));
+}</code></pre>
+<pre class="output">1000000 tokens, 10000 distinct, best of 5, ns per token:
+  A entry(w.to_string())            38.8
+  B get_mut(&amp;str), else insert      17.9
+  C contains_key + get_mut          27.9
+  D HashMap&lt;&amp;str, _&gt; + entry(w)     22.1</pre>
+<pre data-title="l28cs/Program.cs (.NET 10, Release)"><code class="language-csharp">using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+const int Tokens = 1_000_000, Distinct = 10_000;
+var words = Enumerable.Range(0, Tokens).Select(i =&gt; $"key{(long)i * 7_919 % Distinct}").ToArray();
+
+// The common pattern: TryGetValue, then the indexer: two lookups for every existing key.
+static int TryGetThenSet(string[] words)
+{
+    var d = new Dictionary&lt;string, int&gt;();
+    foreach (var w in words)
+    {
+        d.TryGetValue(w, out var c);
+        d[w] = c + 1;
+    }
+    return d.Count;
+}
+
+// .NET 6+: a ref to the value slot, added if missing: one lookup, like Rust's entry().
+static int RefOrAddDefault(string[] words)
+{
+    var d = new Dictionary&lt;string, int&gt;();
+    foreach (var w in words)
+        CollectionsMarshal.GetValueRefOrAddDefault(d, w, out _)++;
+    return d.Count;
+}
+
+static double NsPerToken(string[] words, Func&lt;string[], int&gt; f)
+{
+    double best = double.MaxValue;
+    for (int r = 0; r &lt; 5; r++)
+    {
+        var sw = Stopwatch.StartNew();
+        if (f(words) != Distinct) throw new Exception("wrong count");
+        best = Math.Min(best, sw.Elapsed.TotalNanoseconds / Tokens);
+    }
+    return best;
+}
+
+Console.WriteLine($"{Tokens} tokens, {Distinct} distinct, best of 5, ns per token (.NET {Environment.Version}):");
+Console.WriteLine($"  TryGetValue + indexer               {NsPerToken(words, TryGetThenSet),6:F1}");
+Console.WriteLine($"  CollectionsMarshal ref-or-add       {NsPerToken(words, RefOrAddDefault),6:F1}");</code></pre>
+<pre class="output">1000000 tokens, 10000 distinct, best of 5, ns per token (.NET 10.0.5):
+  TryGetValue + indexer                 25.3
+  CollectionsMarshal ref-or-add         13.0</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · ns per token, counting 1 million words</span>
+  <div class="chart-box"><canvas id="cost-chart" aria-label="Bar chart: Rust entry with owned key 38.8, get_mut then insert 16.7, double lookup 27.9, borrowed-key entry 22.1; C# TryGetValue plus indexer 25.2, CollectionsMarshal 12.7 nanoseconds per token"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Release builds, best of 5 per run; bars are medians of 3 runs in each language (Rust A 38.8, B 16.7, C 27.9, D 22.1 ns; C# 25.2 and 12.7 ns). The input is 1,000,000 tokens over 10,000 distinct words, so 99% of operations hit an existing key.</figcaption>
+</figure>
+<p>What it shows. In both languages, a single lookup (Rust B, C# <code>CollectionsMarshal</code>) roughly halves the cost of a double lookup. In Rust the bigger mistake is <code>entry(w.to_string())</code>: the Entry API is right, but feeding it a freshly allocated key on every call made it the slowest variant of all. Avoiding needless allocation matters more than avoiding a second hash lookup. Variant D's result is discussed in the deep dive above.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">Solutions 1 and 2 were run as programs with <code>assert!</code>s and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — a sorted report by country <span class="difficulty">★☆☆</span></div>
+  <p>Given a list of orders (id, country, cents), print each country's order ids and total, sorted by country, using one pass over the orders.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::BTreeMap;
+
+struct Order {
+    id: u32,
+    country: &amp;'static str,
+    cents: u64,
+}
+
+fn main() {
+    let orders = [
+        Order { id: 1, country: "NL", cents: 25_000 },
+        Order { id: 2, country: "DE", cents: 4_000 },
+        Order { id: 3, country: "NL", cents: 12_000 },
+        Order { id: 4, country: "BE", cents: 9_900 },
+        Order { id: 5, country: "DE", cents: 30_000 },
+    ];
+
+    // Group order ids by country; BTreeMap keeps the report sorted by country.
+    let mut by_country: BTreeMap&lt;&amp;str, (Vec&lt;u32&gt;, u64)&gt; = BTreeMap::new();
+    for o in &amp;orders {
+        let (ids, total) = by_country.entry(o.country).or_default();
+        ids.push(o.id);
+        *total += o.cents;
+    }
+    for (country, (ids, total)) in &amp;by_country {
+        println!("{country}: orders {ids:?}, total €{}.{:02}", total / 100, total % 100);
+    }
+    assert_eq!(by_country.keys().copied().collect::&lt;Vec&lt;_&gt;&gt;(), ["BE", "DE", "NL"]);
+    assert_eq!(by_country["NL"].1, 37_000);
+    println!("ok");
+}</code></pre>
+<pre class="output">BE: orders [4], total €99.00
+DE: orders [2, 5], total €340.00
+NL: orders [1, 3], total €370.00
+ok</pre>
+  <p>A <code>BTreeMap</code> gives the sorted report for free; with a <code>HashMap</code> you'd collect and sort the keys first. <code>or_default()</code> creates the <code>(Vec::new(), 0)</code> tuple for a new country, and destructuring the returned <code>&amp;mut (Vec&lt;u32&gt;, u64)</code> into <code>(ids, total)</code> gives mutable access to both parts.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — the top k failing rules <span class="difficulty">★★☆ product skill</span></div>
+  <p>The rule engine logs which rule rejected each request. Return the k rules that failed most often, with counts, most frequent first, keeping at most k+1 items in any heap.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
+
+// The k rules that failed most often, without sorting every count.
+fn top_k&lt;'a&gt;(failures: &amp;[&amp;'a str], k: usize) -&gt; Vec&lt;(&amp;'a str, u32)&gt; {
+    let mut counts: HashMap&lt;&amp;str, u32&gt; = HashMap::new();
+    for rule in failures {
+        *counts.entry(rule).or_insert(0) += 1;
+    }
+    // A min-heap of size k: the smallest of the current top k sits on top, ready to be evicted.
+    let mut heap: BinaryHeap&lt;Reverse&lt;(u32, &amp;str)&gt;&gt; = BinaryHeap::with_capacity(k + 1);
+    for (rule, n) in counts {
+        heap.push(Reverse((n, rule)));
+        if heap.len() &gt; k {
+            heap.pop(); // drop the least frequent
+        }
+    }
+    let mut top: Vec&lt;(&amp;str, u32)&gt; = heap.into_iter().map(|Reverse((n, r))| (r, n)).collect();
+    top.sort_by(|a, b| b.1.cmp(&amp;a.1).then(a.0.cmp(b.0)));
+    top
+}
+
+fn main() {
+    let failures = ["amount", "vip", "amount", "country", "amount", "vip", "age", "country", "amount", "vip"];
+    let top = top_k(&amp;failures, 2);
+    println!("top 2: {top:?}");
+    assert_eq!(top, vec![("amount", 4), ("vip", 3)]);
+    assert_eq!(top_k(&amp;failures, 10).len(), 4);
+    assert!(top_k(&amp;[], 3).is_empty());
+    println!("ok");
+}</code></pre>
+<pre class="output">top 2: [("amount", 4), ("vip", 3)]
+ok</pre>
+  <p>Counting is the Entry API. The "top k" is a min-heap of size k (a <code>BinaryHeap</code> of <code>Reverse</code>): the least frequent of the current candidates is on top, so each new count either replaces it or is discarded. That's O(n log k) instead of sorting all n counts, which matters when there are millions of distinct keys and k is 10. The <code>'a</code> in the signature says the returned rule names borrow from the input slice; chapter 2.11 explains it.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — which collection? <span class="difficulty">★★☆</span></div>
+  <p>Choose a collection for each, then check with Figure 3 and the solution.</p>
+  <ol>
+    <li>Steps of a workflow run, appended as they complete and read in order.</li>
+    <li>The workflow engine's queue of ready tasks: workers take from the front, retries go to the back, and urgent re-runs to the front.</li>
+    <li>Compiled rules looked up by rule id on every evaluation.</li>
+    <li>Lease expiry times, where the engine always needs the next lease to expire.</li>
+    <li>A tenant's quota usage per day, queried as "the last 30 days".</li>
+    <li>Ids of messages already processed, to drop duplicates.</li>
+  </ol>
+  <details class="solution"><summary>Show solution</summary>
+  <ol>
+    <li><strong><code>Vec</code></strong>: append at the end, read in order.</li>
+    <li><strong><code>VecDeque</code></strong>: cheap at both ends (<code>push_back</code> for retries, <code>push_front</code> for urgent work, <code>pop_front</code> for workers).</li>
+    <li><strong><code>HashMap&lt;RuleId, CompiledRule&gt;</code></strong>: no order needed, fastest lookups. (If ids are dense 0..n, a plain <code>Vec</code> indexed by id is faster still.)</li>
+    <li><strong><code>BinaryHeap&lt;Reverse&lt;(Instant, LeaseId)&gt;&gt;</code></strong>: always the earliest on top. A <code>BTreeMap</code> also works, and allows cancelling a specific lease, which a heap can't do efficiently, a real consideration (chapter 10.5).</li>
+    <li><strong><code>BTreeMap&lt;Date, Usage&gt;</code></strong>: <code>range(today - 30..=today)</code> answers it directly.</li>
+    <li><strong><code>HashSet&lt;MessageId&gt;</code></strong>, bounded in practice (old ids expire), or a persistent table, since a crash would empty an in-memory set (chapter 10.1).</li>
+  </ol>
+  </details>
+</div>
+
+<h2 id="decision">Which operation?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>You want to…</th><th>Use</th><th>Instead of</th></tr></thead>
+  <tbody>
+    <tr><td>Insert or update a map entry</td><td><code>entry(k).or_insert(..)</code> / <code>or_default()</code> / <code>and_modify</code></td><td><code>contains_key</code> + <code>insert</code>/<code>get_mut</code></td></tr>
+    <tr><td>…with <code>String</code> keys in a hot loop</td><td><code>get_mut(&amp;str)</code>, insert a clone on a miss</td><td><code>entry(s.to_string())</code> every time</td></tr>
+    <tr><td>Remove matching elements</td><td><code>retain</code> (or <code>extract_if</code> to keep the removed ones)</td><td>Removing inside a <code>for</code> loop (E0502)</td></tr>
+    <tr><td>Take everything out but keep the allocation</td><td><code>drain(..)</code>, <code>clear()</code></td><td>Creating a new collection each round</td></tr>
+    <tr><td>Read without risking a panic</td><td><code>get(i)</code>, <code>get(&amp;k)</code>, <code>first()</code></td><td><code>v[i]</code>, <code>map[&amp;k]</code> on untrusted indices or keys</td></tr>
+    <tr><td>Remove from the middle when order doesn't matter</td><td><code>swap_remove(i)</code></td><td><code>remove(i)</code></td></tr>
+    <tr><td>Sort when ties needn't keep their order</td><td><code>sort_unstable*</code></td><td><code>sort*</code></td></tr>
+    <tr><td>Deduplicate</td><td><code>sort</code> + <code>dedup</code>, or collect into a set</td><td><code>dedup</code> on unsorted data</td></tr>
+    <tr><td>Process smallest first</td><td><code>BinaryHeap&lt;Reverse&lt;T&gt;&gt;</code></td><td>Sorting repeatedly</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: collections</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Growable array</td><td><code>List&lt;T&gt;</code></td><td><code>Vec&lt;T&gt;</code></td></tr>
+    <tr><td>Queue / deque</td><td><code>Queue&lt;T&gt;</code>; no built-in deque</td><td><code>VecDeque&lt;T&gt;</code></td></tr>
+    <tr><td>Hash map / set</td><td><code>Dictionary</code>, <code>HashSet</code></td><td><code>HashMap</code>, <code>HashSet</code></td></tr>
+    <tr><td>Ordered map / set</td><td><code>SortedDictionary</code> (a binary search tree), <code>SortedSet</code></td><td><code>BTreeMap</code>, <code>BTreeSet</code> (B-tree)</td></tr>
+    <tr><td>Priority queue</td><td><code>PriorityQueue</code>: min-heap (4-ary)</td><td><code>BinaryHeap</code>: max-heap; <code>Reverse</code> for min</td></tr>
+    <tr><td>Elements</td><td>References to objects (or copied structs)</td><td>Owned values, moved in and out</td></tr>
+    <tr><td>Insert-or-update in one lookup</td><td><code>CollectionsMarshal.GetValueRefOrAddDefault</code> (docs: don't add/remove while the ref is used)</td><td><code>entry</code> (the borrow checker enforces it)</td></tr>
+    <tr><td>Modify while iterating</td><td><code>InvalidOperationException</code></td><td>Compile error; <code>retain</code>/<code>drain</code></td></tr>
+    <tr><td>Missing key with <code>[]</code></td><td><code>KeyNotFoundException</code></td><td>Panic; use <code>get</code></td></tr>
+    <tr><td>Key requirements</td><td><code>GetHashCode</code>/<code>Equals</code> (any type compiles)</td><td><code>Eq + Hash</code> or <code>Ord</code>, checked at compile time</td></tr>
+    <tr><td>Hash iteration order</td><td>Unspecified</td><td>Unspecified, and varies per run (random seed)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Relying on HashMap iteration order</div>
+  <p>It changes between runs. Sort, use <code>BTreeMap</code>, or an insertion-ordered map whenever order reaches output, tests or persisted data.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>entry(key.to_string())</code> in hot loops</div>
+  <p>The allocation happens even when the key exists; it was the slowest variant in Lab step 5. Look up by <code>&amp;str</code> first, or key by borrowed strings or ids.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Indexing with untrusted keys</div>
+  <p><code>map["x"]</code> and <code>v[i]</code> panic when the key or index is missing. For data from outside, use <code>get</code> and handle <code>None</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Expecting a min-heap</div>
+  <p><code>BinaryHeap</code> pops the <em>largest</em> first, the opposite of C#'s <code>PriorityQueue</code>. Wrap items in <code>Reverse</code> for earliest-deadline-first.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>f64</code> keys and sorting floats</div>
+  <p><code>f64</code> isn't <code>Eq</code>/<code>Hash</code>/<code>Ord</code> because of <code>NaN</code>. Store money as integer cents; sort floats with <code>sort_by(|a, b| a.total_cmp(b))</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Reaching for <code>LinkedList</code></div>
+  <p>Contiguous <code>Vec</code> and <code>VecDeque</code> win almost every real workload (chapter F3; the std docs say the same).</p></div>
+
+<h2 id="real-world">Real-world view: collections in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine:</strong> a <code>HashMap&lt;FieldId, Vec&lt;RuleId&gt;&gt;</code> index sends each fact only to rules that test it (Lab step 4); compiled rules live in a <code>Vec</code> indexed by dense ids; the top failing rules come from a bounded heap (Exercise 2).</li>
+    <li><strong>Workflow engine:</strong> a <code>VecDeque</code> of ready tasks, a <code>BinaryHeap</code> (or <code>BTreeMap</code>, for cancellation) of timers, a <code>HashSet</code> or persistent table for idempotency, and <code>BTreeMap</code>s wherever replay needs deterministic order (chapter 10.7).</li>
+    <li><strong>Determinism:</strong> nothing a workflow decides may depend on <code>HashMap</code> iteration order, because the seed changes per process.</li>
+    <li><strong>Memory and allocation:</strong> pre-size collections whose size you know, reuse buffers with <code>clear()</code>, and prefer ids to <code>String</code> keys in hot maps (chapter 6.2 measures these at scale).</li>
+    <li><strong>Review checklist:</strong> <code>HashMap</code> order leaking into output; <code>contains_key</code> followed by <code>insert</code>; <code>entry(s.to_string())</code> in loops; <code>v[i]</code>/<code>map[k]</code> on external input; <code>remove</code> where <code>swap_remove</code> would do; <code>LinkedList</code>; float keys.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.8">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">After <code>for s in steps { … }</code> where <code>steps: Vec&lt;String&gt;</code>, can you call <code>steps.len()</code>?</div>
+    <ol class="options">
+      <li data-key="a">Yes, a <code>for</code> loop only reads</li>
+      <li data-key="b">No: <code>for x in v</code> calls <code>into_iter()</code>, which consumes the Vec (E0382); write <code>for s in &amp;steps</code> to borrow</li>
+      <li data-key="c">Only if <code>steps</code> is <code>mut</code></li>
+      <li data-key="d">Yes, but it returns 0</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>for s in &amp;steps</code>.</p>
+      <p data-for="b">Correct (e2, Figure 2).</p>
+      <p data-for="c">Mutability doesn't stop the move.</p>
+      <p data-for="d">That's <code>drain</code>: the Vec survives, empty.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>*counts.entry(w).or_insert(0) += 1;</code> do?</div>
+    <ol class="options">
+      <li data-key="a">Inserts 1 every time</li>
+      <li data-key="b">Looks the key up twice</li>
+      <li data-key="c">Panics if <code>w</code> is missing</li>
+      <li data-key="d">One lookup; if <code>w</code> is absent, inserts 0; then adds 1 through the returned <code>&amp;mut u32</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It increments existing counts.</p>
+      <p data-for="b">The Entry API's point is a single lookup.</p>
+      <p data-for="c"><code>or_insert</code> handles the missing case.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Counting a million <code>&amp;str</code> words into a <code>HashMap&lt;String, u32&gt;</code> with <code>entry(w.to_string())</code> is slow. Why, and what helps?</div>
+    <ol class="options">
+      <li data-key="a"><code>entry</code> needs an owned key, so a <code>String</code> is allocated on every call, even for existing words; look up with <code>get_mut(w)</code> and allocate only on a miss</li>
+      <li data-key="b">HashMap is slow; use BTreeMap</li>
+      <li data-key="c">The Entry API does two lookups</li>
+      <li data-key="d">Strings can't be keys</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 5: about 39 vs about 17 ns per token).</p>
+      <p data-for="b">The cost was the allocation, not the map.</p>
+      <p data-for="c">It does one.</p>
+      <p data-for="d">They can; <code>String</code> is <code>Eq + Hash</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why can a <code>HashMap&lt;String, u32&gt;</code> be queried with <code>map.get("daily")</code>?</div>
+    <ol class="options">
+      <li data-key="a">String literals are converted to String automatically</li>
+      <li data-key="b">get takes any type</li>
+      <li data-key="c"><code>String: Borrow&lt;str&gt;</code>, which guarantees a <code>String</code> and its <code>&amp;str</code> hash and compare the same, so lookups accept <code>&amp;str</code></li>
+      <li data-key="d">It can't</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">No allocation happens.</p>
+      <p data-for="b">Only types the key can be borrowed as.</p>
+      <p data-for="c">Correct (Lab step 3, section 1).</p>
+      <p data-for="d">It can.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You need timers processed earliest first. Which works with Rust's standard library?</div>
+    <ol class="options">
+      <li data-key="a"><code>BinaryHeap&lt;u64&gt;</code>: it's a min-heap</li>
+      <li data-key="b"><code>BinaryHeap&lt;Reverse&lt;u64&gt;&gt;</code>, or a <code>BTreeMap</code> keyed by due time</li>
+      <li data-key="c"><code>HashMap&lt;u64, Task&gt;</code></li>
+      <li data-key="d"><code>VecDeque</code> sorted on every insert</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>BinaryHeap</code> is a max-heap; it would pop the latest timer first.</p>
+      <p data-for="b">Correct (Lab steps 3 and 4).</p>
+      <p data-for="c">No order at all.</p>
+      <p data-for="d">O(n) inserts for nothing.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why won't <code>HashMap&lt;f64, &amp;str&gt;</code> let you <code>insert</code>?</div>
+    <ol class="options">
+      <li data-key="a">Floats are too big</li>
+      <li data-key="b">HashMap only takes strings</li>
+      <li data-key="c">You need <code>BTreeMap</code></li>
+      <li data-key="d"><code>f64</code> isn't <code>Eq</code> or <code>Hash</code> (<code>NaN != NaN</code>), so <code>insert</code>'s bounds aren't met (E0599)</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Size is irrelevant.</p>
+      <p data-for="b">Any <code>Eq + Hash</code> type works.</p>
+      <p data-for="c"><code>f64</code> isn't <code>Ord</code> either.</p>
+      <p data-for="d">Correct (e3).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">You must remove every expired lease from a <code>HashMap</code>. What's idiomatic?</div>
+    <ol class="options">
+      <li data-key="a"><code>leases.retain(|_, exp| *exp &gt;= now);</code></li>
+      <li data-key="b">Iterate with <code>for</code> and call <code>remove</code> inside</li>
+      <li data-key="c">Clone the map, iterate the clone, remove from the original</li>
+      <li data-key="d">Wrap it in a <code>Mutex</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (e5's fix).</p>
+      <p data-for="b">E0502.</p>
+      <p data-for="c">Works, but copies everything.</p>
+      <p data-for="d">Unrelated to the problem.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which statement about <code>HashMap</code> iteration order is true?</div>
+    <ol class="options">
+      <li data-key="a">It's insertion order</li>
+      <li data-key="b">It's sorted by key</li>
+      <li data-key="c">It's unspecified and varies between runs, because the default hasher is randomly seeded</li>
+      <li data-key="d">It's the same on every machine</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>indexmap</code>.</p>
+      <p data-for="b">That's <code>BTreeMap</code>.</p>
+      <p data-for="c">Correct (deep dive; chapter F4).</p>
+      <p data-for="d">Not even between runs.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>v.binary_search(&amp;20)</code> return on <code>[3, 7, 19, 25, 42]</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>-4</code></li>
+      <li data-key="b"><code>Err(3)</code>: not found, and 3 is where 20 would be inserted to keep the order</li>
+      <li data-key="c"><code>None</code></li>
+      <li data-key="d">It panics</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's C#'s bitwise-complement convention.</p>
+      <p data-for="b">Correct (Lab step 1).</p>
+      <p data-for="c">It returns <code>Result&lt;usize, usize&gt;</code>.</p>
+      <p data-for="d">Only unsorted input gives a meaningless (but safe) answer.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">C#'s docs warn not to add to or remove from a <code>Dictionary</code> while a ref from <code>GetValueRefOrAddDefault</code> is in use. What's the Rust situation with <code>entry(k).or_default()</code>?</div>
+    <ol class="options">
+      <li data-key="a">Same warning, in the docs</li>
+      <li data-key="b">It's allowed and safe</li>
+      <li data-key="c">It's undefined behaviour</li>
+      <li data-key="d">The returned <code>&amp;mut V</code> borrows the map, so the borrow checker rejects any insert or remove while it's alive</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Rust enforces it instead of documenting it.</p>
+      <p data-for="b">It's prevented, not allowed.</p>
+      <p data-for="c">Safe Rust has no UB; it won't compile.</p>
+      <p data-for="d">Correct (the ownership section; e1 is the same rule).</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li><code>Vec</code> for sequences, <code>VecDeque</code> for queues, <code>HashMap</code>/<code>HashSet</code> for unordered lookup, <code>BTreeMap</code>/<code>BTreeSet</code> for ordered keys and ranges, <code>BinaryHeap</code> for "the biggest next" (a max-heap; <code>Reverse</code> for min).</li>
+  <li>Collections own their elements: values move in; you borrow (<code>get</code>, <code>&amp;v[i]</code>), borrow mutably, or move out (<code>pop</code>, <code>remove</code>). No reference into a collection survives a call that may reorganise it (E0502).</li>
+  <li>Iterate with <code>&amp;c</code> (borrow), <code>&amp;mut c</code> (modify), <code>c</code> (consume) or <code>c.drain(..)</code> (empty but keep); remove matching items with <code>retain</code>.</li>
+  <li>The Entry API inserts or updates in one lookup, but needs an owned key: <code>entry(s.to_string())</code> was the slowest of the measured variants, and looking up by <code>&amp;str</code> first the fastest. Look up <code>String</code> keys with <code>&amp;str</code>.</li>
+  <li>Keys need <code>Eq + Hash</code> (not <code>f64</code>) or <code>Ord</code>. <code>HashMap</code> order is random per run, so sort or use <code>BTreeMap</code> wherever order matters, especially in replayable workflows.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">Vec</li><li class="chip">VecDeque</li><li class="chip">HashMap</li><li class="chip">BTreeMap</li><li class="chip">BinaryHeap</li><li class="chip">Entry API</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/collections/index.html"><code>std::collections</code></a><span class="why">The source of the performance table and the "when should you use which collection" guidance used in Figure 3.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/vec/struct.Vec.html"><code>Vec</code></a>, <a href="https://doc.rust-lang.org/std/collections/struct.HashMap.html"><code>HashMap</code></a> (and its <a href="https://doc.rust-lang.org/std/collections/hash_map/enum.Entry.html"><code>Entry</code></a>), <a href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html"><code>BTreeMap</code></a>, <a href="https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html"><code>BinaryHeap</code></a><span class="why">Every method used here, with complexity notes and examples.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch08-00-common-collections.html">The Rust Programming Language — Common Collections</a><span class="why">The Book's introduction to vectors, strings and hash maps, including the Entry API.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"><code>PriorityQueue</code></a> and <a href="https://learn.microsoft.com/dotnet/api/system.runtime.interopservices.collectionsmarshal.getvaluereforadddefault"><code>CollectionsMarshal.GetValueRefOrAddDefault</code></a><span class="why">The .NET min-heap, and the single-lookup API whose usage rule Rust's borrow checker enforces.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/512274.3734138">“Algorithm 232: Heapsort”</a> — J. W. J. Williams, Communications of the ACM 7(6), 1964<span class="why">The paper that introduced the binary heap, the structure behind <code>BinaryHeap</code>.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1007/BF00288683">“Organization and Maintenance of Large Ordered Indexes”</a> — Rudolf Bayer, Edward M. McCreight, Acta Informatica, 1972<span class="why">The B-tree, the design behind <code>BTreeMap</code>'s wide, cache-friendly nodes.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=Zs-pS-egQSs">“Common Collections in Rust”</a> — Let's Get Rusty<span class="why">Vectors, strings and hash maps from the Book, on screen.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=KYw3Lnf0nSY">“Rust HashMap and HashSet Collection Types”</a> — Trevor Sullivan<span class="why">A hands-on tour of the map and set APIs, including entries.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- collection chooser (Figure 3) ----------
+  var REC = {
+    vec:      { name: "Vec<T>", costs: ["get(i) O(1)", "push O(1)*", "insert(i) O(n−i)*", "remove(i) O(n−i)"], dotnet: "List<T>", why: "A sequence in a particular order, appending at the end; also a stack (push/pop at the end).", lab: "Lab step 1" },
+    stack:    { name: "Vec<T> (as a stack)", costs: ["push O(1)*", "pop O(1)", "last() O(1)"], dotnet: "Stack<T> (or List<T>)", why: "The std docs: use a Vec when \"you want a stack\". push and pop work at the end.", lab: "Lab step 1" },
+    deque:    { name: "VecDeque<T>", costs: ["get(i) O(1)", "push/pop either end O(1)*", "insert(i) O(min(i, n−i))*"], dotnet: "Queue<T> (one end); no built-in deque", why: "A queue or double-ended queue: efficient insertion and removal at both ends.", lab: "Lab step 3, section 6" },
+    middle:   { name: "Vec<T> (or VecDeque<T>); measure", costs: ["insert(i) O(n−i)*", "remove(i) O(n−i)", "swap_remove O(1)"], dotnet: "List<T>", why: "Frequent middle inserts sound like a linked list, but contiguous arrays usually still win (chapter F3). If order doesn't matter, swap_remove is O(1). If you need ordered keys, use a BTreeMap instead.", lab: "Lab step 1, section 3" },
+    hashmap:  { name: "HashMap<K, V>", costs: ["get O(1)~", "insert O(1)~*", "remove O(1)~"], dotnet: "Dictionary<K, V>", why: "Associate keys with values, no order needed; a cache. Keys need Eq + Hash.", lab: "Lab step 3, sections 1–2" },
+    hashset:  { name: "HashSet<T>", costs: ["contains O(1)~", "insert O(1)~*", "remove O(1)~"], dotnet: "HashSet<T>", why: "Remember which keys you've seen; no value per key. Same costs as the matching map.", lab: "Lab step 4, part C" },
+    btreemap: { name: "BTreeMap<K, V>", costs: ["get O(log n)", "insert O(log n)", "remove O(log n)", "range O(log n)"], dotnet: "SortedDictionary<K, V>", why: "A map sorted by key: in-order iteration, ranges, smallest/largest. Keys need Ord.", lab: "Lab step 3, section 3" },
+    btreeset: { name: "BTreeSet<T>", costs: ["contains O(log n)", "insert O(log n)", "range O(log n)"], dotnet: "SortedSet<T>", why: "Sorted, unique keys with no value: ordered membership and ranges.", lab: "Figure 1" },
+    heap:     { name: "BinaryHeap<T>", costs: ["push O(1)~", "pop O(log n)", "peek O(1)"], dotnet: "PriorityQueue<E, P> (a min-heap)", why: "Only ever process the biggest (max-heap) or, with Reverse, the smallest item next; a priority queue.", lab: "Lab step 3, section 5; Lab step 4, part B" }
+  };
+  var Q = {
+    q1: [["index", "by position (index)"], ["key", "by a key"], ["fifo", "first in, first out"], ["lifo", "last in, first out"], ["prio", "largest or smallest first"]],
+    q2: [["no", "no"], ["yes", "yes"]],
+    q3: [["value", "a value per key"], ["key", "only the key"]],
+    q4: [["end", "at the end"], ["both", "at both ends"], ["middle", "in the middle, often"]]
+  };
+  var st = { q1: "key", q2: "no", q3: "value", q4: "end" };
+  function el(id) { return document.getElementById(id); }
+  Object.keys(Q).forEach(function (q) {
+    var box = el("cc-" + q).querySelector("div");
+    Q[q].forEach(function (o) {
+      var b = document.createElement("button"); b.type = "button"; b.textContent = o[1]; b.dataset.v = o[0];
+      b.onclick = function () { st[q] = o[0]; render(); };
+      box.appendChild(b);
+    });
+  });
+  function pick() {
+    if (st.q1 === "key") return st.q2 === "yes" ? (st.q3 === "value" ? "btreemap" : "btreeset") : (st.q3 === "value" ? "hashmap" : "hashset");
+    if (st.q1 === "fifo") return "deque";
+    if (st.q1 === "lifo") return "stack";
+    if (st.q1 === "prio") return "heap";
+    return st.q4 === "both" ? "deque" : st.q4 === "middle" ? "middle" : "vec";
+  }
+  function render() {
+    el("cc-q2").classList.toggle("hidden", st.q1 !== "key");
+    el("cc-q3").classList.toggle("hidden", st.q1 !== "key");
+    el("cc-q4").classList.toggle("hidden", st.q1 !== "index");
+    Object.keys(Q).forEach(function (q) {
+      Array.prototype.forEach.call(el("cc-" + q).querySelectorAll("button"), function (b) { b.setAttribute("aria-pressed", String(b.dataset.v === st[q])); });
+    });
+    var r = REC[pick()];
+    var esc = function (s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); };
+    el("cc-result").innerHTML = "<h4>" + esc(r.name) + "</h4>" +
+      '<div class="cc-costs">' + r.costs.map(function (c) { return "<span>" + esc(c) + "</span>"; }).join("") + "</div>" +
+      "<p>" + esc(r.why) + "</p><p><strong>.NET:</strong> " + esc(r.dotnet) + " · <strong>See:</strong> " + esc(r.lab) + "</p>";
+  }
+  render();
+
+  // ---------- counting cost (Figure 4) ----------
+  Course.chart("cost-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["Rust A: entry(w.to_string())", "Rust B: get_mut(&str), else insert", "Rust C: contains_key + get_mut", "Rust D: HashMap<&str,_> + entry", "C#: TryGetValue + indexer", "C#: CollectionsMarshal"],
+        datasets: [{ label: "ns per token (median of 3 runs)", data: [38.8, 16.7, 27.9, 22.1, 25.2, 12.7], backgroundColor: [c.red, c.teal, c.amber, c.blue, c.purple, c.green], borderRadius: 5 }]
+      },
+      options: {
+        indexAxis: "y",
+        plugins: { legend: { display: false } },
+        scales: { x: { min: 0, title: { display: true, text: "ns per token (lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

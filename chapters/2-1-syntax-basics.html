@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.1 Syntax and basic types</title>
+<meta name="description" content="Variables, mutability and shadowing; integer, float, bool and char types; integer overflow rules in debug and release; casts; tuples and arrays; functions; and control flow, compared line by line with C#, with an interactive overflow explorer and every snippet run.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .ox-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; align-items: end; }
+  @media (max-width: 760px) { .ox-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .ox-controls label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--muted); min-width: 0; }
+  .ox-controls select, .ox-controls input { font: .9rem var(--font-mono); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); min-width: 0; width: 100%; box-sizing: border-box; }
+  .ox-controls input.bad { border-color: var(--red); }
+  .ox-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+  .ox-presets button { font: .78rem var(--font-mono); padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .ox-table { width: 100%; border-collapse: collapse; margin-top: 10px; font: .85rem var(--font-mono); }
+  .ox-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+  .ox-table td:first-child { color: var(--muted); width: 42%; }
+  .ox-table tr.hl td { background: var(--amber-soft); }
+  .ox-panic { color: var(--red); font-weight: 700; }
+  .ox-ok { color: var(--green); }
+  .ox-bits { font: .8rem var(--font-mono); color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+  .ox-err { color: var(--red); font-size: .85rem; min-height: 1.2em; margin-top: 6px; }
+</style>
+</head>
+<body data-chapter="2.1">
+<article class="content">
+<h1>Syntax and basic types</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Declare variables with <code>let</code>, choose between immutability, <code>mut</code> and shadowing, and use <code>const</code> and <code>static</code> correctly</li>
+      <li>Pick the right scalar type (sized integers, <code>usize</code>, <code>f64</code>, <code>bool</code>, <code>char</code>) and know how each differs from its C# counterpart</li>
+      <li>Predict what integer overflow does in debug and release builds, and choose explicitly between checked, wrapping, saturating and overflowing arithmetic</li>
+      <li>Convert between numeric types with <code>as</code>, <code>From</code>/<code>Into</code> and <code>TryFrom</code>/<code>TryInto</code>, knowing which can lose information</li>
+      <li>Use tuples and arrays (and know that Rust arrays are values), write functions, and use <code>if</code>, <code>loop</code>, <code>while</code> and <code>for</code> as expressions</li>
+      <li>Read and fix the compiler errors beginners meet first</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>This is the first chapter of actual Rust, and most of it will look familiar: braces, semicolons, <code>if</code>, <code>while</code>, generic angle brackets. That familiarity is a trap. The syntax is close enough to C# that you'll read it fluently, but four defaults are different, and each one is the source of a classic bug in .NET code: <strong>variables are immutable</strong> unless you say otherwise; <strong>numbers never convert silently</strong>; <strong>integer overflow is defined</strong> and loud in debug builds; and <strong>nearly everything is an expression</strong> (chapter F8). Learn these four now and the rest of Module 2 builds on solid ground.</p>
+  <p>For your products the numeric rules matter most. A rule engine computes fees, limits and scores; a workflow engine computes retry delays, deadlines and counters. "What happens when this number gets too big?" has a precise answer in Rust, and you'll be able to give it, and choose it on purpose, by the end of this chapter.</p>
+</div>
+
+<h2 id="intuition">Intuition first: the same sentence, stricter grammar</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Think of moving from C# to Rust as moving from conversational English to <strong>contract English</strong>. The words are the same, but contract English refuses implied meaning. "The supplier may change the price" becomes "the supplier may change the price, in writing, at most once per quarter". Rust does the same to your code. "This value can change" must be written (<code>mut</code>). "Treat this <code>i32</code> as an <code>i64</code>" must be written (<code>.into()</code>). "If this addition overflows, wrap around" must be written (<code>wrapping_add</code>). The compiler is the lawyer who sends it back until every implied term is explicit.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">int retries = 0;            // mutable by default
+const int MaxRetries = 5;
+long total = retries;       // silent widening
+retries++;
+var label = retries > 3 ? "many" : "few";
+for (int i = 0; i &lt; 3; i++) { /* … */ }</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">let mut retries = 0;        // `mut` must be written
+const MAX_RETRIES: u32 = 5; // type always written
+let total: i64 = retries.into(); // conversion written
+retries += 1;               // no ++
+let label = if retries &gt; 3 { "many" } else { "few" };
+for i in 0..3 { /* … */ }   // ranges, no C-style for</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="variables">Variables: <code>let</code>, immutability and <code>mut</code></h3>
+<p>A variable is introduced with <code>let</code>. Its type is usually inferred (chapter F8), and you can annotate it when inference needs help or for clarity: <code>let port: u16 = 8080;</code>. Rust variables are <strong>immutable by default</strong>. Assigning to one a second time is error E0384, and the compiler suggests the fix (Lab step 2). To allow change, write <code>let mut</code>.</p>
+<p>Why make immutability the default? Because most variables never change, and a reader who sees <code>mut</code> knows <em>this</em> one does: it's where to look when a value is wrong. It also matters for concurrency (chapter F9): data that can't change can be shared freely. In C# you opt <em>in</em> to immutability field by field (<code>readonly</code>, <code>init</code>, records); in Rust you opt <em>out</em>, binding by binding. Note that in Rust immutability is a property of the <em>binding</em>, and it's deep: through an immutable binding you can't change the value or anything it owns. That's very different from C#'s <code>readonly</code>, which only stops reassigning the reference (chapter 2.3 makes this precise).</p>
+<p>Two more rules, both enforced by the compiler:</p>
+<ul>
+  <li><strong>Every variable must be initialised before it's read</strong>, on every path. You may declare first and assign later (<code>let discount: u32;</code>), but reading it where some path didn't assign it is error E0381. There are no default values: no implicit 0, no <code>null</code>. C# has the same "definite assignment" rule for locals, but Rust applies it everywhere, including struct fields.</li>
+  <li><strong>Unused variables are warnings.</strong> Prefix a name with <code>_</code> (<code>let _draft = …</code>) to say "unused on purpose".</li>
+</ul>
+<p>Naming conventions are enforced by compiler warnings, not just style guides: <code>snake_case</code> for variables and functions, <code>CamelCase</code> for types, and <code>SCREAMING_SNAKE_CASE</code> for constants and statics. So <code>MaxRetries</code> becomes <code>MAX_RETRIES</code> and <code>GetTotal()</code> becomes <code>get_total()</code>.</p>
+
+<h3 id="const-static">Constants and statics</h3>
+<ul>
+  <li><dfn data-term="const" data-def="A compile-time constant: its value is computed at compile time and inlined wherever it is used; the type must be written. Like C# const.">const</dfn>: <code>const MAX_RETRIES: u32 = 5;</code>. The value must be computable at compile time, the type must be written, and the compiler copies the value into every place it's used. It's the equivalent of C# <code>const</code>, and can be declared at module level, which C# can't do outside a type.</li>
+  <li><dfn data-term="static" data-def="A value with one fixed memory location for the whole program run ('static lifetime). Mutable statics require unsafe; use atomics or OnceLock/LazyLock instead.">static</dfn>: <code>static SERVICE_NAME: &amp;str = "rules-api";</code>. One fixed memory location for the whole run, closer to a C# <code>static readonly</code> field. A <code>static mut</code> exists, but every access needs <code>unsafe</code>, because a mutable global is shared by all threads (chapter F9). For lazily initialised or thread-safe globals you'll use <code>LazyLock</code>, <code>OnceLock</code> or atomics (chapter 2.12).</li>
+</ul>
+
+<h3 id="shadowing">Shadowing</h3>
+<p><dfn data-term="shadowing" data-def="Declaring a new variable with the same name as an existing one (let x = …; again), hiding the old one for the rest of the scope; the new one may have a different type. C# forbids this (CS0128/CS0136).">Shadowing</dfn> means declaring a <em>new</em> variable with the same name as an existing one. The old one is hidden for the rest of the scope. It's not the same as <code>mut</code>:</p>
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · shadowing vs mutation</span>
+  <svg viewBox="0 0 720 260" role="img" aria-label="Shadowing creates new variable slots, possibly of new types; mut changes the value in the same slot, keeping its type">
+    <text x="180" y="22" class="svg-title" text-anchor="middle">shadowing: let limit = … again</text>
+    <text x="540" y="22" class="svg-title" text-anchor="middle">mutation: let mut count</text>
+    <g data-hl="1">
+      <rect x="30" y="44" width="300" height="44" rx="5" class="svg-teal" data-show="=1"/>
+      <rect x="30" y="44" width="300" height="44" rx="5" class="svg-box" stroke-dasharray="5 4" data-show="2"/>
+      <text x="45" y="71" class="svg-mono">limit: &amp;str = "250"</text>
+      <text x="320" y="71" class="svg-text-sm" text-anchor="end" data-show="2">hidden</text>
+    </g>
+    <g data-show="2" data-hl="2">
+      <rect x="30" y="100" width="300" height="44" rx="5" class="svg-purple" data-show="=2"/>
+      <rect x="30" y="100" width="300" height="44" rx="5" class="svg-box" stroke-dasharray="5 4" data-show="3"/>
+      <text x="45" y="127" class="svg-mono">limit: u32 = 250</text>
+      <text x="320" y="127" class="svg-text-sm" text-anchor="end" data-show="3">hidden</text>
+    </g>
+    <g data-show="3" data-hl="3">
+      <rect x="30" y="156" width="300" height="44" rx="5" class="svg-purple"/>
+      <text x="45" y="183" class="svg-mono">limit: u32 = 500</text>
+    </g>
+    <text x="180" y="230" class="svg-text-sm" text-anchor="middle" data-show="2">three variables; the name now refers to the newest</text>
+
+    <line x1="360" y1="36" x2="360" y2="240" class="svg-line-dash"/>
+    <g data-show="4">
+      <rect x="390" y="44" width="300" height="44" rx="5" class="svg-amber" data-hl="4,5"/>
+      <text x="405" y="71" class="svg-mono" data-show="=4">count: u32 = 0</text>
+      <text x="405" y="71" class="svg-mono" data-show="5">count: u32 = 1</text>
+      <text x="540" y="120" class="svg-text-sm" text-anchor="middle" data-show="5">same variable, new value</text>
+      <text x="540" y="160" class="svg-mono" text-anchor="middle" data-show="5">count = "one";</text>
+      <text x="540" y="182" class="svg-text-sm" text-anchor="middle" data-show="5">✗ E0308: the type of a variable never changes</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>let limit = "250";</code>: a <code>&amp;str</code>, say read from a config file.</li>
+    <li><code>let limit: u32 = limit.parse().unwrap();</code> creates a <em>second</em> variable, of a different type, initialised from the first. From here on, <code>limit</code> means the number. The text version still exists until the end of the scope; it just can't be named.</li>
+    <li><code>let limit = limit * 2;</code>: a third variable. Each one is immutable; no value was ever changed.</li>
+    <li>By contrast, <code>let mut count: u32 = 0;</code> declares one variable that's allowed to change…</li>
+    <li>…so <code>count += 1;</code> updates it <em>in place</em>. Its type is fixed forever: assigning a string to it is a type error.</li>
+  </ol>
+  <figcaption><strong>Figure 1.</strong> Shadowing is mostly used for <em>transforming</em> a value step by step (parse, validate, normalise) without inventing names like <code>limit_str</code> and <code>limit_num</code>, and without making anything mutable. C# rejects it: declaring <code>limit</code> twice in one scope is error CS0128 (Lab step 1). A shadow inside an inner block ends with the block.</figcaption>
+</figure>
+
+<h3 id="scalars">Scalar types</h3>
+<p>Rust's integer types say their size and signedness in the name: <code>i8 i16 i32 i64 i128</code> (signed) and <code>u8 u16 u32 u64 u128</code> (unsigned). The pair <code>isize</code>/<code>usize</code> is pointer-sized: 8 bytes on a 64-bit machine. <dfn data-term="usize" data-def="Unsigned pointer-sized integer (8 bytes on 64-bit targets): the type of lengths, sizes and indexes in Rust. C# uses int for these.">usize</dfn> is the type of every length, size and index in Rust: <code>v.len()</code> returns a <code>usize</code> and <code>v[i]</code> needs one. C# uses <code>int</code> for those, which is why porting index arithmetic produces type errors until you settle on <code>usize</code>. Integer literals with no other clue default to <code>i32</code>, and floats to <code>f64</code>.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · scalar sizes (one square = one byte)</span>
+  <svg viewBox="0 0 720 380" role="img" aria-label="Byte sizes of Rust scalar types with their C# equivalents">
+    <text x="20" y="22" class="svg-text-sm">Rust</text><text x="150" y="22" class="svg-text-sm">C#</text>
+    <g class="svg-mono">
+      <text x="20" y="52">bool</text><text x="150" y="52" class="svg-text-sm">bool</text>
+      <text x="20" y="84">i8 / u8</text><text x="150" y="84" class="svg-text-sm">sbyte / byte</text>
+      <text x="20" y="116">i16 / u16</text><text x="150" y="116" class="svg-text-sm">short / ushort</text>
+      <text x="20" y="148">char</text><text x="150" y="148" class="svg-text-sm">(char is 2 B)</text>
+      <text x="20" y="180">i32 / u32</text><text x="150" y="180" class="svg-text-sm">int / uint</text>
+      <text x="20" y="212">f32</text><text x="150" y="212" class="svg-text-sm">float</text>
+      <text x="20" y="244">i64 / u64</text><text x="150" y="244" class="svg-text-sm">long / ulong</text>
+      <text x="20" y="276">f64</text><text x="150" y="276" class="svg-text-sm">double</text>
+      <text x="20" y="308">isize / usize</text><text x="150" y="308" class="svg-text-sm">nint / nuint</text>
+      <text x="20" y="340">i128 / u128</text><text x="150" y="340" class="svg-text-sm">Int128 / UInt128</text>
+      <text x="20" y="372">()</text><text x="150" y="372" class="svg-text-sm">(void: no value)</text>
+    </g>
+    <g id="sz-bars"></g>
+    <text x="255" y="372" class="svg-text-sm">0 bytes: unit, one possible value (chapter F8)</text>
+  </svg>
+  <figcaption><strong>Figure 2.</strong> Sizes measured with <code>size_of</code> on the lab Mac (Lab step 3). Two differ from C#: Rust's <code>char</code> is 4 bytes because it holds any Unicode scalar value, while a C# <code>char</code> is a 2-byte UTF-16 code unit; and Rust's standard library has no <code>decimal</code> type (see the floating-point deep dive). <code>usize</code> is 8 bytes on 64-bit targets and 4 on 32-bit ones.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Literals</strong> can contain underscores (<code>1_000_000</code>), use prefixes for hex, octal and binary (<code>0xFF</code>, <code>0o755</code>, <code>0b1010_0001</code>), carry a type suffix (<code>0xFF_u8</code>, <code>2.5_f32</code>), or be a byte literal (<code>b'A'</code> is the <code>u8</code> 65).</li>
+  <li><strong>Floats</strong> are IEEE 754 <code>f32</code> and <code>f64</code>, the same as C# <code>float</code> and <code>double</code>, with the same surprises: <code>0.1 + 0.2 != 0.3</code>, and <code>NaN != NaN</code>. Because of NaN, floats only implement <code>PartialEq</code>/<code>PartialOrd</code>, so you can't call <code>.sort()</code> or use them as <code>HashMap</code> keys directly. Use <code>f64::total_cmp</code> to sort (chapter F7).</li>
+  <li><strong><code>bool</code></strong> is one byte, <code>true</code> or <code>false</code>, and is the <em>only</em> type an <code>if</code> accepts. There's no truthiness: <code>if count</code> is error E0308.</li>
+  <li><strong><code>char</code></strong> is a Unicode scalar value, so <code>'🦀'</code> is one <code>char</code>. In C#, <code>"🦀".Length</code> is 2, because the crab needs a UTF-16 surrogate pair (Lab step 3). Rust strings are UTF-8 and are not arrays of <code>char</code>; chapter 2.4 covers text properly.</li>
+  <li><strong>Integer division truncates toward zero</strong> and <code>%</code> takes the sign of the dividend, exactly as in C#: <code>-7 / 2 == -3</code> and <code>-7 % 2 == -1</code>. For a mathematical modulo that's never negative, use <code>rem_euclid</code>. There's no <code>**</code> operator: use <code>2_i32.pow(10)</code> or <code>x.powi(2)</code>.</li>
+</ul>
+
+<h3 id="overflow">Integer overflow: defined, and chosen by you</h3>
+<p><dfn data-term="integer overflow" data-def="A result too large or too small for its integer type. In Rust: a compile error if visible at compile time; at runtime a panic in debug builds and two's-complement wrapping in release builds; never undefined behaviour.">Integer overflow</dfn> is what happens when a result doesn't fit its type. A <code>u8</code> holds 0–255. What is <code>250_u8 + 10</code>? Rust's answer has three layers.</p>
+<ol>
+  <li><strong>If the compiler can see it, it's an error.</strong> <code>let level: u8 = 255 + 1;</code> doesn't compile: the <code>arithmetic_overflow</code> lint is deny-by-default (Lab step 2).</li>
+  <li><strong>At runtime, the plain operators (<code>+ - *</code>) depend on the build profile.</strong> In a debug build (Cargo's <code>dev</code> profile, <dfn data-term="overflow-checks" data-def="Cargo profile setting (rustc -C overflow-checks) that makes plain integer arithmetic panic on overflow; on in the dev profile, off in release by default.">overflow-checks</dfn> <code>= true</code>) they <strong>panic</strong>: "attempt to add with overflow". In a release build (<code>overflow-checks = false</code> by default) they <strong>wrap</strong> around in two's complement: 250 + 10 = 4. Either way the behaviour is defined. Unlike in C and C++, signed overflow is never undefined behaviour in Rust.</li>
+  <li><strong>When overflow is a real possibility, you say what you want</strong>, and the explicit methods behave identically in every profile:</li>
+</ol>
+<div class="table-wrap"><table>
+  <thead><tr><th>Method</th><th><code>250_u8</code> with <code>10</code></th><th>Meaning</th><th>Use it for</th></tr></thead>
+  <tbody>
+    <tr><td><dfn data-term="checked arithmetic" data-def="checked_add/sub/mul/…: returns Some(result), or None if the operation would overflow; same behaviour in every build profile."><code>checked_add</code></dfn></td><td><code>None</code></td><td>Returns <code>Option</code>: <code>Some(result)</code> or <code>None</code> on overflow</td><td>Money, quantities, anything where a wrong number is worse than an error</td></tr>
+    <tr><td><dfn data-term="saturating arithmetic" data-def="saturating_add/sub/mul/…: clamps the result at the type's minimum or maximum instead of overflowing."><code>saturating_add</code></dfn></td><td><code>255</code></td><td>Clamps at the type's minimum or maximum</td><td>Retry delays, counters with a ceiling, UI levels</td></tr>
+    <tr><td><dfn data-term="wrapping arithmetic" data-def="wrapping_add/sub/mul/…: arithmetic modulo 2^bits (two's-complement wrap-around), explicitly requested; never panics."><code>wrapping_add</code></dfn></td><td><code>4</code></td><td>Wraps around (arithmetic modulo 2<sup>bits</sup>)</td><td>Hashes, checksums, sequence numbers that are <em>meant</em> to wrap</td></tr>
+    <tr><td><code>overflowing_add</code></td><td><code>(4, true)</code></td><td>The wrapped value plus a flag</td><td>Multi-word arithmetic, or when you need both</td></tr>
+  </tbody>
+  <caption>The same four exist for <code>sub</code>, <code>mul</code>, <code>pow</code>, <code>neg</code> and shifts. Two cases panic in every profile: integer division by zero, and <code>MIN / -1</code> for signed types (the true result doesn't fit).</caption>
+</table></div>
+
+<figure class="visual" id="ox">
+  <span class="visual-tag">Interactive · integer overflow explorer</span>
+  <div class="ox-controls">
+    <label>Type <select id="ox-type"><option>u8</option><option>i8</option><option>u16</option><option>i16</option><option selected>i32</option><option>u32</option><option>i64</option><option>u64</option></select></label>
+    <label>a <input id="ox-a" value="2147483647" inputmode="numeric" spellcheck="false"></label>
+    <label>Operation <select id="ox-op"><option value="+">+ (add)</option><option value="-">− (sub)</option><option value="*">× (mul)</option></select></label>
+    <label>b <input id="ox-b" value="1" inputmode="numeric" spellcheck="false"></label>
+  </div>
+  <div class="ox-presets" id="ox-presets"></div>
+  <div class="ox-err" id="ox-err" aria-live="polite"></div>
+  <table class="ox-table" id="ox-out"></table>
+  <div class="ox-bits" id="ox-bits"></div>
+  <figcaption><strong>Figure 3.</strong> Pick a type and two values. The table shows what each way of writing the operation produces. The highlighted row is the plain operator in the profile you'd ship. The bit pattern shows <em>why</em> wrapping gives the number it does: only the low bits that fit are kept. The explorer's arithmetic was checked against Rust itself on 2,400 cases (8 types × 3 operations × 100 value pairs).</figcaption>
+</figure>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET</div>
+  <p>C# arithmetic is <strong>unchecked by default</strong> in every build: <code>int.MaxValue + 1</code> silently becomes <code>int.MinValue</code> in Debug and Release alike, unless you write <code>checked(…)</code> or turn on <code>&lt;CheckForOverflowUnderflow&gt;</code> for the whole project (Lab step 3). Rust's debug builds behave like a C# project with that switch on, and its release builds like one with it off. So overflow bugs that tests in debug would catch in Rust go silently through C# tests. Either way, the habit to bring to both languages is the same: where a value can realistically overflow (money, IDs, counters, user-controlled sizes), write the intent. That's <code>checked_*</code>/<code>saturating_*</code> in Rust, and <code>checked</code> or <code>Math.Clamp</code> in C#.</p>
+</div>
+
+<h3 id="conversions">Converting between numeric types</h3>
+<p>Rust never converts numbers for you, not even <code>i32</code> → <code>i64</code> (error E0308 and E0277 in Lab step 2). You choose one of three tools, in order of preference:</p>
+<ul>
+  <li><strong><code>From</code>/<code>Into</code>: lossless only.</strong> <code>let wide: u32 = small.into();</code> or <code>i64::from(x)</code>. These exist only where every value fits (<code>u8</code> → <code>u32</code>, <code>i32</code> → <code>i64</code>, <code>i32</code> → <code>f64</code>), so they can never lose information. Prefer them.</li>
+  <li><strong><code>TryFrom</code>/<code>TryInto</code>: checked.</strong> <code>u8::try_from(300_i32)</code> returns <code>Err(…)</code>. Use them where a value may not fit, such as a <code>u64</code> from the database going into a <code>usize</code> index, or an <code>i64</code> from JSON going into a <code>u32</code>.</li>
+  <li><strong><dfn data-term="as cast" data-def="Rust's explicit primitive conversion operator: never fails, may truncate (int→narrower int), reinterpret bits (same size), or round toward zero and saturate (float→int, NaN→0).">as</dfn>: explicit, never fails, may lose information.</strong> Its rules are fixed by the Rust Reference. Integer to narrower integer <em>truncates</em> (<code>300 as u8 == 44</code>); same size reinterprets the bits (<code>-1_i32 as u8 == 255</code>); float to integer rounds toward zero and <em>saturates</em> (<code>1e10 as i32 == i32::MAX</code>, <code>-1.5 as u8 == 0</code>), with NaN becoming 0; integer to float rounds to the nearest representable value.</li>
+</ul>
+<p>Treat every <code>as</code> between numeric types as a small decision someone should be able to justify. In a review, <code>amount as u32</code> on money is a question, and <code>u32::try_from(amount)?</code> is an answer. C# casts behave similarly: <code>(byte)300</code> is 44 in an unchecked context. Since .NET 9, float-to-integer casts also saturate on x86/x64, with NaN becoming 0, matching Rust (Lab step 3).</p>
+
+<h3 id="compound">Compound types: tuples and arrays</h3>
+<ul>
+  <li>A <strong>tuple</strong> groups a fixed number of values of possibly different types: <code>let reading: (&amp;str, f64, bool) = ("sensor-7", 21.5, true);</code>. Read fields with <code>.0</code>, <code>.1</code>, or destructure them: <code>let (id, celsius, _) = reading;</code>. Tuples are handy for returning two or three values from a function, like C#'s value tuples. Anything bigger or longer-lived deserves a named <code>struct</code> (chapter 2.5). The empty tuple <code>()</code> is the unit type.</li>
+  <li>An <dfn data-term="array (Rust)" data-def="[T; N]: a fixed-length sequence of N values of type T stored inline (often on the stack); the length is part of the type; arrays are values (copied on assignment when T: Copy), unlike C# arrays.">array</dfn> <code>[T; N]</code> holds exactly N values of one type, stored inline, with the length <em>part of the type</em>: <code>[u32; 4]</code> and <code>[u32; 5]</code> are different types. <code>[0u32; 4]</code> creates four zeros. Arrays suit fixed-size data: RGB colours, a week of days, a hash digest. Anything that grows is a <code>Vec&lt;T&gt;</code> (chapters F3 and 2.8).</li>
+</ul>
+<p>Two array facts differ from C#. First, <strong>Rust arrays are values</strong>. <code>let b = a;</code> copies the elements (for element types that are <code>Copy</code>; chapter 2.2), so changing <code>a</code> afterwards doesn't affect <code>b</code>. A C# array is a reference type and the same line aliases it (Lab steps 3 and 5). Second, <strong>every index is bounds-checked</strong>. <code>weekdays[7]</code> on a 5-element array <em>panics</em> with "index out of bounds: the len is 5 but the index is 7", much like C#'s <code>IndexOutOfRangeException</code> but not catchable as routine control flow. When an index might be out of range, use <code>weekdays.get(7)</code>, which returns an <code>Option</code>. The optimiser removes bounds checks it can prove unnecessary (chapter 6.2).</p>
+
+<h3 id="functions">Functions</h3>
+<pre data-title="anatomy of a function"><code class="language-rust">/// Doc comment: shows up in `cargo doc` and editor tooltips.
+fn backoff_ms(attempt: u32, base_ms: u64, cap_ms: u64) -&gt; u64 {
+    if attempt == 0 {
+        return 0;                 // early return needs `return`
+    }
+    let delay = base_ms.saturating_mul(2_u64.saturating_pow(attempt - 1));
+    delay.min(cap_ms)             // last expression, no semicolon: the result
+}</code></pre>
+<ul>
+  <li><code>fn</code>, a <code>snake_case</code> name, parameters with <strong>mandatory types</strong>, and <code>-&gt; ReturnType</code>. No return type means it returns <code>()</code>.</li>
+  <li>The body's final expression is the return value (chapter F8); <code>return</code> is for leaving early. Adding a semicolon after that final expression is the classic beginner error E0308 "expected <code>u64</code>, found <code>()</code>".</li>
+  <li>Functions can be declared in any order. There are no forward declarations and no "define before use".</li>
+  <li><strong>No overloading, no default parameters, no named arguments.</strong> Where C# would write <code>Connect(host, port = 5432, timeout = null)</code>, Rust uses distinct names (<code>connect</code>, <code>connect_with_timeout</code>), an options struct, or the builder pattern (chapter 3.2). This is a deliberate trade: every call site states exactly which function runs.</li>
+</ul>
+
+<h3 id="control-flow">Control flow</h3>
+<ul>
+  <li><strong><code>if</code></strong> takes a <code>bool</code> condition without parentheses, and braces are always required. It's an expression, so it replaces C#'s ternary: <code>let mode = if load &gt; 100 { "shed" } else { "normal" };</code>. Both branches must have the same type (E0308 "<code>if</code> and <code>else</code> have incompatible types").</li>
+  <li><strong><code>loop</code></strong> repeats until <code>break</code>; <code>break value</code> makes the whole loop an expression. Use it for retry loops and anywhere C# uses <code>while (true)</code> or <code>do … while</code>. Rust has no <code>do-while</code>.</li>
+  <li><strong><code>while condition { … }</code></strong> works as in C#.</li>
+  <li><strong><code>for x in iterable { … }</code></strong> is the <em>only</em> <code>for</code>: there's no C-style <code>for (init; cond; step)</code>. Counting uses ranges: <code>0..n</code> excludes n, <code>0..=n</code> includes it, and <code>(0..10).rev().step_by(3)</code> counts 9, 6, 3, 0. Over a collection: <code>for item in &amp;items</code>, or <code>for (i, item) in items.iter().enumerate()</code> when you need the index. Iterators get a full chapter (2.10).</li>
+  <li><strong>Labels</strong> (<code>'rows: for …</code>) let <code>break 'rows</code> or <code>continue 'rows</code> target an outer loop. That replaces the flag variable or <code>goto</code> you'd need in C#.</li>
+  <li><strong><code>match</code></strong>, Rust's far more powerful <code>switch</code>, was previewed in F8 and gets chapter 2.5.</li>
+</ul>
+<p>Operators are mostly what you expect, with differences: no <code>++</code>/<code>--</code> (write <code>+= 1</code>); bitwise NOT on integers is <code>!</code> (C# uses <code>~</code>); no implicit conversions between operand types (<code>i64 + i32</code> is an error); and <code>&amp;&amp;</code>/<code>||</code> short-circuit as usual.</p>
+
+<h3 id="macros-format">Comments, printing and formatting</h3>
+<p><code>//</code> and <code>/* */</code> are ordinary comments. <code>///</code> documents the item that follows and <code>//!</code> documents the enclosing module; both become HTML via <code>cargo doc</code>, and code inside them runs as tests (chapter 3.6). <code>println!</code>, <code>format!</code> and <code>eprintln!</code> end in <code>!</code> because they're <dfn data-term="macro" data-def="Code that generates code at compile time, invoked with a ! (println!, vec!, format!); used where a normal function can't express the API, e.g. checking a format string at compile time.">macros</dfn>: code that runs at compile time. That's how the format string is <em>checked during compilation</em>: a placeholder with no matching argument doesn't build. Placeholders: <code>{}</code> (user-facing <code>Display</code>), <code>{:?}</code> (developer-facing <code>Debug</code>), inline names <code>{rule}</code>, and format specs like <code>{:&gt;8}</code>, <code>{:.2}</code>, <code>{:08}</code>, <code>{:#x}</code> and <code>{:#b}</code> (Lab step 5). It's C# string interpolation with the formatting rules of <code>string.Format</code>, verified by the compiler.</p>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<details class="deep-dive"><summary>Deep dive: two's complement — why wrapping gives the numbers it does</summary><div class="body">
+  <p>Signed integers in Rust (and C#, and every modern CPU) use <dfn data-term="two's complement" data-def="The binary representation of signed integers where the top bit has negative weight (−2^(n−1)); addition is the same circuit for signed and unsigned, and overflow wraps modulo 2^n.">two's complement</dfn>. For an n-bit type the top bit has weight \(-2^{n-1}\) and the others their usual positive weights:</p>
+  $$ \text{value}(b_{n-1}\dots b_0) = -b_{n-1}\,2^{n-1} + \sum_{i=0}^{n-2} b_i\,2^i $$
+  <p>So for <code>i8</code>, <code>0111_1111</code> is 127, <code>1000_0000</code> is −128 and <code>1111_1111</code> is −1. The point of this encoding is that <strong>addition, subtraction and multiplication are the same hardware operation for signed and unsigned numbers</strong>: add the bits, keep the low n of them. That's why wrapping costs nothing; it's simply what the adder does. It's also why <code>-1_i32 as u32</code> is 4,294,967,295 (same bits, different reading), and why <code>i8::MIN / -1</code> can't be represented: +128 doesn't fit in an <code>i8</code>.</p>
+  <p>Checking overflow is cheap per operation too: the CPU sets a flag. The real cost is indirect. A loop that must stop the instant any addition overflows can't be <em>vectorised</em> (processing many elements per instruction, chapter 6.2), because the order of operations becomes observable. Lab step 4 measured it: summing 50 million <code>u32</code>s took 3.3 ms without checks and 15.4 ms with them, about 4.6× slower, in that one tight loop. In typical business code the difference is unmeasurable. Some teams turn <code>overflow-checks = true</code> on in their release profile and switch to <code>wrapping_*</code> only in measured hot loops; that's a reasonable default for financial and rule-evaluation code.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: floating point, and why money is never an f64</summary><div class="body">
+  <p><code>f64</code> stores a number as sign × 1.fraction × 2<sup>exponent</sup> (IEEE 754): 52 fraction bits, about 15–17 significant decimal digits. Most decimal fractions, including 0.1, have no finite binary representation, the way ⅓ has none in decimal. So <code>0.1 + 0.2</code> is 0.30000000000000004 (Lab step 3), and summing a million 0.1s doesn't give exactly 100,000. Integers above 2<sup>53</sup> in an <code>f64</code>, or above 2<sup>24</sup> = 16,777,216 in an <code>f32</code>, can't all be represented either: <code>16_777_217_i32 as f32</code> prints 16777216.</p>
+  <p>Special values complete the picture: <code>inf</code>, <code>-inf</code>, <code>-0.0</code> and <code>NaN</code>, which is not equal to anything, including itself. That's why Rust floats don't implement <code>Eq</code>/<code>Ord</code>/<code>Hash</code>. Comparison-based code must decide what NaN means, and <code>total_cmp</code> is the standard answer.</p>
+  <p>C# has <code>decimal</code> (base-10, 28–29 digits) built in; Rust's standard library doesn't. For money in Rust, use one of two approaches. (1) <strong>Integer minor units</strong>: <code>i64</code> cents (or the currency's smallest unit) in a newtype (chapter F8), with <code>checked_*</code> arithmetic (Exercise 1). This is the common choice for payments and ledgers. (2) A <strong>decimal crate</strong> such as <code>rust_decimal</code> (a 96-bit decimal close to C#'s <code>decimal</code>) when you need fractional rates and exact decimal rounding rules. Never <code>f64</code> for amounts that must reconcile. David Goldberg's 1991 survey in Go further is the classic explanation of why.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac. Outputs are pasted verbatim. Create a project with <code>cargo new l21</code>, put each program in <code>src/bin/</code>, and run <code>cargo run --bin &lt;name&gt;</code> (add <code>--release</code> where noted).</p>
+
+<h3 id="lab-1">Step 1 — variables, constants and shadowing</h3>
+<pre data-playground data-title="src/bin/variables.rs"><code class="language-rust">const MAX_RETRIES: u32 = 5;             // compile-time constant: inlined wherever used
+static SERVICE_NAME: &amp;str = "rules-api"; // one fixed location in memory for the whole run
+
+fn main() {
+    let tenant = "acme";        // immutable by default
+    let mut attempts = 0;       // `mut` opts in to change
+    attempts += 1;
+    println!("{SERVICE_NAME}: tenant {tenant}, attempt {attempts} of {MAX_RETRIES}");
+
+    // Shadowing: a NEW variable with the same name, here even with a different type.
+    let limit = "250";               // &amp;str, e.g. read from config
+    let limit: u32 = limit.parse().unwrap(); // now a u32; the text version is hidden
+    let limit = limit * 2;           // still immutable, new value
+    println!("limit = {limit}");
+
+    // Shadowing in an inner block ends with the block.
+    let region = "eu";
+    {
+        let region = "us";
+        println!("inner region = {region}");
+    }
+    println!("outer region = {region}");
+
+    let _unused_draft = 42; // a leading underscore silences the unused-variable warning
+}</code></pre>
+<pre class="output">rules-api: tenant acme, attempt 1 of 5
+limit = 500
+inner region = us
+outer region = eu</pre>
+<p>The three <code>limit</code>s are three variables; the last one is what the name means from then on. The inner <code>region</code> disappears at the closing brace. The C# compiler refuses the same idea:</p>
+<pre data-title="Program.cs (C#)"><code class="language-csharp">var limit = "250";
+var limit = int.Parse(limit); // try to shadow, as Rust allows
+Console.WriteLine(limit);</code></pre>
+<pre class="output error">error CS0128: A local variable or function named 'limit' is already defined in this scope</pre>
+
+<h3 id="lab-2">Step 2 — the errors you'll meet in your first week</h3>
+<p>Each is a separate file compiled with <code>rustc --edition 2024 file.rs</code>, and each fails on purpose. Read the help text: it usually contains the fix.</p>
+<pre data-title="e1.rs — assigning to an immutable variable"><code class="language-rust">fn main() {
+    let retries = 0;
+    retries += 1; // forgot `mut`
+    println!("{retries}");
+}</code></pre>
+<pre class="output error">error[E0384]: cannot assign twice to immutable variable `retries`
+ --&gt; errs/e1.rs:3:5
+  |
+2 |     let retries = 0;
+  |         ------- first assignment to `retries`
+3 |     retries += 1; // forgot `mut`
+  |     ^^^^^^^^^^^^ cannot assign twice to immutable variable
+  |
+help: consider making this binding mutable
+  |
+2 |     let mut retries = 0;
+  |         +++</pre>
+<pre data-title="e2.rs — no truthiness"><code class="language-rust">fn main() {
+    let pending = 3;
+    if pending { // C-style "truthiness"
+        println!("work to do");
+    }
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+ --&gt; errs/e2.rs:3:8
+  |
+3 |     if pending { // C-style "truthiness"
+  |        ^^^^^^^ expected `bool`, found integer</pre>
+<pre data-title="e3.rs — no mixing of integer types"><code class="language-rust">fn main() {
+    let count: i32 = 7;
+    let total: i64 = 1_000;
+    let sum = total + count; // mixing integer types
+    println!("{sum}");
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+ --&gt; errs/e3.rs:4:23
+  |
+4 |     let sum = total + count; // mixing integer types
+  |                       ^^^^^ expected `i64`, found `i32`
+
+error[E0277]: cannot add `i32` to `i64`
+   --&gt; errs/e3.rs:4:21
+    |
+  4 |     let sum = total + count; // mixing integer types
+    |                     ^ no implementation for `i64 + i32`
+    |
+    = help: the trait `Add&lt;i32&gt;` is not implemented for `i64`
+    … (rustc then lists the Add implementations that do exist; omitted here)</pre>
+<pre data-title="e4.rs — overflow the compiler can see"><code class="language-rust">fn main() {
+    let level: u8 = 255 + 1; // overflow visible at compile time
+    println!("{level}");
+}</code></pre>
+<pre class="output error">error: this arithmetic operation will overflow
+ --&gt; errs/e4.rs:2:21
+  |
+2 |     let level: u8 = 255 + 1; // overflow visible at compile time
+  |                     ^^^^^^^ attempt to compute `u8::MAX + 1_u8`, which would overflow
+  |
+  = note: `#[deny(arithmetic_overflow)]` on by default</pre>
+<pre data-title="e5.rs — use before assignment on some path"><code class="language-rust">fn main() {
+    let discount: u32;
+    let vip = std::env::args().count() &gt; 1;
+    if vip {
+        discount = 20;
+    }
+    println!("{discount}"); // not assigned on every path
+}</code></pre>
+<pre class="output error">error[E0381]: used binding `discount` is possibly-uninitialized
+ --&gt; errs/e5.rs:7:16
+  |
+2 |     let discount: u32;
+  |         -------- binding declared here but left uninitialized
+3 |     let vip = std::env::args().count() &gt; 1;
+4 |     if vip {
+  |        --- if this `if` condition is `false`, `discount` is not initialized
+5 |         discount = 20;
+6 |     }
+  |      - an `else` arm might be missing here, initializing `discount`
+7 |     println!("{discount}"); // not assigned on every path
+  |                ^^^^^^^^ `discount` used here but it is possibly-uninitialized
+  |
+  = note: when checking initialization, the compiler describes possible control-flow paths without evaluating whether branch conditions can actually have the values shown</pre>
+<pre data-title="e6.rs — if branches must have one type"><code class="language-rust">fn main() {
+    let express = true;
+    let fee = if express { 25 } else { "free" }; // branches must agree
+    println!("{fee}");
+}</code></pre>
+<pre class="output error">error[E0308]: `if` and `else` have incompatible types
+ --&gt; errs/e6.rs:3:40
+  |
+3 |     let fee = if express { 25 } else { "free" }; // branches must agree
+  |                            --          ^^^^^^ expected integer, found `&amp;str`
+  |                            |
+  |                            expected because of this</pre>
+<p>Fixes, in order: <code>let mut retries</code>; <code>if pending &gt; 0</code>; <code>total + i64::from(count)</code>; use a wider type or <code>checked_add</code>; give <code>discount</code> a value on every path (an <code>else</code>, or <code>let discount = if vip { 20 } else { 0 };</code>); make both branches the same type. All six are mistakes that compile in some other language and fail at runtime there.</p>
+
+<h3 id="lab-3">Step 3 — scalar types and conversions, side by side with C#</h3>
+<pre data-playground data-title="src/bin/scalars.rs"><code class="language-rust">use std::mem::size_of;
+
+fn main() {
+    println!("--- integers: size and range ---");
+    println!("i8    {} B  {} ..= {}", size_of::&lt;i8&gt;(), i8::MIN, i8::MAX);
+    println!("u8    {} B  {} ..= {}", size_of::&lt;u8&gt;(), u8::MIN, u8::MAX);
+    println!("i16   {} B  {} ..= {}", size_of::&lt;i16&gt;(), i16::MIN, i16::MAX);
+    println!("i32   {} B  {} ..= {}", size_of::&lt;i32&gt;(), i32::MIN, i32::MAX);
+    println!("u32   {} B  {} ..= {}", size_of::&lt;u32&gt;(), u32::MIN, u32::MAX);
+    println!("i64   {} B  {} ..= {}", size_of::&lt;i64&gt;(), i64::MIN, i64::MAX);
+    println!("u64   {} B  {} ..= {}", size_of::&lt;u64&gt;(), u64::MIN, u64::MAX);
+    println!("i128  {} B  max {}", size_of::&lt;i128&gt;(), i128::MAX);
+    println!("usize {} B  max {} (pointer-sized: the type of lengths and indexes)", size_of::&lt;usize&gt;(), usize::MAX);
+
+    println!("--- literals ---");
+    let big = 1_000_000;       // underscores for readability; type defaults to i32
+    let mask = 0xFF_u8;        // hex, with a type suffix
+    let perms = 0o755;         // octal
+    let flags = 0b1010_0001;   // binary
+    let letter = b'A';         // a byte literal: u8 value 65
+    println!("{big} {mask} {perms} {flags} {letter}");
+
+    println!("--- floats, bool, char ---");
+    println!("f32 {} B, f64 {} B, bool {} B, char {} B", size_of::&lt;f32&gt;(), size_of::&lt;f64&gt;(), size_of::&lt;bool&gt;(), size_of::&lt;char&gt;());
+    let sum = 0.1 + 0.2;       // f64 by default
+    println!("0.1 + 0.2 = {sum} (== 0.3? {})", sum == 0.3);
+    let (a, b) = (f64::NAN, f64::NAN);
+    println!("NaN == NaN? {}  NaN.total_cmp(NaN) = {:?}", a == b, a.total_cmp(&amp;b));
+    let heart = '❤';
+    let crab = '🦀';
+    println!("'{heart}' is U+{:04X}, '{crab}' is U+{:X}: each is one char", heart as u32, crab as u32);
+
+    println!("--- integer division and remainder truncate toward zero ---");
+    println!("7 / 2 = {}, -7 / 2 = {}, -7 % 2 = {}, (-7i32).rem_euclid(2) = {}", 7 / 2, -7 / 2, -7 % 2, (-7i32).rem_euclid(2));
+    println!("2_i32.pow(10) = {}, 2.0_f64.powi(10) = {}, 10.0_f64.sqrt() = {:.4}", 2_i32.pow(10), 2.0_f64.powi(10), 10.0_f64.sqrt());
+}</code></pre>
+<pre class="output">--- integers: size and range ---
+i8    1 B  -128 ..= 127
+u8    1 B  0 ..= 255
+i16   2 B  -32768 ..= 32767
+i32   4 B  -2147483648 ..= 2147483647
+u32   4 B  0 ..= 4294967295
+i64   8 B  -9223372036854775808 ..= 9223372036854775807
+u64   8 B  0 ..= 18446744073709551615
+i128  16 B  max 170141183460469231731687303715884105727
+usize 8 B  max 18446744073709551615 (pointer-sized: the type of lengths and indexes)
+--- literals ---
+1000000 255 493 161 65
+--- floats, bool, char ---
+f32 4 B, f64 8 B, bool 1 B, char 4 B
+0.1 + 0.2 = 0.30000000000000004 (== 0.3? false)
+NaN == NaN? false  NaN.total_cmp(NaN) = Equal
+'❤' is U+2764, '🦀' is U+1F980: each is one char
+--- integer division and remainder truncate toward zero ---
+7 / 2 = 3, -7 / 2 = -3, -7 % 2 = -1, (-7i32).rem_euclid(2) = 1
+2_i32.pow(10) = 1024, 2.0_f64.powi(10) = 1024, 10.0_f64.sqrt() = 3.1623</pre>
+<pre data-playground data-title="src/bin/casts.rs"><code class="language-rust">fn main() {
+    let nan = std::hint::black_box(f64::NAN); // black_box: stop the compiler folding the cast away
+    println!("--- `as`: explicit, never fails, may lose information ---");
+    println!("300_i32 as u8     = {}", 300_i32 as u8);       // truncates: 300 mod 256
+    println!("-1_i32 as u8      = {}", -1_i32 as u8);        // same bits, reinterpreted
+    println!("200_u8 as i8      = {}", 200_u8 as i8);
+    println!("3.99_f64 as i32   = {}", 3.99_f64 as i32);     // rounds toward zero
+    println!("-3.99_f64 as i32  = {}", -3.99_f64 as i32);
+    println!("-1.5_f64 as u8    = {}", -1.5_f64 as u8);      // saturates at 0
+    println!("1e10_f64 as i32   = {}", 1e10_f64 as i32);     // saturates at i32::MAX
+    println!("NaN as i32        = {}", nan as i32);          // NaN becomes 0
+    println!("'A' as u32        = {}", 'A' as u32);
+    println!("16_777_217_i32 as f32 = {}", 16_777_217_i32 as f32); // nearest f32
+
+    println!("--- From/Into: only offered where nothing can be lost ---");
+    let small: u8 = 200;
+    let wide: u32 = small.into();          // u8 -&gt; u32 always fits
+    let wider = i64::from(-5_i32);         // i32 -&gt; i64 always fits
+    println!("{wide} {wider}");
+
+    println!("--- TryFrom/TryInto: checked, returns a Result ---");
+    let ok: Result&lt;u8, _&gt; = 200_i32.try_into();
+    let too_big: Result&lt;u8, _&gt; = 300_i32.try_into();
+    let negative = u32::try_from(-1_i64);
+    println!("{ok:?}  {too_big:?}  {negative:?}");
+}</code></pre>
+<pre class="output">--- `as`: explicit, never fails, may lose information ---
+300_i32 as u8     = 44
+-1_i32 as u8      = 255
+200_u8 as i8      = -56
+3.99_f64 as i32   = 3
+-3.99_f64 as i32  = -3
+-1.5_f64 as u8    = 0
+1e10_f64 as i32   = 2147483647
+NaN as i32        = 0
+'A' as u32        = 65
+16_777_217_i32 as f32 = 16777216
+--- From/Into: only offered where nothing can be lost ---
+200 -5
+--- TryFrom/TryInto: checked, returns a Result ---
+Ok(200)  Err(TryFromIntError(PosOverflow))  Err(TryFromIntError(NegOverflow))</pre>
+<p>The same operations in C# on .NET 10:</p>
+<pre data-title="l21cs/Program.cs (.NET 10)"><code class="language-csharp">// Integer overflow: unchecked by default in C#.
+int stock = int.MaxValue;
+int incoming = 1;
+Console.WriteLine($"int.MaxValue + 1          = {stock + incoming}");     // wraps silently
+try { Console.WriteLine(checked(stock + incoming)); }
+catch (OverflowException e) { Console.WriteLine($"checked(...)              -&gt; {e.GetType().Name}"); }
+
+// Casts
+int big = 300;
+Console.WriteLine($"(byte)300                 = {(byte)big}");
+double nan = double.NaN, huge = 1e10, neg = -1.5;
+Console.WriteLine($"(int)NaN                  = {(int)nan}");
+Console.WriteLine($"(int)1e10                 = {(int)huge}");
+Console.WriteLine($"(uint)-1.5                = {(uint)neg}");
+
+// Types
+Console.WriteLine($"sizeof(char)              = {sizeof(char)} bytes; \"🦀\".Length = {"🦀".Length}");
+Console.WriteLine($"0.1 + 0.2 == 0.3 (double) : {0.1 + 0.2 == 0.3}");
+Console.WriteLine($"0.1m + 0.2m == 0.3m       : {0.1m + 0.2m == 0.3m}");
+
+// Arrays are reference types
+int[] a = { 1, 2, 3 };
+int[] b = a;
+a[0] = 99;
+Console.WriteLine($"a[0] = {a[0]}, b[0] = {b[0]}");
+
+// Truthiness is also an error in C#, but integer division matches Rust:
+Console.WriteLine($"-7 / 2 = {-7 / 2}, -7 % 2 = {-7 % 2}");</code></pre>
+<pre class="output">int.MaxValue + 1          = -2147483648
+checked(...)              -&gt; OverflowException
+(byte)300                 = 44
+(int)NaN                  = 0
+(int)1e10                 = 2147483647
+(uint)-1.5                = 0
+sizeof(char)              = 2 bytes; "🦀".Length = 2
+0.1 + 0.2 == 0.3 (double) : False
+0.1m + 0.2m == 0.3m       : True
+a[0] = 99, b[0] = 99
+-7 / 2 = -3, -7 % 2 = -1</pre>
+<p>Line them up. The casts now agree, including <code>(int)NaN == 0</code> and saturation, thanks to .NET 9's change. Overflow doesn't: C# wrapped <code>int.MaxValue + 1</code> silently, where a Rust debug build would have panicked. C#'s <code>char</code> is half the size and needs two of them for the crab. C# has <code>decimal</code> built in. And the C# array assignment aliased (<code>b[0]</code> became 99), where Rust's copied.</p>
+
+<h3 id="lab-4">Step 4 — overflow in debug and release</h3>
+<pre data-playground data-title="src/bin/overflow.rs"><code class="language-rust">use std::hint::black_box;
+
+fn main() {
+    let stock: u8 = 250;
+    let incoming: u8 = black_box(10); // black_box hides the value from the optimiser
+
+    // The explicit methods behave the same in every build profile:
+    println!("checked_add     {:?}", stock.checked_add(incoming));     // None on overflow
+    println!("wrapping_add    {}", stock.wrapping_add(incoming));      // wraps around (mod 256)
+    println!("saturating_add  {}", stock.saturating_add(incoming));    // clamps at u8::MAX
+    println!("overflowing_add {:?}", stock.overflowing_add(incoming)); // (wrapped value, did it overflow?)
+
+    // The plain operator depends on the profile: debug panics, release wraps.
+    let total = stock + incoming;
+    println!("stock + incoming = {total}");
+}</code></pre>
+<p><code>cargo run --bin overflow</code> (debug profile):</p>
+<pre class="output error">checked_add     None
+wrapping_add    4
+saturating_add  255
+overflowing_add (4, true)
+
+thread 'main' (722157) panicked at src/bin/overflow.rs:14:17:
+attempt to add with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</pre>
+<p><code>cargo run --release --bin overflow</code>:</p>
+<pre class="output">checked_add     None
+wrapping_add    4
+saturating_add  255
+overflowing_add (4, true)
+stock + incoming = 4</pre>
+<p>The four explicit methods printed the same in both builds; only the plain <code>+</code> changed behaviour. That's the argument for writing the explicit method wherever overflow is plausible: the program then means one thing, whatever the profile. Finally, the cost of checking, measured by compiling one program twice with <code>rustc -O -C overflow-checks=off</code> and <code>=on</code>:</p>
+<pre data-playground data-title="src/bin/overflow_cost.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::Instant;
+
+fn sum_plain(v: &amp;[u32]) -&gt; u32 {
+    let mut s = 0u32;
+    for &amp;x in v {
+        s += x; // checked or not depending on -C overflow-checks
+    }
+    s
+}
+
+fn sum_wrapping(v: &amp;[u32]) -&gt; u32 {
+    let mut s = 0u32;
+    for &amp;x in v {
+        s = s.wrapping_add(x); // never checked
+    }
+    s
+}
+
+fn main() {
+    let v: Vec&lt;u32&gt; = (0..50_000_000u32).map(|i| i % 7).collect();
+    let mut best = [f64::MAX; 2];
+    for _ in 0..5 {
+        let t = Instant::now();
+        black_box(sum_plain(black_box(&amp;v)));
+        best[0] = best[0].min(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        black_box(sum_wrapping(black_box(&amp;v)));
+        best[1] = best[1].min(t.elapsed().as_secs_f64() * 1e3);
+    }
+    println!("sum of 50M u32, `+`             : {:&gt;6.1} ms", best[0]);
+    println!("sum of 50M u32, wrapping_add    : {:&gt;6.1} ms", best[1]);
+}</code></pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · cost of overflow checks in a tight loop</span>
+  <div class="chart-box"><canvas id="oc-chart" aria-label="Bar chart: summing 50 million u32 values with and without overflow checks"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Best of 5 runs per build, median across 3 invocations. With checks on, the plain <code>+</code> loop took 15.4 ms instead of 3.3 ms, because the compiler can no longer process several elements per instruction. <code>wrapping_add</code> is never checked, so it stayed at 3.3 ms in both builds. This is a worst case: one addition per element and nothing else. Business logic rarely notices the difference.</figcaption>
+</figure>
+
+<h3 id="lab-5">Step 5 — tuples, arrays, control flow and formatting</h3>
+<pre data-playground data-title="src/bin/compound.rs"><code class="language-rust">fn main() {
+    // Tuples: fixed size, mixed types, accessed by position or destructured.
+    let reading: (&amp;str, f64, bool) = ("sensor-7", 21.5, true);
+    println!("{} = {} (ok: {})", reading.0, reading.1, reading.2);
+    let (id, celsius, _) = reading;
+    println!("destructured: {id} {celsius}");
+
+    // Arrays: fixed length, one element type; the length is part of the type.
+    let weekdays: [&amp;str; 5] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    let zeros = [0u32; 4]; // 4 copies of 0
+    println!("{} days, first {}, last {}; zeros = {zeros:?}", weekdays.len(), weekdays[0], weekdays[4]);
+
+    // Arrays are VALUES: assignment copies all elements (unlike C# arrays).
+    let mut a = [1, 2, 3];
+    let b = a;
+    a[0] = 99;
+    println!("a = {a:?}, b = {b:?}");
+
+    // Safe access that can't panic: `get` returns an Option.
+    println!("weekdays.get(9) = {:?}", weekdays.get(9));
+}</code></pre>
+<pre class="output">sensor-7 = 21.5 (ok: true)
+destructured: sensor-7 21.5
+5 days, first Mon, last Fri; zeros = [0, 0, 0, 0]
+a = [99, 2, 3], b = [1, 2, 3]
+weekdays.get(9) = None</pre>
+<p>And the index that's out of range, with the value hidden from the compiler as user input would be:</p>
+<pre data-playground data-title="src/bin/oob.rs"><code class="language-rust">fn main() {
+    let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    let index = std::hint::black_box(7); // e.g. from user input
+    println!("{}", weekdays[index]);     // every index is bounds-checked
+}</code></pre>
+<pre class="output error">
+thread 'main' (722328) panicked at src/bin/oob.rs:4:20:
+index out of bounds: the len is 5 but the index is 7
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</pre>
+<p>Even in a release build, the access is checked and the program stops with a precise message, rather than reading whatever memory follows the array (the C and C++ outcome, and a classic security hole). Next, every loop form, plus the backoff function from the Functions section:</p>
+<pre data-playground data-title="src/bin/control.rs"><code class="language-rust">/// Exponential backoff delay for a retry, capped at `cap_ms`.
+fn backoff_ms(attempt: u32, base_ms: u64, cap_ms: u64) -&gt; u64 {
+    if attempt == 0 {
+        return 0; // early return
+    }
+    let delay = base_ms.saturating_mul(2_u64.saturating_pow(attempt - 1));
+    delay.min(cap_ms) // tail expression: the function's result
+}
+
+fn main() {
+    // `if` is an expression; the condition must be a bool.
+    let queue_len = 42;
+    let mode = if queue_len &gt; 100 { "shed load" } else if queue_len &gt; 10 { "busy" } else { "normal" };
+    println!("mode: {mode}");
+
+    // `for` over ranges: 1..5 excludes 5, 1..=5 includes it.
+    for attempt in 1..=5 {
+        print!("{}ms ", backoff_ms(attempt, 100, 1_000));
+    }
+    println!();
+    for n in (0..10).rev().step_by(3) {
+        print!("{n} ");
+    }
+    println!();
+
+    // `while` with a condition.
+    let mut budget = 10;
+    while budget &gt; 0 {
+        budget -= 3;
+    }
+    println!("budget ended at {budget}");
+
+    // `loop` runs until `break`, and `break value` makes it an expression.
+    let mut n = 27_u64;
+    let mut steps = 0;
+    let steps_to_one = loop {
+        if n == 1 {
+            break steps;
+        }
+        n = if n.is_multiple_of(2) { n / 2 } else { 3 * n + 1 };
+        steps += 1;
+    };
+    println!("Collatz(27) reaches 1 after {steps_to_one} steps");
+
+    // Labels let `break`/`continue` target an outer loop.
+    let grid = [[3, 8, 1], [9, 4, 7], [2, 6, 5]];
+    let mut found = None;
+    'rows: for (r, row) in grid.iter().enumerate() {
+        for (c, &amp;value) in row.iter().enumerate() {
+            if value &gt; 8 {
+                found = Some((r, c));
+                break 'rows; // leaves BOTH loops
+            }
+        }
+    }
+    println!("first value &gt; 8 at {found:?}");
+}</code></pre>
+<pre class="output">mode: busy
+100ms 200ms 400ms 800ms 1000ms 
+9 6 3 0 
+budget ended at -2
+Collatz(27) reaches 1 after 111 steps
+first value &gt; 8 at Some((1, 0))</pre>
+<pre data-playground data-title="src/bin/formatting.rs"><code class="language-rust">fn main() {
+    let rule = "max_amount";
+    let hits = 1_234_u32;
+    let ratio = 0.873_45;
+    println!("{rule} fired {hits} times");                 // inline variable names
+    println!("{} fired {} times", rule, hits);              // positional
+    println!("[{rule:&lt;12}] [{hits:&gt;8}] [{ratio:.2}]");      // align left/right, 2 decimals
+    println!("[{hits:08}] [{hits:#x}] [{hits:#b}]");        // zero-pad, hex, binary
+    println!("{:?} {:?}", "quoted", ('a', 1.5));           // Debug format
+    let msg = format!("{:.1}%", ratio * 100.0);             // build a String instead of printing
+    eprintln!("to stderr: {msg}");
+}</code></pre>
+<pre class="output">max_amount fired 1234 times
+max_amount fired 1234 times
+[max_amount  ] [    1234] [0.87]
+[00001234] [0x4d2] [0b10011010010]
+"quoted" ('a', 1.5)
+to stderr: 87.3%</pre>
+<p>The backoff doubles from 100 ms and stops at the 1,000 ms cap; <code>saturating_*</code> guarantees that even attempt 70 can't overflow into a tiny delay. <code>budget</code> ends at −2 because the condition is only checked before each pass, so <code>i32</code> was the right type (a <code>u32</code> would have panicked in debug, an overflow you'd want to know about). The Collatz loop's value comes straight out of <code>break steps</code>.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs whose <code>assert!</code>s check the results, and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — a fee that can't silently overflow <span class="difficulty">★☆☆ product skill</span></div>
+  <p>Write <code>fee_cents(amount_cents: u64, rate_bp: u64, fixed_cents: u64) -&gt; Option&lt;u64&gt;</code> computing <code>amount × rate / 10,000 + fixed</code>, where the rate is in basis points (290 bp = 2.9%). It must return <code>None</code> rather than a wrong number when anything overflows.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Fee in cents: `amount_cents * rate_bp / 10_000 + fixed_cents`, where rate_bp is in
+/// basis points (1 bp = 0.01%). Returns None instead of a wrong number if anything overflows.
+fn fee_cents(amount_cents: u64, rate_bp: u64, fixed_cents: u64) -&gt; Option&lt;u64&gt; {
+    let variable = amount_cents.checked_mul(rate_bp)? / 10_000;
+    variable.checked_add(fixed_cents)
+}
+
+fn main() {
+    println!("{:?}", fee_cents(10_000, 290, 30));   // $100.00 at 2.9% + 30c = Some(320)
+    println!("{:?}", fee_cents(u64::MAX / 2, 290, 30)); // too big: None, not garbage
+    assert_eq!(fee_cents(10_000, 290, 30), Some(320));
+    assert_eq!(fee_cents(u64::MAX / 2, 290, 30), None);
+}</code></pre>
+<pre class="output">Some(320)
+None</pre>
+  <p><code>checked_mul(…)?</code> uses the <code>?</code> operator, which returns <code>None</code> from the whole function at once if the multiplication overflowed (chapter 2.6 covers <code>?</code> fully). Integer cents and basis points keep everything exact, with no floating point anywhere. Note the order: multiply first, then divide, or small fees round to zero. A real fee engine also needs an explicit rounding rule; that's a business decision to document, not a type-system one.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — Luhn checksum <span class="difficulty">★★☆</span></div>
+  <p>Implement <code>luhn_valid(digits: &amp;[u8]) -&gt; bool</code>. From the rightmost digit, double every second digit, subtract 9 from any result over 9, and sum everything; the number is valid if the sum is a multiple of 10. Check that swapping two adjacent digits is detected.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Luhn checksum, used by card numbers and many IDs.
+/// From the right: double every second digit, subtract 9 if the result is over 9, sum all;
+/// the number is valid if the sum is a multiple of 10.
+fn luhn_valid(digits: &amp;[u8]) -&gt; bool {
+    let mut sum = 0u32;
+    for (i, &amp;d) in digits.iter().rev().enumerate() {
+        let mut v = d as u32;
+        if i % 2 == 1 {
+            v *= 2;
+            if v &gt; 9 {
+                v -= 9;
+            }
+        }
+        sum += v;
+    }
+    sum.is_multiple_of(10)
+}
+
+fn main() {
+    let card = [4, 5, 3, 9, 1, 4, 8, 8, 0, 3, 4, 3, 6, 4, 6, 7]; // a Luhn-valid example number
+    let typo = [4, 5, 3, 9, 1, 4, 8, 8, 0, 3, 4, 3, 6, 4, 7, 6]; // last two digits swapped
+    println!("card valid: {}, typo valid: {}", luhn_valid(&amp;card), luhn_valid(&amp;typo));
+    assert!(luhn_valid(&amp;card) &amp;&amp; !luhn_valid(&amp;typo));
+}</code></pre>
+<pre class="output">card valid: true, typo valid: false</pre>
+  <p><code>&amp;[u8]</code> is a <em>slice</em>, a view into an array of any length (chapter 2.4), so the function accepts arrays of 16 digits or 13 alike. <code>iter().rev().enumerate()</code> walks from the right with a position counter. <code>d as u32</code> widens a digit losslessly; <code>u32::from(d)</code> would say the same thing even more explicitly. Luhn catches every single-digit error and most swaps of adjacent digits, which is why card numbers and many national IDs use it.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — the first day over budget <span class="difficulty">★★☆</span></div>
+  <p>Given daily costs and a budget, return the index of the first day on which the running total exceeds the budget, or <code>None</code>. Use <code>loop</code> with <code>break value</code>, and make an overflowing total count as "over budget" rather than wrapping to a small number.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">/// Index of the first day on which the running total of `daily_costs` exceeds `budget`.
+/// None if it never does. Uses `loop` with `break value`, and checked addition.
+fn first_day_over_budget(daily_costs: &amp;[u64], budget: u64) -&gt; Option&lt;usize&gt; {
+    let mut total: u64 = 0;
+    let mut day = 0;
+    loop {
+        if day == daily_costs.len() {
+            break None;
+        }
+        total = match total.checked_add(daily_costs[day]) {
+            Some(t) =&gt; t,
+            None =&gt; break Some(day), // overflow certainly exceeds any u64 budget
+        };
+        if total &gt; budget {
+            break Some(day);
+        }
+        day += 1;
+    }
+}
+
+fn main() {
+    let costs = [120, 80, 300, 50, 400];
+    println!("{:?}", first_day_over_budget(&amp;costs, 450)); // 120+80+300 = 500 &gt; 450 on day 2
+    println!("{:?}", first_day_over_budget(&amp;costs, 5_000));
+    assert_eq!(first_day_over_budget(&amp;costs, 450), Some(2));
+    assert_eq!(first_day_over_budget(&amp;costs, 5_000), None);
+    assert_eq!(first_day_over_budget(&amp;[u64::MAX, 1], u64::MAX), Some(1));
+}</code></pre>
+<pre class="output">Some(2)
+None</pre>
+  <p>Every exit from the <code>loop</code> is a <code>break</code> with a value, so the loop itself is the function's result. The <code>match</code> on <code>checked_add</code> handles the impossible-looking case of costs that overflow a <code>u64</code>, which is exactly what the last <code>assert!</code> tests. With a plain <code>+</code>, a release build would wrap to a small total and report "never over budget", a silent wrong answer. A <code>for</code> loop with an early <code>return</code> would work equally well; choose whichever reads better.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which arithmetic should I write?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Write</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Values that can't realistically overflow (loop counters, small sizes)</td><td>Plain <code>+ - *</code></td><td>Debug builds still catch surprises</td></tr>
+    <tr><td>Money, quantities, user-controlled sizes</td><td><code>checked_*</code> → handle <code>None</code></td><td>An error beats a plausible wrong number</td></tr>
+    <tr><td>A value with a natural ceiling or floor (delays, levels, retry counts)</td><td><code>saturating_*</code></td><td>Clamping is the correct business result</td></tr>
+    <tr><td>Hashes, checksums, wrapping sequence numbers, RNGs</td><td><code>wrapping_*</code> (or the <code>Wrapping&lt;T&gt;</code> type)</td><td>Wrap-around is the specification</td></tr>
+    <tr><td>Converting where every value fits</td><td><code>From</code>/<code>.into()</code></td><td>Lossless by construction</td></tr>
+    <tr><td>Converting where a value might not fit</td><td><code>TryFrom</code>/<code>.try_into()</code></td><td>Turns a silent truncation into an error</td></tr>
+    <tr><td>Deliberate truncation, bit reinterpretation, float → int</td><td><code>as</code>, with a comment</td><td>Explicit, documented loss</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="syntax-table">C# ↔ Rust syntax at a glance</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>C#</th><th>Rust</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td><code>int x = 5;</code> / <code>var x = 5;</code></td><td><code>let x = 5;</code> / <code>let x: i32 = 5;</code></td><td>Immutable</td></tr>
+    <tr><td><code>int x = 5; x = 6;</code></td><td><code>let mut x = 5; x = 6;</code></td><td>Mutability is opt-in</td></tr>
+    <tr><td><code>readonly</code> field / <code>init</code></td><td>The default for every binding</td><td>Rust's immutability is deep (chapter 2.3)</td></tr>
+    <tr><td><code>const int Max = 5;</code></td><td><code>const MAX: i32 = 5;</code></td><td>Type required; can be module-level</td></tr>
+    <tr><td><code>static readonly string Name = "x";</code></td><td><code>static NAME: &amp;str = "x";</code></td><td><code>static mut</code> needs <code>unsafe</code></td></tr>
+    <tr><td>(not allowed: CS0128)</td><td><code>let x = x.trim();</code></td><td>Shadowing</td></tr>
+    <tr><td><code>long y = x;</code></td><td><code>let y: i64 = x.into();</code></td><td>No implicit widening</td></tr>
+    <tr><td><code>(byte)x</code></td><td><code>x as u8</code> or <code>u8::try_from(x)</code></td><td>Prefer <code>try_from</code></td></tr>
+    <tr><td><code>checked(a + b)</code></td><td><code>a.checked_add(b)</code></td><td>Returns <code>Option</code> instead of throwing</td></tr>
+    <tr><td><code>x++</code></td><td><code>x += 1</code></td><td>No <code>++</code>/<code>--</code></td></tr>
+    <tr><td><code>~x</code></td><td><code>!x</code></td><td>Bitwise NOT on integers</td></tr>
+    <tr><td><code>Math.Pow(2, 10)</code></td><td><code>2_i32.pow(10)</code>, <code>2.0_f64.powi(10)</code></td><td>Methods on the number</td></tr>
+    <tr><td><code>c ? a : b</code></td><td><code>if c { a } else { b }</code></td><td><code>if</code> is an expression</td></tr>
+    <tr><td><code>for (int i = 0; i &lt; n; i++)</code></td><td><code>for i in 0..n</code></td><td>Ranges; <code>0..=n</code> inclusive</td></tr>
+    <tr><td><code>foreach (var x in xs)</code></td><td><code>for x in &amp;xs</code></td><td>Borrowing loop (chapter 2.3)</td></tr>
+    <tr><td><code>while (true) { … break; }</code></td><td><code>loop { … break value; }</code></td><td><code>loop</code> can return a value</td></tr>
+    <tr><td><code>do { … } while (c);</code></td><td><code>loop { …; if !c { break; } }</code></td><td>No do-while</td></tr>
+    <tr><td><code>goto</code> / flag to exit nested loops</td><td><code>break 'label;</code></td><td>Loop labels</td></tr>
+    <tr><td><code>int Add(int a, int b) =&gt; a + b;</code></td><td><code>fn add(a: i32, b: i32) -&gt; i32 { a + b }</code></td><td>Tail expression returns</td></tr>
+    <tr><td>Overloads, default and named parameters</td><td>Different names, option structs, builders</td><td>Chapter 3.2</td></tr>
+    <tr><td><code>(string, int) t = ("a", 1); t.Item1</code></td><td><code>let t = ("a", 1); t.0</code></td><td>Tuples</td></tr>
+    <tr><td><code>int[] a = new int[4];</code></td><td><code>let a = [0; 4];</code> (fixed) / <code>vec![0; 4]</code></td><td>Arrays are values; growable is <code>Vec</code></td></tr>
+    <tr><td><code>$"{name,-12}{n,8:F2}"</code></td><td><code>format!("{name:&lt;12}{n:&gt;8.2}")</code></td><td>Checked at compile time</td></tr>
+    <tr><td><code>/// &lt;summary&gt;…</code></td><td><code>/// Markdown text</code></td><td>Doc comments are Markdown</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Testing only in debug, or only in release</div>
+  <p>The plain operators behave differently in the two profiles. Write the explicit method wherever overflow is possible, and consider <code>overflow-checks = true</code> in your release profile for business logic.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Sprinkling <code>as</code> to make type errors go away</div>
+  <p><code>len as u32</code> truncates silently above 4 billion; <code>value as u8</code> wraps. Use <code>.into()</code> where it compiles and <code>try_into()</code> where it doesn't. Keep <code>as</code> for deliberate, commented cases.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Using <code>i32</code> or <code>u32</code> for indexes</div>
+  <p>Indexes and lengths are <code>usize</code>. Fighting this with casts everywhere is a sign the variable's type is wrong. Convert once, at the boundary, with <code>try_into</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Shadowing where you meant mutation, or the reverse</div>
+  <p>A <code>let x = …</code> inside a loop creates a new <code>x</code> for that iteration and doesn't update the outer one. If you need the value to survive the loop, declare <code>let mut x</code> outside it and assign <code>x = …</code> inside.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>f64</code> for money</div>
+  <p>0.1 + 0.2 ≠ 0.3, and Rust's standard library has no <code>decimal</code>. Use integer minor units in a newtype, or the <code>rust_decimal</code> crate.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Treating a Rust <code>char</code> like a C# <code>char</code></div>
+  <p>Rust's is a 4-byte Unicode scalar value; C#'s is a 2-byte UTF-16 unit. Strings aren't arrays of <code>char</code> either. Don't port index-into-string code until chapter 2.4.</p></div>
+
+<h2 id="real-world">Real-world view: basic types in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Money and rates in the rule engine:</strong> integer minor units (<code>i64</code> cents) and basis points, with <code>checked_*</code> arithmetic returning a rule error rather than a wrong amount. Document the rounding rule next to the type (chapter 9.5).</li>
+    <li><strong>Retry and timeout maths in the workflow engine:</strong> <code>saturating_*</code> for backoff and deadlines, so attempt 64 waits for the cap instead of overflowing to zero. Use <code>Duration</code> rather than bare integers once you meet it.</li>
+    <li><strong>IDs and sequence numbers:</strong> <code>u64</code> or <code>i64</code> chosen to match the database column (Postgres <code>BIGINT</code> is signed, so <code>i64</code>), converted with <code>try_from</code> at the boundary, and wrapped in newtypes.</li>
+    <li><strong>Release profile policy:</strong> for financial and rule-evaluation services, consider <code>[profile.release] overflow-checks = true</code>, then measure; switch individual hot loops to <code>wrapping_*</code> only with evidence (Figure 4).</li>
+    <li><strong>Review checklist:</strong> every numeric <code>as</code>; plain arithmetic on money or user input; <code>f64</code> amounts; <code>static mut</code>; <code>i32</code> indexes cast back and forth.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.1">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text"><code>let total = 0; total += 5;</code> fails to compile. Why, and what's the fix?</div>
+    <ol class="options">
+      <li data-key="a"><code>total</code> has no type; write <code>let total: i32 = 0;</code></li>
+      <li data-key="b"><code>+=</code> doesn't exist in Rust</li>
+      <li data-key="c">Variables are immutable by default (E0384); write <code>let mut total = 0;</code></li>
+      <li data-key="d">Integers can't start at 0</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">The type is inferred as <code>i32</code>; that isn't the problem.</p>
+      <p data-for="b"><code>+=</code> exists; only <code>++</code> doesn't.</p>
+      <p data-for="c">Correct.</p>
+      <p data-for="d">Nonsense.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">After <code>let port = "8080"; let port: u16 = port.parse().unwrap();</code>, which is true?</div>
+    <ol class="options">
+      <li data-key="a">There are two variables; the name <code>port</code> now refers to the <code>u16</code>, and the string still exists until the end of the scope</li>
+      <li data-key="b">The first <code>port</code> was mutated into a number</li>
+      <li data-key="c">It's an error: a variable can't be declared twice</li>
+      <li data-key="d">It needs <code>let mut</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's shadowing (Figure 1).</p>
+      <p data-for="b">No value changed; a new variable was created.</p>
+      <p data-for="c">That's C# (CS0128). Rust allows shadowing.</p>
+      <p data-for="d">Shadowing needs no <code>mut</code>.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>let stock: u8 = 250; let total = stock + incoming;</code> with <code>incoming = 10</code> at runtime. What happens?</div>
+    <ol class="options">
+      <li data-key="a">Always 260</li>
+      <li data-key="b">Undefined behaviour</li>
+      <li data-key="c">Always 4</li>
+      <li data-key="d">Debug build: panic "attempt to add with overflow". Release build (default profile): wraps to 4</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">260 doesn't fit in a <code>u8</code>.</p>
+      <p data-for="b">Overflow is defined behaviour in Rust, unlike signed overflow in C.</p>
+      <p data-for="c">Only in release (Lab step 4).</p>
+      <p data-for="d">Correct. Write <code>checked_add</code>/<code>saturating_add</code> to make it the same in both.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A retry delay is <code>base * 2^attempt</code> and must never exceed 30 s, even for absurd attempt counts. Which arithmetic fits?</div>
+    <ol class="options">
+      <li data-key="a"><code>wrapping_mul</code> / <code>wrapping_pow</code></li>
+      <li data-key="b"><code>saturating_mul</code> / <code>saturating_pow</code>, then <code>.min(cap)</code></li>
+      <li data-key="c">Plain <code>*</code>, since it panics in debug</li>
+      <li data-key="d"><code>f64</code> and round</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Wrapping could produce a tiny delay: a retry storm.</p>
+      <p data-for="b">Correct. Clamping is the right business result (Lab step 5's <code>backoff_ms</code>).</p>
+      <p data-for="c">Release builds would wrap.</p>
+      <p data-for="d">Unnecessary, and it loses exactness.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which conversion is guaranteed never to lose information, and fails to compile where it could?</div>
+    <ol class="options">
+      <li data-key="a"><code>x as u8</code></li>
+      <li data-key="b"><code>u8::try_from(x)</code></li>
+      <li data-key="c"><code>u32::from(x)</code> / <code>x.into()</code></li>
+      <li data-key="d"><code>x as f32</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>as</code> truncates silently.</p>
+      <p data-for="b">It compiles for any input and checks at runtime, returning a <code>Result</code>.</p>
+      <p data-for="c">Correct. <code>From</code> is only implemented for lossless conversions.</p>
+      <p data-for="d">Rounds large integers (16,777,217 → 16,777,216).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What do <code>-1.5_f64 as u8</code>, <code>1e10_f64 as i32</code> and <code>f64::NAN as i32</code> evaluate to?</div>
+    <ol class="options">
+      <li data-key="a">0, <code>i32::MAX</code> (2147483647), 0: float-to-int casts round toward zero and saturate, and NaN becomes 0</li>
+      <li data-key="b">255, garbage, panic</li>
+      <li data-key="c">Undefined behaviour in all three cases</li>
+      <li data-key="d">They don't compile</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 3). .NET 9+ now does the same on x86/x64.</p>
+      <p data-for="b">These are defined, saturating results.</p>
+      <p data-for="c">The Rust Reference defines all three.</p>
+      <p data-for="d">They compile; <code>as</code> never fails.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>let a = [1, 2, 3]; let mut b = a; b[0] = 99;</code>. What is <code>a[0]</code>, and what would the C# equivalent print?</div>
+    <ol class="options">
+      <li data-key="a">99 in both</li>
+      <li data-key="b">1 in both</li>
+      <li data-key="c">Compile error in Rust</li>
+      <li data-key="d">Rust: 1, because arrays are values copied on assignment. C#: 99, because arrays are reference types and the assignment aliases</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Only C# aliases.</p>
+      <p data-for="b">C# shares the array (Lab step 3).</p>
+      <p data-for="c">It compiles; <code>i32</code> arrays are <code>Copy</code>.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why doesn't <code>if count { … }</code> compile, where <code>count: i32</code>?</div>
+    <ol class="options">
+      <li data-key="a">Missing parentheses</li>
+      <li data-key="b">Conditions must be <code>bool</code>; there's no truthiness. Write <code>if count != 0</code></li>
+      <li data-key="c"><code>count</code> must be <code>mut</code></li>
+      <li data-key="d"><code>if</code> requires an <code>else</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Rust doesn't use parentheses around conditions.</p>
+      <p data-for="b">Correct (E0308, Lab step 2).</p>
+      <p data-for="c">Reading doesn't need <code>mut</code>.</p>
+      <p data-for="d">Only when the <code>if</code> is used as a value.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How do you exit both loops from inside the inner one?</div>
+    <ol class="options">
+      <li data-key="a"><code>break 2;</code></li>
+      <li data-key="b"><code>goto end;</code></li>
+      <li data-key="c">Label the outer loop (<code>'rows: for …</code>) and write <code>break 'rows;</code></li>
+      <li data-key="d">You need a flag variable</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's PHP; Rust has no numeric break.</p>
+      <p data-for="b">Rust has no <code>goto</code>.</p>
+      <p data-for="c">Correct (Lab step 5).</p>
+      <p data-for="d">Labels make the flag unnecessary.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A C# method <code>Charge(decimal amount, string currency = "EUR")</code> is being ported. Which Rust design is idiomatic?</div>
+    <ol class="options">
+      <li data-key="a">Integer minor units in a newtype (or <code>rust_decimal</code>) for the amount, and either two functions or an explicit currency parameter, because Rust has no default parameters</li>
+      <li data-key="b"><code>fn charge(amount: f64, currency: &amp;str = "EUR")</code></li>
+      <li data-key="c">Two overloads named <code>charge</code></li>
+      <li data-key="d"><code>fn charge(amount: f32)</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Exact money and explicit call sites.</p>
+      <p data-for="b"><code>f64</code> money, and default parameters don't exist.</p>
+      <p data-for="c">Rust has no overloading.</p>
+      <p data-for="d">Even less precise than <code>f64</code>.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li><code>let</code> bindings are immutable unless marked <code>mut</code>, must be initialised on every path before use (E0381), and can be <em>shadowed</em> by a new <code>let</code> of the same name, even with a new type (C# forbids this: CS0128). <code>const</code> is inlined at compile time; <code>static</code> is one global location, and <code>static mut</code> needs <code>unsafe</code>.</li>
+  <li>Integer types name their size (<code>i8</code>…<code>u128</code>); <code>usize</code> is for lengths and indexes; literals default to <code>i32</code>/<code>f64</code>. <code>char</code> is 4 bytes (C#: 2); there's no built-in <code>decimal</code>, so money is integer minor units or <code>rust_decimal</code>.</li>
+  <li>Overflow is never undefined. The compiler rejects overflow it can see; plain operators panic in debug and wrap in release. Say what you mean with <code>checked_*</code>, <code>saturating_*</code>, <code>wrapping_*</code> or <code>overflowing_*</code>. Checks cost about 4.6× in the tightest loop measured, and usually nothing noticeable. C# wraps silently by default.</li>
+  <li>No implicit conversions: <code>From</code>/<code>into</code> for lossless, <code>TryFrom</code>/<code>try_into</code> for checked, <code>as</code> for explicit truncation and saturation (NaN → 0, now matching .NET 9+).</li>
+  <li>Tuples and fixed-size arrays are values (copied, unlike C# arrays) and every index is bounds-checked. Functions have typed parameters, return their last expression, and have no overloading or default parameters. <code>if</code>/<code>loop</code>/<code>match</code> are expressions, <code>for</code> runs over ranges and iterators, and labels exit nested loops.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">const</li><li class="chip">static</li><li class="chip">shadowing</li><li class="chip">usize</li><li class="chip">array (Rust)</li>
+  <li class="chip">macro</li><li class="chip">two's complement</li><li class="chip">integer overflow</li><li class="chip">checked arithmetic</li><li class="chip">saturating arithmetic</li>
+  <li class="chip">wrapping arithmetic</li><li class="chip">overflow-checks</li><li class="chip">as cast</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch03-00-common-programming-concepts.html">The Rust Programming Language — “Common Programming Concepts”</a><span class="why">The official book's chapter on the same ground: variables, types, functions, control flow.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/expressions/operator-expr.html">The Rust Reference — Operator expressions</a><span class="why">The normative rules for overflow and for every <code>as</code> cast, quoted in this chapter.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/cargo/reference/profiles.html">The Cargo Book — Profiles</a><span class="why">Where <code>overflow-checks</code> and the dev/release defaults are defined.</span></li>
+  <li><span class="ref-type doc">Doc</span>Standard library: <a href="https://doc.rust-lang.org/std/primitive.u8.html"><code>u8</code></a> (the same methods exist on every integer type), <a href="https://doc.rust-lang.org/std/primitive.f64.html"><code>f64</code></a>, <a href="https://doc.rust-lang.org/std/primitive.char.html"><code>char</code></a>, <a href="https://doc.rust-lang.org/std/fmt/index.html"><code>std::fmt</code></a><span class="why">Every checked/saturating/wrapping method, and the full format-spec grammar.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/statements/checked-and-unchecked">checked and unchecked</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/integral-numeric-types">Integral numeric types</a>, <a href="https://learn.microsoft.com/en-us/dotnet/core/compatibility/jit/9.0/fp-to-integer">.NET 9: floating point-to-integer conversions are saturating</a><span class="why">The C# side of every comparison above.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://microsoft.github.io/rust-for-dotnet-devs/latest/">Microsoft — Rust for C#/.NET Developers</a><span class="why">Microsoft's own concept-by-concept mapping; a good second reference for this whole module.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/rust-by-example/">Rust by Example</a> and <a href="https://docs.rs/rust_decimal/latest/rust_decimal/">rust_decimal</a><span class="why">Short runnable examples of each construct, and the decimal crate mentioned for money.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/103162.103163">D. Goldberg — “What Every Computer Scientist Should Know About Floating-Point Arithmetic”</a>, <em>ACM Computing Surveys</em> 23(1), 1991<span class="why">The classic explanation of rounding error, NaN and why <code>f64</code> isn't for money.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=BpPEoZW5IiY">“Learn Rust Programming — Complete Course 🦀”</a> — freeCodeCamp.org<span class="why">A free full-length course; use it as a second explanation of the basics in this chapter.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=5C_HPTJg5ek">“Rust in 100 Seconds”</a> — Fireship<span class="why">A fast overview of where this chapter fits in the language as a whole.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- scalar size bars (Figure 2) ----------
+  var rows = [1, 1, 2, 4, 4, 4, 8, 8, 8, 16];
+  var classes = ["svg-amber", "svg-teal", "svg-teal", "svg-purple", "svg-teal", "svg-accent", "svg-teal", "svg-accent", "svg-teal", "svg-teal"];
+  var g = document.getElementById("sz-bars"), NS = "http://www.w3.org/2000/svg";
+  rows.forEach(function (bytes, i) {
+    for (var k = 0; k < bytes; k++) {
+      var r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", 255 + k * 24); r.setAttribute("y", 36 + i * 32); r.setAttribute("width", 21); r.setAttribute("height", 22); r.setAttribute("rx", 3);
+      r.setAttribute("class", classes[i]); g.appendChild(r);
+    }
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", 255 + bytes * 24 + 6); t.setAttribute("y", 52 + i * 32); t.setAttribute("class", "svg-text-sm");
+    t.textContent = bytes + (bytes === 1 ? " byte" : " bytes"); g.appendChild(t);
+  });
+
+  // ---------- integer overflow explorer (Figure 3) ----------
+  var TYPES = { u8: [8, false], i8: [8, true], u16: [16, false], i16: [16, true], u32: [32, false], i32: [32, true], u64: [64, false], i64: [64, true] };
+  function range(t) { var b = BigInt(TYPES[t][0]); return TYPES[t][1] ? [-(1n << (b - 1n)), (1n << (b - 1n)) - 1n] : [0n, (1n << b) - 1n]; }
+  function wrap(t, v) { var b = BigInt(TYPES[t][0]), m = 1n << b, r = ((v % m) + m) % m; if (TYPES[t][1] && r >= (m >> 1n)) r -= m; return r; }
+  function exact(op, a, b) { return op === "+" ? a + b : op === "-" ? a - b : a * b; }
+  function compute(t, op, a, b) {
+    var lim = range(t), e = exact(op, a, b), over = e < lim[0] || e > lim[1];
+    return { exact: e, over: over, checked: over ? null : e, wrapping: wrap(t, e), saturating: e < lim[0] ? lim[0] : e > lim[1] ? lim[1] : e };
+  }
+  function bits(t, v) {
+    var b = TYPES[t][0], u = v < 0n ? v + (1n << BigInt(b)) : v, s = u.toString(2).padStart(b, "0");
+    return s.replace(/(.{8})(?=.)/g, "$1_");
+  }
+  var NAMES = { "+": "add", "-": "sub", "*": "mul" }, VERB = { "+": "add", "-": "subtract", "*": "multiply" };
+  var PRESETS = [["u8", "250", "+", "10"], ["i8", "127", "+", "1"], ["u8", "3", "-", "5"], ["i32", "2147483647", "+", "1"], ["i32", "65536", "*", "65536"], ["i8", "-128", "-", "1"], ["u64", "18446744073709551615", "+", "1"]];
+  var presetBox = document.getElementById("ox-presets");
+  PRESETS.forEach(function (p) {
+    var btn = document.createElement("button"); btn.type = "button";
+    btn.textContent = p[1] + "_" + p[0] + " " + p[2] + " " + p[3];
+    btn.onclick = function () { el("ox-type").value = p[0]; el("ox-a").value = p[1]; el("ox-op").value = p[2]; el("ox-b").value = p[3]; render(); };
+    presetBox.appendChild(btn);
+  });
+  function el(id) { return document.getElementById(id); }
+  function parse(t, s) { if (!/^-?\d+$/.test(s.trim())) return null; var v = BigInt(s.trim()), lim = range(t); return v < lim[0] || v > lim[1] ? null : v; }
+  function render() {
+    var t = el("ox-type").value, op = el("ox-op").value, a = parse(t, el("ox-a").value), b = parse(t, el("ox-b").value);
+    el("ox-a").classList.toggle("bad", a === null); el("ox-b").classList.toggle("bad", b === null);
+    var lim = range(t);
+    if (a === null || b === null) { el("ox-err").textContent = "Each value must be a whole number in " + t + "'s range: " + lim[0] + " ..= " + lim[1] + "."; el("ox-out").innerHTML = ""; el("ox-bits").textContent = ""; return; }
+    el("ox-err").textContent = "";
+    var r = compute(t, op, a, b), n = NAMES[op];
+    var debug = r.over ? '<span class="ox-panic">panic: attempt to ' + VERB[op] + " with overflow</span>" : '<span class="ox-ok">' + r.exact + "</span>";
+    var rowsHtml = [
+      ["mathematical result", String(r.exact) + (r.over ? "  (doesn't fit in " + t + ")" : "  (fits)")],
+      ["a " + op + " b  (debug build)", debug],
+      ["a " + op + " b  (release build)", String(r.wrapping) + (r.over ? "  (wrapped)" : "")],
+      ["a." + "checked_" + n + "(b)", r.checked === null ? "None" : "Some(" + r.checked + ")"],
+      ["a." + "wrapping_" + n + "(b)", String(r.wrapping)],
+      ["a." + "saturating_" + n + "(b)", String(r.saturating)],
+      ["a." + "overflowing_" + n + "(b)", "(" + r.wrapping + ", " + r.over + ")"]
+    ].map(function (row, i) { return "<tr" + (i === 2 ? ' class="hl"' : "") + "><td>" + row[0] + "</td><td>" + row[1] + "</td></tr>"; }).join("");
+    el("ox-out").innerHTML = rowsHtml;
+    el("ox-bits").textContent = r.over ? "kept bits (" + t + "): " + bits(t, r.wrapping) + "  = " + r.wrapping + ". Every higher bit of the true result was discarded." : "bits (" + t + "): " + bits(t, r.exact);
+  }
+  ["ox-type", "ox-op"].forEach(function (id) { el(id).onchange = render; });
+  ["ox-a", "ox-b"].forEach(function (id) { el(id).oninput = render; });
+  render();
+  window.__ox = { compute: compute };
+
+  // ---------- overflow-check cost chart (Figure 4) ----------
+  Course.chart("oc-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["overflow-checks = off", "overflow-checks = on"],
+        datasets: [
+          { label: "plain +", data: [3.3, 15.4], backgroundColor: c.accent, borderRadius: 5 },
+          { label: "wrapping_add", data: [3.3, 3.3], backgroundColor: c.teal, borderRadius: 5 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" }, tooltip: { callbacks: { label: function (ctx) { return ctx.dataset.label + ": " + ctx.parsed.y + " ms"; } } } },
+        scales: { y: { min: 0, title: { display: true, text: "ms to sum 50 million u32 (lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

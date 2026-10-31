@@ -1,0 +1,1278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.4 Strings and slices</title>
+<meta name="description" content="String vs &amp;str, UTF-8 bytes, chars and graphemes, why strings can't be indexed, slices and fat pointers, deref coercion and Cow, compared with C#'s UTF-16 strings and Span, with a UTF-8 explorer checked against Rust and measured allocation counts.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .ux-input { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .ux-input input { flex: 1 1 220px; min-width: 0; font: 1rem var(--font-mono); padding: 7px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .ux-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .ux-presets button { font: .8rem var(--font-mono); padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .ux-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 8px 0 12px; }
+  @media (max-width: 760px) { .ux-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .ux-stat { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--surface); min-width: 0; }
+  .ux-stat b { display: block; font-size: 1.4rem; }
+  .ux-stat code { font-size: .74rem; overflow-wrap: anywhere; }
+  .ux-stat span { display: block; font-size: .72rem; color: var(--muted); }
+  .ux-map { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ux-g { border: 1.5px dashed var(--muted); border-radius: 7px; padding: 3px; display: flex; flex-wrap: wrap; gap: 3px; max-width: 100%; box-sizing: border-box; }
+  .ux-c { border-radius: 5px; padding: 2px 3px 3px; text-align: center; }
+  .ux-c.k0 { background: var(--teal-soft); } .ux-c.k1 { background: var(--purple-soft); }
+  .ux-glyph { font-size: 1.05rem; min-height: 1.5em; line-height: 1.5em; white-space: pre; }
+  .ux-cp { font: .64rem var(--font-mono); color: var(--muted); }
+  .ux-bytes { display: flex; gap: 2px; justify-content: center; }
+  .ux-b { font: .74rem var(--font-mono); background: var(--surface); border: 1px solid var(--border); border-radius: 3px; padding: 1px 3px; }
+  .ux-b i { display: block; font-style: normal; font-size: .6rem; color: var(--muted); }
+  .ux-slice { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font: .85rem var(--font-mono); }
+  .ux-slice input { width: 4.5em; font: .9rem var(--font-mono); padding: 4px 6px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .ux-out { margin-top: 6px; font: .85rem var(--font-mono); overflow-wrap: anywhere; min-height: 1.4em; }
+  .ux-out.ok { color: var(--green); } .ux-out.bad { color: var(--red); }
+  .ux-legend { font-size: .76rem; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body data-chapter="2.4">
+<article class="content">
+<h1>Strings and slices</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Choose between <code>String</code> and <code>&amp;str</code>, and explain what each is in memory</li>
+      <li>Count text correctly in bytes, <code>char</code>s and grapheme clusters, and explain why Rust strings can't be indexed by position</li>
+      <li>Slice strings and other collections safely, using <code>&amp;[T]</code>, <code>&amp;str</code>, <code>get</code> and char boundaries</li>
+      <li>Write functions that accept any text or any run of values, through deref coercion, and return borrowed or owned data with <code>Cow</code></li>
+      <li>Compare Rust's UTF-8 strings with .NET's UTF-16 <code>string</code>, <code>Span&lt;T&gt;</code>, culture rules and <code>StringBuilder</code></li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Text is most of what a rule engine handles: rule definitions, field names, operators, values, error messages. A workflow engine moves JSON payloads, step names and logs. In C# you mostly don't think about it. <code>string</code> is one immutable type, <code>Substring</code> copies, the garbage collector cleans up, and <code>s[i]</code> works (until a user types an emoji).</p>
+  <p>Rust makes you see two things C# hides. First, who owns the text: an owned, growable <code>String</code>, or a borrowed view <code>&amp;str</code> into text that lives somewhere else. Second, what text <em>is</em>: Rust strings are UTF-8 bytes, so "length" and "the third character" stop being simple questions. Both pay off. Borrowed slices let you parse ten thousand rules while allocating almost nothing (Lab step 5 measures 1,003 allocations against 170,000). And the encoding rules turn a whole class of "works in testing, breaks on <code>Ærøskøbing</code>" bugs into compile errors or explicit choices.</p>
+</div>
+
+<h2 id="intuition">Intuition first: the document and the highlighter</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Keep the document metaphor from chapters 2.2 and 2.3.</p>
+  <ul>
+    <li><strong><code>String</code></strong> is a document you own, on a notepad with spare pages. You can write more on it; when the pad is full you copy everything onto a bigger pad and throw the old one away.</li>
+    <li><strong><code>&amp;str</code></strong> is a highlighter mark on someone's document: "from here, this many letters". It owns nothing and copies nothing. It can mark all of a <code>String</code>, part of one, or text printed permanently in the program itself (a literal).</li>
+    <li><strong>Slices in general (<code>&amp;[T]</code>)</strong> are the same highlighter for any row of values: part of an array, part of a <code>Vec</code>.</li>
+    <li><strong>UTF-8</strong> means the letters have different widths. "a" takes one square of the page, "é" two, "👍" four. You can't jump to "the 7th letter" without counting from the start, and a highlighter can't start in the middle of a letter.</li>
+  </ul>
+  <p>C#'s <code>string</code> is closer to a laminated card: immutable, shared by reference, and written in UTF-16, where most letters take one square but emoji take two. <code>ReadOnlySpan&lt;char&gt;</code> is C#'s highlighter, and the nearest thing it has to <code>&amp;str</code>.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">string rule = "amount &gt; 100";     // immutable, UTF-16
+string field = rule.Substring(0, 6); // allocates a copy
+ReadOnlySpan&lt;char&gt; view = rule.AsSpan(0, 6); // no copy
+var sb = new StringBuilder(rule);   // mutable buffer
+sb.Append(" AND vip");
+char c = rule[0];                   // a UTF-16 code unit
+int n = rule.Length;                // UTF-16 code units</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">let rule: &amp;str = "amount &gt; 100";   // borrowed, UTF-8, 'static
+let field: String = rule[0..6].to_string(); // explicit copy
+let view: &amp;str = &amp;rule[0..6];       // no copy
+let mut sb = String::from(rule);    // owned, growable
+sb.push_str(" AND vip");
+let c = rule.chars().next();        // Option&lt;char&gt;; no rule[0]
+let n = rule.len();                 // BYTES, not characters</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="string-vs-str"><code>String</code> and <code>&amp;str</code></h3>
+<p>A <dfn data-term="String" data-def="Rust's owned, growable, heap-allocated text type: a pointer, a length and a capacity (24 bytes on the stack) over a buffer that is always valid UTF-8. Essentially a Vec&lt;u8&gt; with a UTF-8 guarantee.">String</dfn> owns its text. The Book's description is exact: "A <code>String</code> is a wrapper over a <code>Vec&lt;u8&gt;</code>": a pointer, a length and a capacity on the stack (24 bytes), pointing at a heap buffer of bytes it can grow, which is guaranteed to be valid UTF-8. When the <code>String</code> is dropped, the buffer is freed (chapter 2.2).</p>
+<p>A <dfn data-term="string slice" data-def="&amp;str: a borrowed view of UTF-8 text: a pointer and a length (16 bytes), into a String's buffer, a literal in the binary, or any other valid UTF-8 bytes. Owns nothing; can't outlive what it points into.">string slice</dfn>, <code>&amp;str</code>, borrows text. The standard library: "The <code>str</code> type, also called a 'string slice', is the most primitive string type. It is usually seen in its borrowed form, <code>&amp;str</code>." And "A <code>&amp;str</code> is made up of two components: a pointer to some bytes, and a length." It can point into a <code>String</code>'s buffer, into another slice, or at a string literal. Literals have type <code>&amp;'static str</code>: their bytes are stored in the compiled program and live as long as it runs (the <code>'static</code> lifetime, chapter 2.11).</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · String, &amp;str and a literal in memory</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="A literal &amp;str points at read-only data in the binary; a String owns a heap buffer; two &amp;str slices point into that buffer at offsets 0 and 9">
+    <defs>
+      <marker id="sm-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="sm-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="145" y="20" class="svg-title" text-anchor="middle">stack</text>
+    <text x="560" y="20" class="svg-title" text-anchor="middle">binary · heap</text>
+    <rect x="20" y="34" width="250" height="50" rx="6" class="svg-box-strong"/>
+    <text x="32" y="55" class="svg-mono">literal: &amp;'static str</text>
+    <text x="32" y="74" class="svg-text-sm">ptr · len 12 = 16 bytes</text>
+    <rect x="20" y="100" width="250" height="50" rx="6" class="svg-teal"/>
+    <text x="32" y="121" class="svg-mono">owned: String</text>
+    <text x="32" y="140" class="svg-text-sm">ptr · len 12 · cap 12 = 24 bytes</text>
+    <rect x="20" y="166" width="250" height="50" rx="6" class="svg-box-strong"/>
+    <text x="32" y="187" class="svg-mono">view: &amp;str  = &amp;owned[0..6]</text>
+    <text x="32" y="206" class="svg-text-sm">ptr = buffer + 0 · len 6</text>
+    <rect x="20" y="232" width="250" height="50" rx="6" class="svg-box-strong"/>
+    <text x="32" y="253" class="svg-mono">tail: &amp;str  = &amp;owned[9..]</text>
+    <text x="32" y="272" class="svg-text-sm">ptr = buffer + 9 · len 3</text>
+
+    <text x="440" y="40" class="svg-text-sm">read-only data, inside the executable</text>
+    <rect x="440" y="48" width="240" height="32" rx="4" class="svg-amber"/>
+    <text x="560" y="69" class="svg-mono" text-anchor="middle">amount &gt; 100</text>
+    <text x="440" y="132" class="svg-text-sm">heap buffer owned by `owned` (12 bytes)</text>
+    <g class="svg-mono" text-anchor="middle">
+      <rect x="440" y="140" width="240" height="32" rx="4" class="svg-purple"/>
+      <text x="450" y="161">a</text><text x="470" y="161">m</text><text x="490" y="161">o</text><text x="510" y="161">u</text><text x="530" y="161">n</text><text x="550" y="161">t</text>
+      <text x="570" y="161">␠</text><text x="590" y="161">&gt;</text><text x="610" y="161">␠</text><text x="630" y="161">1</text><text x="650" y="161">0</text><text x="670" y="161">0</text>
+    </g>
+    <path d="M440 186 L440 192 L560 192 L560 186" class="svg-line"/>
+    <text x="500" y="208" class="svg-text-sm" text-anchor="middle">view</text>
+    <path d="M620 186 L620 192 L680 192 L680 186" class="svg-line"/>
+    <text x="650" y="208" class="svg-text-sm" text-anchor="middle">tail</text>
+
+    <path d="M270 59 L436 64" class="svg-line" marker-end="url(#sm-a)"/>
+    <path d="M270 125 L436 150" class="svg-line" marker-end="url(#sm-a)"/>
+    <path d="M270 191 C 360 191, 400 220, 440 196" class="svg-line-accent" marker-end="url(#sm-b)"/>
+    <path d="M270 257 C 420 257, 600 250, 620 198" class="svg-line-accent" marker-end="url(#sm-b)"/>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> One owner, three borrowers. Lab step 1 prints the real addresses: <code>view</code> points exactly at the buffer's start, <code>tail</code> 9 bytes in, and the literal into the executable's read-only data. No slice copied any text; each is 16 bytes on the stack, whatever the length of the text it marks.</figcaption>
+</figure>
+
+<p>The rule for when to use which is the ownership rule from 2.2 and 2.3: <strong>store and return <code>String</code>; accept <code>&amp;str</code></strong>. A struct field that must keep its text owns a <code>String</code>. A function that only reads text takes <code>&amp;str</code>, and then accepts every kind of text, as the next section shows.</p>
+<pre data-title="creating and converting"><code class="language-rust">let a: String = String::from("vip");     // &amp;str -&gt; String (copies)
+let b: String = "vip".to_string();       // the same, via Display
+let c: String = format!("{a} tier {}", 2); // build from pieces
+let d: &amp;str = &amp;a;                        // String -&gt; &amp;str (free: &amp;String coerces)
+let e: &amp;str = a.as_str();                // the same, explicitly
+let f: String = d.to_owned();            // &amp;str -&gt; String again (copies)
+println!("{a} {b} {c} {d} {e} {f}");</code></pre>
+
+<h3 id="slices">Slices in general: <code>&amp;[T]</code></h3>
+<p><code>&amp;str</code> is one case of a general idea. A <dfn data-term="slice" data-def="A view of a contiguous run of values: &amp;[T] (shared) or &amp;mut [T] (mutable), created from arrays, Vecs or other slices with a range. Knows its length; can't grow or shrink. Text slices are &amp;str.">slice</dfn> <code>&amp;[T]</code> borrows a contiguous run of values: all or part of an array, a <code>Vec</code>, or another slice. You make one with a range: <code>&amp;v[1..3]</code> (elements 1 and 2), <code>&amp;v[2..]</code>, <code>&amp;v[..2]</code>, <code>&amp;v[..]</code>. <code>&amp;mut [T]</code> lets you change the elements in place (sort, swap, overwrite) but never the length, since only the owner (the <code>Vec</code>) can grow or shrink the storage.</p>
+<p>Both <code>&amp;str</code> and <code>&amp;[T]</code> are <dfn data-term="fat pointer" data-def="A pointer that carries extra data alongside the address: a length for slices and &amp;str (16 bytes on 64-bit), or a vtable pointer for &amp;dyn Trait. A reference to a sized type is a thin, 8-byte pointer.">fat pointers</dfn>: an address plus a length, 16 bytes on a 64-bit target, against 8 for a plain reference (Lab step 3 prints the sizes). The length is what makes slices safe. Indexing <code>s[i]</code> checks <code>i &lt; len</code> and panics if it isn't; <code>s.get(i)</code> returns an <code>Option</code> instead. That's the same bounds check as C#, but here it travels with every slice.</p>
+
+<h3 id="coercion">Deref coercion: one parameter type for every caller</h3>
+<p>Why does <code>fn describe(s: &amp;str)</code> accept <code>&amp;my_string</code>, which is a <code>&amp;String</code>? Because of <dfn data-term="deref coercion" data-def="The compiler's automatic conversion of &amp;T to &amp;U when T implements Deref&lt;Target = U&gt;: &amp;String → &amp;str, &amp;Vec&lt;T&gt; → &amp;[T], &amp;Box&lt;T&gt; → &amp;T. It happens at function arguments and method calls, and costs nothing.">deref coercion</dfn>: <code>String</code> implements <code>Deref&lt;Target = str&gt;</code>, so wherever a <code>&amp;str</code> is expected, the compiler turns <code>&amp;String</code> into <code>&amp;str</code> for free. <code>Vec&lt;T&gt;</code> does the same for <code>&amp;[T]</code>. That's why the idiomatic parameter types are <code>&amp;str</code> and <code>&amp;[T]</code>: one signature accepts a literal, a <code>String</code>, part of either, an array or a <code>Vec</code> (Lab step 3, sections 1–2), and Clippy's <code>ptr_arg</code> lint flags <code>&amp;String</code> and <code>&amp;Vec&lt;T&gt;</code> parameters, as you saw in chapter 2.3. Coercion applies to references only. Passing an owned <code>String</code> where <code>&amp;str</code> is expected is a type error, and the compiler suggests the <code>&amp;</code>:</p>
+<pre data-title="e2.rs"><code class="language-rust">// Passing an owned String where a &amp;str is expected.
+fn shout(s: &amp;str) -&gt; String {
+    s.to_uppercase()
+}
+
+fn main() {
+    let name = String::from("finance");
+    println!("{}", shout(name));
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+ --&gt; errs/e2.rs:8:26
+  |
+8 |     println!("{}", shout(name));
+  |                    ----- ^^^^ expected `&amp;str`, found `String`
+  |                    |
+  |                    arguments to this function are incorrect
+  |
+note: function defined here
+ --&gt; errs/e2.rs:2:4
+  |
+2 | fn shout(s: &amp;str) -&gt; String {
+  |    ^^^^^ -------
+help: consider borrowing here
+  |
+8 |     println!("{}", shout(&amp;name));
+  |                          +</pre>
+
+<h3 id="utf8">UTF-8: bytes, chars and graphemes</h3>
+<p>Rust text is <dfn data-term="UTF-8" data-def="A variable-width encoding of Unicode: 1 byte for ASCII, 2–4 bytes for everything else. Rust's String and &amp;str are always valid UTF-8; .NET's string is UTF-16.">UTF-8</dfn>, and the standard library promises it: "Rust libraries may assume that string slices are always valid UTF-8." UTF-8 uses 1 byte for ASCII and 2, 3 or 4 bytes for everything else. So "length" has three honest answers, and the Book names them: "there are actually three relevant ways to look at strings from Rust's perspective: as bytes, scalar values, and grapheme clusters (the closest thing to what we would call <em>letters</em>)."</p>
+<ul>
+  <li><strong>Bytes</strong>: <code>s.len()</code> and <code>s.bytes()</code>. What the string occupies in memory, on disk and on the wire.</li>
+  <li><strong><code>char</code>s</strong>: <code>s.chars()</code>. A <dfn data-term="char" data-def="Rust's character type: one Unicode scalar value (any code point except surrogates), always 4 bytes. A user-perceived character can be several chars (e + combining accent, emoji sequences).">char</dfn> is "a 'Unicode scalar value'", always 4 bytes in memory, and the standard library warns that "'character' isn't a well-defined concept in Unicode".</li>
+  <li><strong>Grapheme clusters</strong>: what a reader sees as one character. "é" written as <code>e</code> + a combining accent is two <code>char</code>s but one <dfn data-term="grapheme cluster" data-def="A user-perceived character: one or more chars displayed as a unit, such as e + combining accent, a flag (two regional indicators) or an emoji with skin-tone modifier. Segmenting them needs Unicode rules (the unicode-segmentation crate).">grapheme cluster</dfn>; 👍🏽 (thumbs up plus a skin-tone modifier) is two <code>char</code>s and one grapheme. The standard library doesn't segment graphemes; the <code>unicode-segmentation</code> crate does (Lab step 2).</li>
+</ul>
+<p>Lab step 2 prints all of them for six strings, next to C#'s <code>Length</code>, which counts UTF-16 code units, a fourth answer. Try your own text here:</p>
+
+<figure class="visual" id="ux">
+  <span class="visual-tag">Interactive · UTF-8 explorer</span>
+  <div class="ux-input"><input id="ux-text" value="café 👍🏽" spellcheck="false" aria-label="Text to analyse"></div>
+  <div class="ux-presets" id="ux-presets"></div>
+  <div class="ux-stats">
+    <div class="ux-stat"><b id="ux-n-bytes"></b><code>s.len()</code><span>UTF-8 bytes</span></div>
+    <div class="ux-stat"><b id="ux-n-chars"></b><code>s.chars().count()</code><span>Unicode scalar values</span></div>
+    <div class="ux-stat"><b id="ux-n-utf16"></b><code>C#: s.Length</code><span>UTF-16 code units</span></div>
+    <div class="ux-stat"><b id="ux-n-graph"></b><code>graphemes(true).count()</code><span>what a reader counts (crate)</span></div>
+  </div>
+  <div class="ux-map" id="ux-map" aria-live="polite"></div>
+  <div class="ux-legend">Dashed box = one grapheme cluster · shaded box = one <code>char</code> (with its code point) · small boxes = its UTF-8 bytes, with byte index</div>
+  <div class="ux-slice"><span>&amp;s[</span><input id="ux-a" type="number" min="0" value="0" aria-label="start byte"><span>..</span><input id="ux-b" type="number" min="0" value="4" aria-label="end byte"><span>]</span></div>
+  <div class="ux-out" id="ux-out" aria-live="polite"></div>
+  <figcaption><strong>Figure 2.</strong> Type any text, then try slicing it by byte range. The four counts were checked against Rust (<code>len</code>, <code>chars</code>, <code>encode_utf16</code>, and <code>unicode-segmentation</code> 1.13.3) on 38 strings including ZWJ emoji families, flags, combining marks, Hangul jamo and Indic conjuncts. The slice result, and every panic message word for word, was checked against Rust 1.99 on all 1,568 byte ranges of six strings.</figcaption>
+</figure>
+
+<h3 id="no-index">Why there's no <code>s[i]</code></h3>
+<p>Now the C# habit:</p>
+<pre data-title="e1.rs"><code class="language-rust">// Indexing a string by position, the C# habit.
+fn main() {
+    let code = String::from("NL-1043");
+    let first = code[0];
+    println!("{first}");
+}</code></pre>
+<pre class="output error">error[E0277]: the type `str` cannot be indexed by `{integer}`
+   --&gt; errs/e1.rs:4:22
+    |
+  4 |     let first = code[0];
+    |                      ^ string indices are ranges of `usize`
+    |
+    = help: the trait `SliceIndex&lt;str&gt;` is not implemented for `{integer}`
+    = note: you can use `.chars().nth()` or `.bytes().nth()`
+            for more information, see chapter 8 in The Book: &lt;https://doc.rust-lang.org/book/ch08-02-strings.html#indexing-into-strings&gt;
+    … (the rest lists the standard library's SliceIndex impls; omitted here)</pre>
+<p>The Book gives two reasons. What should <code>s[0]</code> return: a byte, which is rarely what you want for non-ASCII text, or a character, which can't be found without scanning? Rust "doesn't compile this code at all and prevents misunderstandings early in the development process". And "indexing operations are expected to always take constant time (O(1)). But it isn't possible to guarantee that performance with a <code>String</code>." So you say which one you mean: <code>s.as_bytes()[0]</code> for a byte, <code>s.chars().next()</code> or <code>s.chars().nth(n)</code> for a <code>char</code> (O(n), and you can see the loop), or <code>&amp;s[a..b]</code> for a slice by <em>byte</em> range.</p>
+<p>Slicing must start and end on a <dfn data-term="char boundary" data-def="A byte index where a char starts (or the string's end). String slicing &amp;s[a..b] panics if a or b falls inside a multi-byte char; s.get(a..b) returns None, and s.is_char_boundary(i) tests it.">char boundary</dfn>. Cut through the middle of a multi-byte character and the program panics at run time, with a message that names the character:</p>
+<pre data-playground data-title="src/bin/boundary.rs"><code class="language-rust">fn main() {
+    let field = "café_total";
+    println!("{}", &amp;field[0..3]); // "caf": fine, ends before 'é'
+    println!("{}", &amp;field[0..4]); // ends inside 'é' (bytes 3..5): panics
+}</code></pre>
+<pre class="output error runtime">caf
+
+thread 'main' (926190) panicked at src/bin/boundary.rs:4:26:
+end byte index 4 is not a char boundary; it is inside 'é' (bytes 3..5 of string)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace</pre>
+<p>Byte offsets you got from the string itself are always safe: the results of <code>find</code>, <code>char_indices</code>, <code>split</code> and friends land on boundaries. When an offset comes from outside (user input, a fixed width, a database column), use <code>s.get(a..b)</code>, which returns <code>None</code> instead of panicking, or check <code>s.is_char_boundary(i)</code>.</p>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: UTF-16, Span and culture</div>
+  <ul>
+    <li><strong>.NET strings are UTF-16.</strong> Microsoft's docs on <code>String.Length</code>: it "returns the number of Char objects in this instance, not the number of Unicode characters". 👍🏽 has <code>Length</code> 4, and <code>s[0]</code> on it returns half of a surrogate pair (Lab step 4). C# lets you index and gives you code units; Rust refuses and makes you choose.</li>
+    <li><strong><code>Substring</code> copies; <code>AsSpan</code> borrows.</strong> Lab step 4 measured 48 bytes allocated for a 13-character <code>Substring</code> and 0 for <code>AsSpan</code>. <code>ReadOnlySpan&lt;char&gt;</code> is the C# equivalent of <code>&amp;str</code>, and <code>Span&lt;T&gt;</code> of <code>&amp;mut [T]</code>. Their <code>ref struct</code> restrictions (stack-only, no fields in classes, no capture across <code>await</code>) are C#'s narrower version of the borrow rules.</li>
+    <li><strong><code>StringBuilder</code> ↔ <code>String</code>.</strong> Rust's <code>String</code> is already the mutable builder. There's no separate immutable string type, because a <code>&amp;str</code> borrow already guarantees nobody changes the text while you read it.</li>
+    <li><strong>No culture in Rust's standard library.</strong> In .NET, <code>"title".ToUpper()</code> depends on the current culture: under <code>tr-TR</code> it gives <code>TİTLE</code> (Lab step 4). Rust's <code>to_uppercase</code> follows Unicode's default mapping and gives <code>"TITLE"</code> everywhere. Comparison (<code>==</code>, <code>Ord</code>) is always byte-wise, like <code>StringComparison.Ordinal</code>. For culture-aware sorting or Unicode normalization, use crates (ICU4X, <code>unicode-normalization</code>).</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="building">Building strings, and why <code>+</code> moves</h3>
+<p>A <code>String</code> grows like a <code>Vec</code>: when the bytes no longer fit, it allocates a bigger buffer (roughly doubling), copies the bytes across and frees the old buffer. Lab step 1 shows capacity going 0 → 8 → 16 → 32 as words are appended: the first push allocates, the growth to 16 happened in place (the allocator could extend the block), and the growth to 32 moved the bytes to a new address.</p>
+
+<figure class="visual stepper" data-interval="3000">
+  <span class="visual-tag">Animation · a String growing</span>
+  <svg viewBox="0 0 720 290" role="img" aria-label="A String's heap buffer growing from capacity 0 to 8 to 16 in place, then moving to a new 32-byte buffer; a slice taken earlier would dangle">
+    <defs>
+      <marker id="gr-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="gr-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="130" y="22" class="svg-title" text-anchor="middle">stack</text>
+    <text x="490" y="22" class="svg-title" text-anchor="middle">heap</text>
+    <rect x="20" y="40" width="220" height="56" rx="6" class="svg-teal"/>
+    <text x="32" y="62" class="svg-mono">s: String</text>
+    <text x="32" y="84" class="svg-text-sm" data-show="=1">ptr: none yet · len 0 · cap 0</text>
+    <text x="32" y="84" class="svg-text-sm" data-show="=2">ptr · len 4 · cap 8</text>
+    <text x="32" y="84" class="svg-text-sm" data-show="=3">ptr · len 8 · cap 8 (full)</text>
+    <text x="32" y="84" class="svg-text-sm" data-show="=4">ptr (same) · len 9 · cap 16</text>
+    <text x="32" y="84" class="svg-text-sm" data-show="5-">ptr (new!) · len 20 · cap 32</text>
+    <text x="490" y="80" class="svg-text-sm" text-anchor="middle" data-show="=1">no heap allocation yet</text>
+
+    <g data-show="=2"><text x="300" y="50" class="svg-mono">"rule"</text><rect x="300" y="58" width="96" height="28" rx="3" class="svg-purple"/><rect x="396" y="58" width="96" height="28" rx="3" class="svg-box"/></g>
+    <g data-show="=3"><text x="300" y="50" class="svg-mono">"rule-set"</text><rect x="300" y="58" width="192" height="28" rx="3" class="svg-purple"/></g>
+    <g data-show="=4"><text x="300" y="50" class="svg-mono">"rule-set "</text><rect x="300" y="58" width="216" height="28" rx="3" class="svg-purple"/><rect x="516" y="58" width="168" height="28" rx="3" class="svg-box"/><text x="490" y="106" class="svg-text-sm" text-anchor="middle">grown in place: same address, nothing copied</text></g>
+    <g data-show="5-"><rect x="300" y="58" width="384" height="28" rx="3" class="svg-red"/><text x="492" y="77" class="svg-text-sm" text-anchor="middle">old 16-byte buffer: freed</text>
+      <text x="300" y="150" class="svg-mono">"rule-set v7 approved"</text>
+      <rect x="300" y="158" width="384" height="26" rx="3" class="svg-purple"/>
+      <rect x="300" y="188" width="96" height="26" rx="3" class="svg-purple"/><rect x="396" y="188" width="288" height="26" rx="3" class="svg-box"/>
+      <text x="492" y="232" class="svg-text-sm" text-anchor="middle">new 32-byte buffer: 20 bytes copied, then old one freed</text></g>
+    <path d="M240 68 L296 72" class="svg-line" marker-end="url(#gr-a)" data-show="2-4"/>
+    <path d="M240 80 C 270 120, 270 170, 296 171" class="svg-line" marker-end="url(#gr-a)" data-show="=5"/>
+    <g data-show="=6">
+      <rect x="20" y="150" width="220" height="50" rx="6" class="svg-box-strong" stroke-dasharray="5 4"/>
+      <text x="32" y="171" class="svg-mono">view: &amp;str (from step 4)</text>
+      <text x="32" y="190" class="svg-text-sm">would point at freed memory</text>
+      <path d="M240 165 C 270 140, 280 100, 300 86" class="svg-line-accent" marker-end="url(#gr-b)"/>
+      <text x="130" y="232" class="svg-text-sm" text-anchor="middle">so holding it across push_str</text>
+      <text x="130" y="250" class="svg-text-sm" text-anchor="middle">is error E0502 (chapter 2.3)</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>String::new()</code> allocates nothing: capacity 0, and no heap buffer until the first byte arrives.</li>
+    <li><code>push_str("rule")</code>: the first allocation. This version of the standard library starts with 8 bytes for byte buffers (Lab step 1).</li>
+    <li>After <code>"-"</code> and <code>"set"</code> the buffer is exactly full: length 8, capacity 8.</li>
+    <li>One more byte: capacity doubles to 16. Here the allocator could extend the block <em>in place</em>, so the address didn't change. You can't count on that.</li>
+    <li><code>"approved"</code> needs 20 bytes: a new 32-byte buffer at a different address, the 12 old bytes copied in, the old buffer freed.</li>
+    <li>That move is why chapter 2.3's rule matters for text. A <code>&amp;str</code> taken before the push would point at freed memory, so the compiler rejects any program that uses one across a mutation (e4 below).</li>
+  </ol>
+  <figcaption><strong>Figure 3.</strong> Capacities and moves are the ones Lab step 1 measured. If you know the final size, <code>String::with_capacity(n)</code> allocates once (step 1, section 3); in a loop, reuse one buffer with <code>clear()</code>, which keeps the capacity (Lab step 5).</figcaption>
+</figure>
+
+<p>Concatenation shows ownership at work. <code>a + b</code> requires a <code>String</code> on the left and a <code>&amp;str</code> on the right, and it <em>consumes</em> the left side, appending to its buffer instead of allocating a fresh one:</p>
+<pre data-title="e3.rs"><code class="language-rust">// Adding two string slices.
+fn main() {
+    let a = "rule";
+    let b = "-set";
+    let joined = a + b;
+    println!("{joined}");
+}</code></pre>
+<pre class="output error">error[E0369]: cannot add `&amp;str` to `&amp;str`
+ --&gt; errs/e3.rs:5:20
+  |
+5 |     let joined = a + b;
+  |                  - ^ - &amp;str
+  |                  | |
+  |                  | `+` cannot be used to concatenate two `&amp;str` strings
+  |                  &amp;str
+  |
+  = note: string concatenation requires an owned `String` on the left
+help: create an owned `String` from a string reference
+  |
+5 |     let joined = a.to_owned() + b;
+  |                   +++++++++++</pre>
+<pre data-title="e6.rs"><code class="language-rust">// `+` takes the left-hand String by value.
+fn main() {
+    let base = String::from("rule");
+    let full = base + "-set";
+    println!("{full} came from {base}");
+}</code></pre>
+<pre class="output error">error[E0382]: borrow of moved value: `base`
+  --&gt; errs/e6.rs:5:33
+   |
+ 3 |     let base = String::from("rule");
+   |         ---- move occurs because `base` has type `String`, which does not implement the `Copy` trait
+ 4 |     let full = base + "-set";
+   |                ------------- `base` moved due to usage in operator
+ 5 |     println!("{full} came from {base}");
+   |                                 ^^^^ value borrowed here after move
+   |
+note: calling this operator moves the left-hand side
+  --&gt; ~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/arith.rs:91:12
+   |
+91 |     fn add(self, rhs: Rhs) -&gt; Self::Output;
+   |            ^^^^
+help: consider cloning the value if the performance cost is acceptable
+   |
+ 4 |     let full = base.clone() + "-set";
+   |                    ++++++++</pre>
+<p>In practice: <code>format!</code> for building from several pieces (it never moves its arguments), <code>push_str</code>/<code>push</code> to append in place, <code>[..].join(sep)</code> for lists, and <code>write!</code> into a <code>String</code> when formatting in a loop.</p>
+
+<h3 id="borrowing-text">Slices and the borrow checker</h3>
+<p>A <code>&amp;str</code> into a <code>String</code> is a borrow, so chapter 2.3's rules apply. This is the Book's own example of what they prevent:</p>
+<pre data-title="e4.rs"><code class="language-rust">// The Book's classic: a slice into a String, then clearing the String.
+fn first_word(s: &amp;str) -&gt; &amp;str {
+    s.split(' ').next().unwrap_or("")
+}
+
+fn main() {
+    let mut line = String::from("approve order 42");
+    let verb = first_word(&amp;line);
+    line.clear(); // would leave `verb` pointing at nothing
+    println!("verb: {verb}");
+}</code></pre>
+<pre class="output error">error[E0502]: cannot borrow `line` as mutable because it is also borrowed as immutable
+  --&gt; errs/e4.rs:9:5
+   |
+ 8 |     let verb = first_word(&amp;line);
+   |                           ----- immutable borrow occurs here
+ 9 |     line.clear(); // would leave `verb` pointing at nothing
+   |     ^^^^^^^^^^^^ mutable borrow occurs here
+10 |     println!("verb: {verb}");
+   |                      ---- immutable borrow later used here</pre>
+<p>In C#, <code>Substring</code> sidesteps the problem by copying, and a <code>ReadOnlySpan&lt;char&gt;</code> over a <code>string</code> is safe because .NET strings are immutable. In Rust the text is mutable, and the borrow checker guarantees the view stays valid. The other classic mistake is returning a slice of a <code>String</code> the function itself just created:</p>
+<pre data-title="e5.rs"><code class="language-rust">// Returning a slice of a String created inside the function.
+fn normalized(field: &amp;str) -&gt; &amp;str {
+    &amp;field.trim().to_lowercase()
+}
+
+fn main() {
+    println!("{}", normalized("  Country "));
+}</code></pre>
+<pre class="output error">error[E0515]: cannot return reference to temporary value
+ --&gt; errs/e5.rs:3:5
+  |
+3 |     &amp;field.trim().to_lowercase()
+  |     ^---------------------------
+  |     ||
+  |     |temporary value created here
+  |     returns a reference to data owned by the current function</pre>
+<p><code>to_lowercase</code> creates a new <code>String</code> that dies at the end of the function, so the function must return it owned. Or, if it only <em>sometimes</em> needs a new string, return a <code>Cow</code>.</p>
+
+<h3 id="cow"><code>Cow</code>: borrow when you can, own when you must</h3>
+<p>A normaliser that lowercases field names usually finds them already lowercase. Returning <code>String</code> allocates every time; returning <code>&amp;str</code> can't work when a change is needed. <dfn data-term="Cow" data-def="std::borrow::Cow&lt;'a, B&gt;, clone-on-write: an enum holding either a borrowed &amp;'a B (Cow::Borrowed) or an owned value (Cow::Owned), used to return borrowed data when no change is needed and owned data when it is. Derefs to &amp;B.">Cow</dfn> ("clone on write") is an enum holding <em>either</em>. The standard library: "a smart pointer providing clone-on-write functionality: it can enclose and provide immutable access to borrowed data, and clone the data lazily when mutation or ownership is required."</p>
+<pre data-title="returning Cow"><code class="language-rust">use std::borrow::Cow;
+
+fn normalize(field: &amp;str) -&gt; Cow&lt;'_, str&gt; {
+    if field.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(field.to_ascii_lowercase())   // allocate only when needed
+    } else {
+        Cow::Borrowed(field)                     // the common case: no allocation
+    }
+}
+
+let a = normalize("amount");                     // Borrowed
+let b = normalize("Amount");                     // Owned
+println!("{a} {b} {}", a.len() + b.len());       // both deref to &amp;str
+let raw = [0x63, 0x61, 0x66, 0xC3];              // invalid UTF-8 at the end
+println!("{}", String::from_utf8_lossy(&amp;raw));   // a std function returning Cow</code></pre>
+<p class="small muted">(<code>.bytes().any(|b| …)</code> is LINQ's <code>Any(b =&gt; …)</code> over the bytes; closures and iterator chains were introduced in chapter 2.3's reading note and are covered fully in chapter 2.10.)</p>
+<p>Callers use a <code>Cow&lt;str&gt;</code> like a <code>&amp;str</code> (it derefs to one) and call <code>.into_owned()</code> if they need a <code>String</code>. The standard library uses the same pattern: <code>String::from_utf8_lossy</code> borrows the input when it's valid UTF-8 and allocates only to insert <code>U+FFFD</code> replacement characters. Lab step 5 measures what borrowing and <code>Cow</code> save on a rule parser.</p>
+
+<h3 id="string-types">The other string types</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>Owned</th><th>Borrowed</th><th>Holds</th><th>Use for</th></tr></thead>
+  <tbody>
+    <tr><td><code>String</code></td><td><code>&amp;str</code></td><td>Valid UTF-8</td><td>Almost all text</td></tr>
+    <tr><td><code>Vec&lt;u8&gt;</code></td><td><code>&amp;[u8]</code></td><td>Any bytes</td><td>Binary data, text of unknown encoding (validate with <code>String::from_utf8</code> / <code>str::from_utf8</code>)</td></tr>
+    <tr><td><code>OsString</code></td><td><code>&amp;OsStr</code></td><td>The platform's native string</td><td>Environment variables, command-line arguments that may not be UTF-8</td></tr>
+    <tr><td><code>PathBuf</code></td><td><code>&amp;Path</code></td><td>An OS string with path methods</td><td>File paths (chapter 2.13's CLI)</td></tr>
+    <tr><td><code>CString</code></td><td><code>&amp;CStr</code></td><td>NUL-terminated bytes</td><td>Calling C (chapter 5.6)</td></tr>
+    <tr><td><code>Box&lt;str&gt;</code>, <code>Arc&lt;str&gt;</code></td><td><code>&amp;str</code></td><td>Immutable UTF-8, no spare capacity</td><td>Text that never changes; <code>Arc&lt;str&gt;</code> for cheap sharing across threads</td></tr>
+  </tbody>
+</table></div>
+
+<details class="deep-dive"><summary>Deep dive: why UTF-8, and what the guarantee buys</summary><div class="body">
+  <p>UTF-8 (RFC 3629) is ASCII-compatible, has no byte-order issues, never produces a zero byte except for NUL, and is self-synchronising: from any byte you can find the start of the current character by skipping at most three continuation bytes (<code>10xxxxxx</code>). It's the encoding of the web, JSON, most files and most network protocols, so a UTF-8 string type means no transcoding at I/O boundaries. .NET pays a UTF-16 ⇄ UTF-8 conversion on almost every read and write, which is why it added <code>Utf8JsonReader</code>, <code>u8</code> string literals and <code>Utf8.IsValid</code>.</p>
+  <p>Because every <code>&amp;str</code> is valid, code that consumes text never re-checks it. The check happens once, where bytes become text: <code>String::from_utf8(bytes)</code> returns a <code>Result</code>, <code>from_utf8_lossy</code> replaces bad sequences, and <code>from_utf8_unchecked</code> skips the check but is <code>unsafe</code>, because creating an invalid <code>str</code> breaks a promise all other code relies on. The price is that UTF-16 indexing habits don't carry over. Nothing is O(1) by character, which, as Figure 2 shows, was never really true in UTF-16 either.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: sharing immutable text with <code>Arc&lt;str&gt;</code></summary><div class="body">
+  <p>A rule engine refers to the same field names ("amount", "country") from thousands of compiled rules. Cloning a <code>String</code> for each copies the bytes every time. <code>Arc&lt;str&gt;</code> (chapter 2.12) stores the text once, with a reference count; cloning it just increments the count, and it's 16 bytes on the stack against <code>String</code>'s 24 (Lab step 1), with no spare capacity on the heap. Because the text is immutable, sharing it across threads is safe. Convert with <code>Arc::from(s)</code>. Going further, an <em>interner</em> maps each distinct string to a small integer id (<code>FieldId(u32)</code>), making comparisons and hashing integer operations. Chapters 9.2–9.3 use this in the rule compiler.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. The project's only dependency is <code>unicode-segmentation = "1"</code> (1.13.3 resolved). Put each program in <code>src/bin/</code> and run <code>cargo run --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — what a String is, and how it grows</h3>
+<pre data-playground data-title="src/bin/strings.rs"><code class="language-rust">use std::mem::size_of;
+use std::sync::Arc;
+
+fn main() {
+    // 1. Three ways to hold text, and their sizes on the stack.
+    let literal: &amp;'static str = "amount &gt; 100"; // bytes live in the binary itself
+    let owned: String = String::from(literal); // a heap copy that this variable owns
+    let view: &amp;str = &amp;owned[0..6]; // a window into owned's heap buffer
+    println!("1. size_of String = {}, &amp;str = {}, Box&lt;str&gt; = {}, Arc&lt;str&gt; = {}",
+        size_of::&lt;String&gt;(), size_of::&lt;&amp;str&gt;(), size_of::&lt;Box&lt;str&gt;&gt;(), size_of::&lt;Arc&lt;str&gt;&gt;());
+    println!("   literal bytes at {:p} (read-only data in the executable)", literal.as_ptr());
+    println!("   owned   bytes at {:p} (heap), len {} cap {}", owned.as_ptr(), owned.len(), owned.capacity());
+    println!("   view    bytes at {:p} = owned + 0, len {}: {view:?}", view.as_ptr(), view.len());
+    let tail = &amp;owned[9..];
+    println!("   tail    bytes at {:p} = owned + 9: {tail:?}", tail.as_ptr());
+
+    // 2. Building a String: it grows by reallocating, and the buffer can move.
+    let mut s = String::new();
+    let mut last_ptr = s.as_ptr();
+    println!("2. new(): len 0 cap {} (no allocation yet)", s.capacity());
+    for word in ["rule", "-", "set", " ", "v7", " ", "approved", " by finance"] {
+        s.push_str(word);
+        let moved = if s.as_ptr() != last_ptr { "  &lt;- new buffer" } else { "" };
+        println!("   push_str({word:?}): len {:&gt;2} cap {:&gt;2}{moved}", s.len(), s.capacity());
+        last_ptr = s.as_ptr();
+    }
+
+    // 3. Pre-sizing avoids the reallocations.
+    let mut sized = String::with_capacity(32);
+    let before = sized.as_ptr();
+    sized.push_str("rule-set v7 approved by finance");
+    println!("3. with_capacity(32): len {} cap {}, same buffer: {}",
+        sized.len(), sized.capacity(), before == sized.as_ptr());
+
+    // 4. Other ways to make a String.
+    let a = "vip".to_string();
+    let b = format!("{a} == {}", true);
+    let c = a + " tier"; // `+` takes `a` by value and appends in place (a is moved)
+    let d: String = ["NL", "DE", "BE"].join(",");
+    println!("4. {b:?} {c:?} {d:?}");
+}</code></pre>
+<pre class="output">1. size_of String = 24, &amp;str = 16, Box&lt;str&gt; = 16, Arc&lt;str&gt; = 16
+   literal bytes at 0x10291ac6c (read-only data in the executable)
+   owned   bytes at 0x102ff9330 (heap), len 12 cap 12
+   view    bytes at 0x102ff9330 = owned + 0, len 6: "amount"
+   tail    bytes at 0x102ff9339 = owned + 9: "100"
+2. new(): len 0 cap 0 (no allocation yet)
+   push_str("rule"): len  4 cap  8  &lt;- new buffer
+   push_str("-"): len  5 cap  8
+   push_str("set"): len  8 cap  8
+   push_str(" "): len  9 cap 16
+   push_str("v7"): len 11 cap 16
+   push_str(" "): len 12 cap 16
+   push_str("approved"): len 20 cap 32  &lt;- new buffer
+   push_str(" by finance"): len 31 cap 32
+3. with_capacity(32): len 31 cap 32, same buffer: true
+4. "vip == true" "vip tier" "NL,DE,BE"</pre>
+<p>Section 1 is Figure 1 in numbers: the slices point at the buffer's start and 9 bytes in, and the literal sits in a different region entirely, the executable's read-only data. Section 2 is Figure 3. Addresses differ between runs, and whether a growth happens in place depends on the allocator.</p>
+
+<h3 id="lab-2">Step 2 — four ways to count, and slicing by byte</h3>
+<pre data-playground data-title="src/bin/utf8.rs"><code class="language-rust">use unicode_segmentation::UnicodeSegmentation;
+
+fn show(label: &amp;str, s: &amp;str) {
+    let bytes = s.len(); // len() counts BYTES
+    let chars = s.chars().count(); // Unicode scalar values
+    let utf16 = s.encode_utf16().count(); // what C#'s string.Length counts
+    let graphemes = s.graphemes(true).count(); // what a reader calls "characters"
+    println!("{label:&lt;10} bytes {bytes:&gt;2}  chars {chars:&gt;2}  utf16 {utf16:&gt;2}  graphemes {graphemes}   {s}");
+}
+
+fn main() {
+    // 1. Four lengths of one string.
+    show("ascii", "rule");
+    show("accent", "café");
+    show("combining", "cafe\u{301}"); // e + COMBINING ACUTE ACCENT: looks identical
+    show("emoji", "👍🏽");          // thumbs up + skin-tone modifier
+    show("flag", "🇳🇱");            // two regional-indicator letters
+    show("cjk", "規則");
+
+    // 2. The bytes and chars behind "café".
+    let s = "café";
+    println!("2. bytes: {:02x?}", s.as_bytes());
+    for (i, c) in s.char_indices() {
+        println!("   byte {i}: {c:?} = U+{:04X}, {} byte(s) in UTF-8", c as u32, c.len_utf8());
+    }
+
+    // 3. Equal on screen, different bytes: comparison is byte-wise.
+    println!("3. \"café\" == \"cafe\\u{{301}}\": {}", "café" == "cafe\u{301}");
+
+    // 4. Slicing is by byte range and must land on char boundaries.
+    println!("4. &amp;s[0..3] = {:?}", &amp;s[0..3]);
+    println!("   s.is_char_boundary(4) = {}, (5) = {}", s.is_char_boundary(4), s.is_char_boundary(5));
+    println!("   s.get(0..3) = {:?}, s.get(0..4) = {:?}", s.get(0..3), s.get(0..4));
+    println!("   first char: {:?}, last char: {:?}", s.chars().next(), s.chars().next_back());
+
+    // 5. Case mapping is Unicode-aware and can change the length.
+    println!("5. \"straße\".to_uppercase() = {:?}", "straße".to_uppercase());
+    println!("   \"İ\".to_lowercase().len() = {} (was {})", "İ".to_lowercase().len(), "İ".len());
+    println!("   \"title\".to_uppercase() = {:?} (no culture: same result everywhere)", "title".to_uppercase());
+    println!("   eq_ignore_ascii_case(\"VIP\", \"vip\") = {}", "VIP".eq_ignore_ascii_case("vip"));
+}</code></pre>
+<pre class="output">ascii      bytes  4  chars  4  utf16  4  graphemes 4   rule
+accent     bytes  5  chars  4  utf16  4  graphemes 4   café
+combining  bytes  6  chars  5  utf16  5  graphemes 4   café
+emoji      bytes  8  chars  2  utf16  4  graphemes 1   👍🏽
+flag       bytes  8  chars  2  utf16  4  graphemes 1   🇳🇱
+cjk        bytes  6  chars  2  utf16  2  graphemes 2   規則
+2. bytes: [63, 61, 66, c3, a9]
+   byte 0: 'c' = U+0063, 1 byte(s) in UTF-8
+   byte 1: 'a' = U+0061, 1 byte(s) in UTF-8
+   byte 2: 'f' = U+0066, 1 byte(s) in UTF-8
+   byte 3: 'é' = U+00E9, 2 byte(s) in UTF-8
+3. "café" == "cafe\u{301}": false
+4. &amp;s[0..3] = "caf"
+   s.is_char_boundary(4) = false, (5) = true
+   s.get(0..3) = Some("caf"), s.get(0..4) = None
+   first char: Some('c'), last char: Some('é')
+5. "straße".to_uppercase() = "STRASSE"
+   "İ".to_lowercase().len() = 3 (was 2)
+   "title".to_uppercase() = "TITLE" (no culture: same result everywhere)
+   eq_ignore_ascii_case("VIP", "vip") = true</pre>
+<p>Notice line 3 of section 1: "café" written with a combining accent looks identical but has 6 bytes and 5 <code>char</code>s, and section 3 shows the two spellings aren't <code>==</code>. Comparison is byte-wise. Section 5 shows case mapping changing the length ("ß" → "SS"), which is why <code>to_uppercase</code> returns a new <code>String</code> rather than working in place.</p>
+
+<h3 id="lab-3">Step 3 — slices of everything, and deref coercion</h3>
+<pre data-playground data-title="src/bin/slices.rs"><code class="language-rust">use std::mem::size_of;
+
+// One parameter type accepts every kind of text (deref coercion does the rest).
+fn describe(s: &amp;str) -&gt; String {
+    format!("{s:?} ({} bytes)", s.len())
+}
+
+// And one parameter type accepts every contiguous run of values.
+fn total(amounts: &amp;[i64]) -&gt; i64 {
+    amounts.iter().sum()
+}
+
+fn main() {
+    // 1. &amp;str from a literal, a String, a &amp;String, and a slice of either.
+    let owned = String::from("country == NL");
+    println!("1. {}", describe("literal"));
+    println!("   {}", describe(&amp;owned)); // &amp;String coerces to &amp;str
+    println!("   {}", describe(&amp;owned[11..])); // a sub-slice
+    println!("   {}", describe(owned.as_str())); // explicit
+
+    // 2. &amp;[T] from an array, a Vec, and a range of either.
+    let fixed: [i64; 4] = [100, 250, 40, 120];
+    let growable: Vec&lt;i64&gt; = fixed.to_vec();
+    println!("2. totals: {} {} {}", total(&amp;fixed), total(&amp;growable), total(&amp;growable[1..3]));
+
+    // 3. A slice is a fat pointer: address + length.
+    println!("3. size_of &amp;[i64] = {}, &amp;[i64; 4] = {}, Vec&lt;i64&gt; = {}",
+        size_of::&lt;&amp;[i64]&gt;(), size_of::&lt;&amp;[i64; 4]&gt;(), size_of::&lt;Vec&lt;i64&gt;&gt;());
+
+    // 4. Read-only slice methods.
+    let s = &amp;growable[..];
+    println!("4. first {:?} last {:?} get(9) {:?} contains(&amp;40) {}",
+        s.first(), s.last(), s.get(9), s.contains(&amp;40));
+    let (head, rest) = s.split_at(1);
+    println!("   split_at(1): {head:?} | {rest:?}");
+    println!("   windows(2): {:?}", s.windows(2).map(|w| w[1] - w[0]).collect::&lt;Vec&lt;_&gt;&gt;());
+    println!("   chunks(3):  {:?}", s.chunks(3).collect::&lt;Vec&lt;_&gt;&gt;());
+
+    // 5. Mutable slices: change elements in place, never the length.
+    let mut batch = growable.clone();
+    let part: &amp;mut [i64] = &amp;mut batch[1..];
+    part.sort();
+    part[0] *= 2;
+    println!("5. after sort + double first of [1..]: {batch:?}");
+    println!("   binary_search(&amp;120) in sorted part: {:?}", batch[1..].binary_search(&amp;120));
+
+    // 6. Splitting text into borrowed pieces: no copies.
+    let rule = "  amount &gt;= 100 AND country == NL  ";
+    let parts: Vec&lt;&amp;str&gt; = rule.split(" AND ").map(str::trim).collect();
+    println!("6. {parts:?}");
+    for p in &amp;parts {
+        let offset = p.as_ptr() as usize - rule.as_ptr() as usize;
+        println!("   {p:?} starts at byte {offset} of the original");
+    }
+    let n: u32 = "100".parse().unwrap();
+    println!("   \"100\".parse::&lt;u32&gt;() = {n}, \"1e3\".parse::&lt;u32&gt;() = {:?}", "1e3".parse::&lt;u32&gt;());
+}</code></pre>
+<pre class="output">1. "literal" (7 bytes)
+   "country == NL" (13 bytes)
+   "NL" (2 bytes)
+   "country == NL" (13 bytes)
+2. totals: 510 510 290
+3. size_of &amp;[i64] = 16, &amp;[i64; 4] = 8, Vec&lt;i64&gt; = 24
+4. first Some(100) last Some(120) get(9) None contains(&amp;40) true
+   split_at(1): [100] | [250, 40, 120]
+   windows(2): [150, -210, 80]
+   chunks(3):  [[100, 250, 40], [120]]
+5. after sort + double first of [1..]: [100, 80, 120, 250]
+   binary_search(&amp;120) in sorted part: Ok(1)
+6. ["amount &gt;= 100", "country == NL"]
+   "amount &gt;= 100" starts at byte 2 of the original
+   "country == NL" starts at byte 20 of the original
+   "100".parse::&lt;u32&gt;() = 100, "1e3".parse::&lt;u32&gt;() = Err(ParseIntError { kind: InvalidDigit })</pre>
+<p>Section 1: one <code>&amp;str</code> parameter accepted a literal, a <code>&amp;String</code>, a sub-slice and <code>as_str()</code>. Section 2: one <code>&amp;[i64]</code> parameter accepted an array, a <code>Vec</code> and a range. Section 6: <code>split</code> and <code>trim</code> return slices that point into the original rule (bytes 2 and 20), so no text was copied. And <code>parse::&lt;u32&gt;()</code> returns a <code>Result</code>, never an exception (chapter 2.6).</p>
+
+<h3 id="lab-4">Step 4 — the same questions in C#</h3>
+<pre data-title="l24cs/Program.cs (.NET 10, Release)"><code class="language-csharp">using System.Globalization;
+using System.Text;
+
+// 1. string.Length counts UTF-16 code units, not characters.
+foreach (var s in new[] { "rule", "café", "café", "👍🏽", "🇳🇱", "規則" })
+    Console.WriteLine($"1. Length {s.Length,2}  UTF-8 bytes {Encoding.UTF8.GetByteCount(s),2}  " +
+                      $"text elements {new StringInfo(s).LengthInTextElements}   {s}");
+
+// 2. The indexer returns a UTF-16 unit, which can be half of a character.
+var thumbs = "👍🏽";
+Console.WriteLine($"2. thumbs[0] = U+{(int)thumbs[0]:X4}, IsHighSurrogate = {char.IsHighSurrogate(thumbs[0])}");
+
+// 3. Same text on screen, different code points: ordinal vs culture-aware comparison.
+string composed = "café", decomposed = "café";
+Console.WriteLine($"3. Ordinal equal: {string.Equals(composed, decomposed, StringComparison.Ordinal)}, " +
+                  $"InvariantCulture equal: {string.Equals(composed, decomposed, StringComparison.InvariantCulture)}, " +
+                  $"after Normalize(): {composed.Normalize() == decomposed.Normalize()}");
+
+// 4. Culture changes case mapping: the Turkish dotted/dotless i.
+Console.WriteLine($"4. \"title\".ToUpper(tr-TR) = {"title".ToUpper(new CultureInfo("tr-TR"))}, " +
+                  $"ToUpperInvariant() = {"title".ToUpperInvariant()}");
+
+// 5. Substring copies; AsSpan is a borrowed view (like &amp;str).
+var rule = "amount &gt;= 100 AND country == NL";
+long before = GC.GetAllocatedBytesForCurrentThread();
+string sub = rule.Substring(18);
+long afterSub = GC.GetAllocatedBytesForCurrentThread();
+ReadOnlySpan&lt;char&gt; span = rule.AsSpan(18);
+long afterSpan = GC.GetAllocatedBytesForCurrentThread();
+Console.WriteLine($"5. Substring(18) allocated {afterSub - before} bytes: \"{sub}\"; " +
+                  $"AsSpan(18) allocated {afterSpan - afterSub} bytes: \"{span.ToString()}\"");</code></pre>
+<pre class="output">1. Length  4  UTF-8 bytes  4  text elements 4   rule
+1. Length  4  UTF-8 bytes  5  text elements 4   café
+1. Length  5  UTF-8 bytes  6  text elements 4   café
+1. Length  4  UTF-8 bytes  8  text elements 1   👍🏽
+1. Length  4  UTF-8 bytes  8  text elements 1   🇳🇱
+1. Length  2  UTF-8 bytes  6  text elements 2   規則
+2. thumbs[0] = U+D83D, IsHighSurrogate = True
+3. Ordinal equal: False, InvariantCulture equal: True, after Normalize(): True
+4. "title".ToUpper(tr-TR) = TİTLE, ToUpperInvariant() = TITLE
+5. Substring(18) allocated 48 bytes: "country == NL"; AsSpan(18) allocated 0 bytes: "country == NL"</pre>
+<p>Line by line against Rust: C#'s <code>Length</code> agrees with Rust's <code>encode_utf16().count()</code>, and <code>StringInfo</code>'s text elements agree with <code>unicode-segmentation</code>'s graphemes for all six strings. The indexer handed back a lone surrogate (<code>U+D83D</code>), half of 👍, which Rust's API makes impossible to obtain as a <code>char</code>. Culture-aware comparison called the two cafés equal where ordinal comparison, Rust's only built-in kind, didn't. And the Turkish upper-casing shows why Rust's standard library keeps culture out entirely.</p>
+
+<h3 id="lab-5">Step 5 — what borrowing saves: counting allocations</h3>
+<p>A global allocator that counts every allocation, and four versions of the same rule tokenizer (split each line into tokens, normalise each condition's field name) run over 10,000 lines:</p>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::alloc::{GlobalAlloc, Layout, System};
+use std::borrow::Cow;
+use std::hint::black_box;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::time::Instant;
+
+// A global allocator that counts every allocation, then defers to the system one.
+struct Counting;
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&amp;self, layout: Layout) -&gt; *mut u8 {
+        ALLOCS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(layout.size(), Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&amp;self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+// Approach A: every token becomes its own String; every field is lowercased into a new String.
+fn owned(lines: &amp;[String]) -&gt; usize {
+    let mut fields = 0;
+    for line in lines {
+        let tokens: Vec&lt;String&gt; = line.split_whitespace().map(|t| t.to_string()).collect();
+        for cond in tokens.chunks(4) {
+            let field: String = cond[0].to_lowercase();
+            fields += black_box(field).len();
+        }
+    }
+    fields
+}
+
+// Approach B: tokens borrow from the line; fields are still lowercased into new Strings.
+fn borrowed(lines: &amp;[String]) -&gt; usize {
+    let mut fields = 0;
+    for line in lines {
+        let tokens: Vec&lt;&amp;str&gt; = line.split_whitespace().collect();
+        for cond in tokens.chunks(4) {
+            let field: String = cond[0].to_lowercase();
+            fields += black_box(field).len();
+        }
+    }
+    fields
+}
+
+// Approach C: borrow, and only allocate a lowercase copy when the field actually needs one.
+fn normalize(field: &amp;str) -&gt; Cow&lt;'_, str&gt; {
+    if field.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(field.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(field)
+    }
+}
+
+fn borrowed_cow(lines: &amp;[String]) -&gt; usize {
+    let mut fields = 0;
+    for line in lines {
+        let tokens: Vec&lt;&amp;str&gt; = line.split_whitespace().collect();
+        for cond in tokens.chunks(4) {
+            fields += black_box(normalize(cond[0])).len();
+        }
+    }
+    fields
+}
+
+// Approach D: as C, but reuse one token buffer for every line instead of a new Vec per line.
+fn reused_buffer(lines: &amp;[String]) -&gt; usize {
+    let mut fields = 0;
+    let mut tokens: Vec&lt;&amp;str&gt; = Vec::new();
+    for line in lines {
+        tokens.clear(); // keeps the capacity
+        tokens.extend(line.split_whitespace());
+        for cond in tokens.chunks(4) {
+            fields += black_box(normalize(cond[0])).len();
+        }
+    }
+    fields
+}
+
+fn measure(name: &amp;str, lines: &amp;[String], f: fn(&amp;[String]) -&gt; usize) {
+    let (a0, b0) = (ALLOCS.load(Relaxed), BYTES.load(Relaxed));
+    let result = f(lines);
+    let (allocs, bytes) = (ALLOCS.load(Relaxed) - a0, BYTES.load(Relaxed) - b0);
+    let best = (0..5)
+        .map(|_| {
+            let t = Instant::now();
+            black_box(f(black_box(lines)));
+            t.elapsed().as_secs_f64() * 1e3
+        })
+        .fold(f64::INFINITY, f64::min);
+    println!("{name:&lt;26} {allocs:&gt;7} allocs {:&gt;8.1} KB   {best:&gt;6.2} ms   (checksum {result})",
+        bytes as f64 / 1024.0);
+}
+
+fn main() {
+    // 10,000 rule lines with 3 conditions each; one line in ten spells a field in capitals.
+    let lines: Vec&lt;String&gt; = (0..10_000)
+        .map(|i| {
+            let field = if i % 10 == 0 { "Amount" } else { "amount" };
+            format!("{field} &gt;= {} AND country == NL AND tier == gold", i % 500)
+        })
+        .collect();
+
+    println!("10,000 lines, 30,000 conditions; allocations counted by a global allocator:");
+    measure("A: String per token", &amp;lines, owned);
+    measure("B: &amp;str tokens", &amp;lines, borrowed);
+    measure("C: &amp;str tokens + Cow", &amp;lines, borrowed_cow);
+    measure("D: C + one reused Vec", &amp;lines, reused_buffer);
+}</code></pre>
+<pre class="output">10,000 lines, 30,000 conditions; allocations counted by a global allocator:
+A: String per token         170000 allocs   7097.5 KB     4.17 ms   (checksum 170000)
+B: &amp;str tokens               60000 allocs   4541.0 KB     2.10 ms   (checksum 170000)
+C: &amp;str tokens + Cow         31000 allocs   4380.9 KB     1.45 ms   (checksum 170000)
+D: C + one reused Vec         1003 allocs      6.3 KB     0.55 ms   (checksum 170000)</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · allocations and time for one tokenizer, four ways</span>
+  <div class="chart-box"><canvas id="alloc-chart" aria-label="Allocations fall from 170,000 to 1,003 and time from 4.17 ms to 0.55 ms as the tokenizer moves from owned Strings to borrowed slices, Cow and a reused buffer"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Bars are allocations (log scale, left axis); the line is time in ms (right axis), the median of 3 program runs of best-of-5 (A 4.17, B 2.17, C 1.45, D 0.55 ms). Allocation counts are exact and identical on every run. Per line: A makes 17 allocations (3 for the growing token <code>Vec</code>, 11 token <code>String</code>s, 3 lowercase copies), B 6, C 3.1, and D one per ten lines (the occasional capitalised field). Timings include the counting allocator's own small overhead.</figcaption>
+</figure>
+<p>Borrowed tokens (B) removed 11 allocations per line. <code>Cow</code> (C) removed the lowercase copies that weren't needed. Reusing one token buffer (D, <code>clear()</code> keeps capacity) removed the rest: 170× fewer allocations and 7.6× faster than the C#-style "a string per token" version. This is the core technique of zero-copy parsing. Chapter 6.2 returns to allocation-aware design, and chapter 7.1 applies it with <code>serde</code>'s borrowed deserialization.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs with <code>assert!</code>s and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — initials, for every alphabet <span class="difficulty">★☆☆</span></div>
+  <p>Write <code>fn initials(name: &amp;str) -&gt; String</code> that returns the uppercased first letter of each word: <code>"ada lovelace"</code> → <code>"AL"</code>, <code>"ægir østergaard"</code> → <code>"ÆØ"</code>, extra spaces ignored, <code>""</code> → <code>""</code>. Don't use byte indexing.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">// Initials of each word, uppercased, correct for any script.
+fn initials(name: &amp;str) -&gt; String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .flat_map(char::to_uppercase) // to_uppercase yields 1+ chars ('ß' -&gt; "SS")
+        .collect()
+}
+
+fn main() {
+    for name in ["ada lovelace", "  grace   brewster hopper ", "ægir østergaard", "émile zola", ""] {
+        println!("{name:?} -&gt; {:?}", initials(name));
+    }
+    assert_eq!(initials("ada lovelace"), "AL");
+    assert_eq!(initials("ægir østergaard"), "ÆØ");
+    assert_eq!(initials(""), "");
+    println!("ok");
+}</code></pre>
+<pre class="output">"ada lovelace" -&gt; "AL"
+"  grace   brewster hopper " -&gt; "GBH"
+"ægir østergaard" -&gt; "ÆØ"
+"émile zola" -&gt; "ÉZ"
+"" -&gt; ""
+ok</pre>
+  <p><code>word.chars().next()</code> gets the first <code>char</code>, whatever its byte length; <code>&amp;word[0..1]</code> would panic on "ægir", because "æ" is two bytes. <code>char::to_uppercase</code> returns an <em>iterator</em> because one char can uppercase to several ("ß" → "SS"), so <code>flat_map</code> flattens it. For names that start with a combining sequence you'd take the first grapheme instead (<code>unicode-segmentation</code>).</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — a zero-copy condition parser <span class="difficulty">★★☆ product skill</span></div>
+  <p>Write <code>fn parse_condition(src: &amp;str) -&gt; Option&lt;(&amp;str, &amp;str, &amp;str)&gt;</code> that splits <code>"amount &gt;= 100"</code> into field, operator and value (operators <code>&gt;= &lt;= == != &gt; &lt;</code>), trims whitespace, rejects an empty field or value, and copies nothing. Prove in a test that the returned field points into the input.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">// Split "field op value" into three slices of the input, without copying.
+fn parse_condition(src: &amp;str) -&gt; Option&lt;(&amp;str, &amp;str, &amp;str)&gt; {
+    // Two-character operators first, so "&gt;=" isn't read as "&gt;".
+    for op in ["&gt;=", "&lt;=", "==", "!=", "&gt;", "&lt;"] {
+        if let Some((field, value)) = src.split_once(op) {
+            let (field, value) = (field.trim(), value.trim());
+            if field.is_empty() || value.is_empty() {
+                return None;
+            }
+            return Some((field, op, value));
+        }
+    }
+    None
+}
+
+fn main() {
+    let input = String::from("  amount &gt;= 100 ");
+    let (field, op, value) = parse_condition(&amp;input).unwrap();
+    println!("{field:?} {op:?} {value:?}");
+
+    // Zero-copy: field and value point into `input`'s own buffer.
+    let range = input.as_bytes().as_ptr_range();
+    assert!(range.contains(&amp;field.as_ptr()) &amp;&amp; range.contains(&amp;value.as_ptr()));
+
+    assert_eq!(parse_condition("country==NL"), Some(("country", "==", "NL")));
+    assert_eq!(parse_condition("tier != gold"), Some(("tier", "!=", "gold")));
+    assert_eq!(parse_condition("age &lt; 18"), Some(("age", "&lt;", "18")));
+    assert_eq!(parse_condition("tier"), None);
+    assert_eq!(parse_condition("== NL"), None);
+    println!("ok");
+}</code></pre>
+<pre class="output">"amount" "&gt;=" "100"
+ok</pre>
+  <p>The two-character operators are tried first, otherwise <code>"amount &gt;= 100"</code> would split at <code>&gt;</code> and give the value <code>"= 100"</code>. <code>split_once</code> and <code>trim</code> return slices of <code>src</code>, so the output borrows from the input. That's why the signature needs no lifetime annotation: with one reference parameter, the compiler ties the returned references to it (lifetime elision, chapter 2.11). The operator comes from a literal, a <code>&amp;'static str</code>, which coerces to the shorter lifetime. The pointer-range assertion is how you test zero-copy claims.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — escape CSV fields with Cow <span class="difficulty">★★☆ product skill</span></div>
+  <p>Write <code>fn escape_csv(field: &amp;str) -&gt; Cow&lt;'_, str&gt;</code>: if the field contains a comma, a double quote or a newline, return it wrapped in quotes with inner quotes doubled; otherwise return it borrowed. Count how many fields of an export were borrowed.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::borrow::Cow;
+
+// Quote a CSV field only when it needs it; most fields are returned as-is, borrowed.
+fn escape_csv(field: &amp;str) -&gt; Cow&lt;'_, str&gt; {
+    if field.contains([',', '"', '\n']) {
+        Cow::Owned(format!("\"{}\"", field.replace('"', "\"\"")))
+    } else {
+        Cow::Borrowed(field)
+    }
+}
+
+fn main() {
+    let fields = ["approve", "amount, net", "say \"hi\"", "NL"];
+    let escaped: Vec&lt;Cow&lt;str&gt;&gt; = fields.iter().map(|f| escape_csv(f)).collect();
+    println!("{}", escaped.join(","));
+    let borrowed = escaped.iter().filter(|c| matches!(c, Cow::Borrowed(_))).count();
+    println!("{borrowed} of {} fields borrowed, {} allocated", escaped.len(), escaped.len() - borrowed);
+
+    assert!(matches!(escape_csv("plain"), Cow::Borrowed("plain")));
+    assert_eq!(escape_csv("a,b"), "\"a,b\"");
+    assert_eq!(escape_csv("say \"hi\""), "\"say \"\"hi\"\"\"");
+    println!("ok");
+}</code></pre>
+<pre class="output">approve,"amount, net","say ""hi""",NL
+2 of 4 fields borrowed, 2 allocated
+ok</pre>
+  <p><code>contains</code> accepts an array of chars as a pattern. <code>Cow&lt;str&gt;</code> compares equal to <code>&amp;str</code> and joins like a string, so callers barely notice it. In a real export most fields need no escaping, so most rows are written without a single allocation for their fields.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which string type where?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Use</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Function parameter that reads text</td><td><code>&amp;str</code></td><td>Accepts literals, <code>String</code>s and slices (deref coercion)</td></tr>
+    <tr><td>Function parameter that reads a list</td><td><code>&amp;[T]</code></td><td>Accepts arrays, <code>Vec</code>s and ranges</td></tr>
+    <tr><td>Struct field</td><td><code>String</code> (or <code>Arc&lt;str&gt;</code> if shared and immutable)</td><td>The struct owns its data; no lifetime parameters</td></tr>
+    <tr><td>Returning new text</td><td><code>String</code></td><td>The caller takes ownership; a move is cheap</td></tr>
+    <tr><td>Returning part of an input</td><td><code>&amp;str</code> tied to that input</td><td>Zero-copy (Exercise 2)</td></tr>
+    <tr><td>Returning the input, changed only sometimes</td><td><code>Cow&lt;'_, str&gt;</code></td><td>Allocate only when needed (Exercise 3)</td></tr>
+    <tr><td>Building text in a loop</td><td>One <code>String</code>, <code>push_str</code>/<code>write!</code>, <code>with_capacity</code> or <code>clear()</code></td><td>One buffer instead of many (Lab step 5)</td></tr>
+    <tr><td>Bytes that may not be UTF-8</td><td><code>Vec&lt;u8&gt;</code>/<code>&amp;[u8]</code>, then <code>from_utf8</code></td><td>Validation happens once, explicitly</td></tr>
+    <tr><td>File paths, OS strings</td><td><code>PathBuf</code>/<code>&amp;Path</code>, <code>OsString</code></td><td>Platform strings aren't always UTF-8</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: strings</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Encoding</td><td>UTF-16</td><td>UTF-8</td></tr>
+    <tr><td>Owned text</td><td><code>string</code> (immutable) + <code>StringBuilder</code></td><td><code>String</code> (mutable, growable)</td></tr>
+    <tr><td>Borrowed view</td><td><code>ReadOnlySpan&lt;char&gt;</code> (ref struct)</td><td><code>&amp;str</code>, usable anywhere a borrow is</td></tr>
+    <tr><td><code>Length</code> / <code>len()</code></td><td>UTF-16 code units</td><td>UTF-8 bytes</td></tr>
+    <tr><td><code>s[i]</code></td><td>A UTF-16 unit (may be half a character)</td><td>Compile error; choose bytes, chars or a byte-range slice</td></tr>
+    <tr><td>Substring</td><td><code>Substring</code> copies; <code>AsSpan</code> doesn't</td><td><code>&amp;s[a..b]</code> never copies; <code>.to_string()</code> does</td></tr>
+    <tr><td>Bad substring range</td><td><code>ArgumentOutOfRangeException</code>; can split surrogates silently</td><td>Panic on out-of-range or mid-character; <code>get</code> returns <code>None</code></td></tr>
+    <tr><td>Equality</td><td>Ordinal by default for <code>==</code>; culture options</td><td>Byte-wise only (in std)</td></tr>
+    <tr><td>Case mapping</td><td>Culture-dependent unless <code>Invariant</code></td><td>Unicode default mapping, no culture</td></tr>
+    <tr><td>Null</td><td><code>string?</code> can be null</td><td><code>Option&lt;String&gt;</code> / <code>Option&lt;&amp;str&gt;</code></td></tr>
+    <tr><td>Invalid text</td><td>Lone surrogates allowed</td><td>Impossible in <code>str</code>; checked at the byte → text boundary</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Treating <code>len()</code> as a character count</div>
+  <p>It's bytes. Use <code>chars().count()</code> for scalar values or graphemes for what users see, and size database columns and UI limits with that difference in mind.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Slicing with offsets from outside the string</div>
+  <p><code>&amp;s[0..n]</code> with a fixed <code>n</code> ("truncate to 20") panics on multi-byte text. Use <code>s.get(..n)</code>, <code>char_indices</code> to find a boundary, or truncate by graphemes for display.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>&amp;String</code> and <code>String</code> parameters</div>
+  <p>Take <code>&amp;str</code>. A <code>String</code> parameter forces callers to give up or clone their text; <code>&amp;String</code> rejects literals and slices for no benefit.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Reversing or truncating by <code>char</code></div>
+  <p><code>s.chars().rev()</code> separates combining marks from their letters and splits flags and emoji sequences. For anything a user sees, work in graphemes.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Comparing user-visible text byte-wise</div>
+  <p>"café" composed and decomposed aren't <code>==</code>. Normalize (NFC) at the boundary where text enters the system, and decide on case-folding rules explicitly.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ A <code>String</code> per token</div>
+  <p>Allocating a <code>String</code> for every piece of parsed input is the C# reflex. Slice instead, use <code>Cow</code> for occasional changes, and reuse buffers (Lab step 5).</p></div>
+
+<h2 id="real-world">Real-world view: text in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule parsing is zero-copy:</strong> the lexer returns <code>&amp;str</code> tokens into the rule source, and the parser builds an AST that either borrows from the source (with lifetimes, chapter 2.11) or converts the few names it keeps into owned or interned strings at the end.</li>
+    <li><strong>Field names are interned:</strong> compiled rules refer to fields by <code>Arc&lt;str&gt;</code> or a numeric id, so evaluation compares integers, not text (chapters 9.2–9.3).</li>
+    <li><strong>Normalize at the edge:</strong> decide once, where requests enter (API, file import), on Unicode normalization (NFC), trimming and case rules. Inside the engine, text is then compared byte-wise, fast and predictably, with no culture surprises.</li>
+    <li><strong>Payloads stay bytes until needed:</strong> the workflow engine stores step payloads as <code>Vec&lt;u8&gt;</code>/<code>Bytes</code> and only validates or deserializes them when a step reads them (chapters 7.1, 10.3).</li>
+    <li><strong>Review checklist:</strong> <code>&amp;s[..n]</code> with outside offsets; <code>len()</code> used as a character count; <code>String</code>/<code>&amp;String</code> parameters; <code>to_string()</code> per token in parsers; <code>to_lowercase</code> where ASCII-only <code>eq_ignore_ascii_case</code> was meant; user-visible truncation by <code>char</code>.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.4">
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What is <code>"café".len()</code>?</div>
+    <ol class="options">
+      <li data-key="a">4, the number of characters</li>
+      <li data-key="b">4, the number of UTF-16 units</li>
+      <li data-key="c">5: <code>len()</code> counts UTF-8 bytes, and "é" takes two</li>
+      <li data-key="d">8: each char is 2 bytes</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>chars().count()</code>.</p>
+      <p data-for="b">That's C#'s <code>Length</code>.</p>
+      <p data-for="c">Correct (Lab step 2).</p>
+      <p data-for="d">UTF-8 is variable-width: 1 byte for ASCII.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which is the most flexible parameter type for a function that only reads text?</div>
+    <ol class="options">
+      <li data-key="a"><code>&amp;str</code>, which accepts literals, <code>&amp;String</code> (via deref coercion) and slices</li>
+      <li data-key="b"><code>String</code></li>
+      <li data-key="c"><code>&amp;String</code></li>
+      <li data-key="d"><code>Cow&lt;str&gt;</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 3).</p>
+      <p data-for="b">It forces callers to give up or clone their text.</p>
+      <p data-for="c">It rejects literals and slices; Clippy flags it (<code>ptr_arg</code>).</p>
+      <p data-for="d"><code>Cow</code> is mostly a <em>return</em> type.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A display function truncates names with <code>&amp;name[0..10]</code>. What happens with <code>"Søren Kierkegaard"</code>, and what's the fix?</div>
+    <ol class="options">
+      <li data-key="a">It returns 10 characters</li>
+      <li data-key="b">Compile error</li>
+      <li data-key="c">It returns garbage bytes</li>
+      <li data-key="d">It works here only by luck (byte 10 happens to be a boundary). On other names it panics mid-character. Use <code>get</code>, <code>char_indices</code> or graphemes</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It returns 10 <em>bytes</em>: "Søren Kie" (ø is 2 bytes).</p>
+      <p data-for="b">Byte-range slicing compiles; boundaries are checked at run time.</p>
+      <p data-for="c">Rust never produces an invalid <code>&amp;str</code>; it panics instead.</p>
+      <p data-for="d">Correct. Try it in Figure 2.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why doesn't Rust allow <code>s[0]</code> on a <code>String</code>?</div>
+    <ol class="options">
+      <li data-key="a">Strings are immutable</li>
+      <li data-key="b">It's ambiguous (a byte or a character?) and finding the n-th character can't be O(1) in UTF-8, so you must say which you mean</li>
+      <li data-key="c">Indexing is unsafe in Rust</li>
+      <li data-key="d">It's allowed with <code>unsafe</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>String</code> is mutable.</p>
+      <p data-for="b">Correct: the Book's two reasons.</p>
+      <p data-for="c">Slice indexing is safe and bounds-checked.</p>
+      <p data-for="d">There's no integer <code>Index</code> impl for <code>str</code> at all.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What is a <code>&amp;[u64]</code> in memory on a 64-bit target?</div>
+    <ol class="options">
+      <li data-key="a">8 bytes: an address</li>
+      <li data-key="b">24 bytes: like a <code>Vec</code></li>
+      <li data-key="c">16 bytes: an address and a length (a fat pointer)</li>
+      <li data-key="d">A copy of the elements</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's a reference to a sized type, like <code>&amp;[u64; 4]</code>.</p>
+      <p data-for="b">A slice has no capacity: it can't grow.</p>
+      <p data-for="c">Correct (Lab step 3, section 3).</p>
+      <p data-for="d">Slices never copy.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>let full = base + "-set";</code> compiles, but a later <code>println!("{base}")</code> doesn't. Why?</div>
+    <ol class="options">
+      <li data-key="a"><code>+</code> takes the left <code>String</code> by value and appends to its buffer, so <code>base</code> is moved (E0382)</li>
+      <li data-key="b"><code>+</code> frees <code>base</code></li>
+      <li data-key="c">String literals can't be added</li>
+      <li data-key="d"><code>base</code> must be <code>mut</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (e6.rs). Use <code>format!</code> to keep both.</p>
+      <p data-for="b">Its buffer lives on inside <code>full</code>.</p>
+      <p data-for="c">The right side may be any <code>&amp;str</code>.</p>
+      <p data-for="d">Mutability isn't the issue.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">When is returning <code>Cow&lt;'_, str&gt;</code> the right choice?</div>
+    <ol class="options">
+      <li data-key="a">Always, instead of <code>String</code></li>
+      <li data-key="b">When the function always builds new text</li>
+      <li data-key="c">When the text must be shared across threads</li>
+      <li data-key="d">When the result is usually the input unchanged but sometimes needs a modified copy</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">It adds a branch and a lifetime for no gain when you always allocate.</p>
+      <p data-for="b">Then return <code>String</code>.</p>
+      <p data-for="c">That's <code>Arc&lt;str&gt;</code>.</p>
+      <p data-for="d">Correct (Exercise 3, Lab step 5's approach C).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text"><code>let verb = first_word(&amp;line); line.clear(); println!("{verb}");</code> fails to compile. What would go wrong if it compiled?</div>
+    <ol class="options">
+      <li data-key="a">Nothing: <code>verb</code> is a copy</li>
+      <li data-key="b"><code>verb</code> points into <code>line</code>'s buffer, so after <code>clear</code> (or any reallocation) it would show text that no longer exists</li>
+      <li data-key="c"><code>clear</code> would panic</li>
+      <li data-key="d">It would print an empty string</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Slices borrow; they don't copy.</p>
+      <p data-for="b">Correct (e4.rs, Figure 3 step 6).</p>
+      <p data-for="c"><code>clear</code> is fine on its own.</p>
+      <p data-for="d">That would depend on memory contents, which is exactly the bug Rust rules out.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How many <code>char</code>s and grapheme clusters are in 👍🏽?</div>
+    <ol class="options">
+      <li data-key="a">1 and 1</li>
+      <li data-key="b">4 and 1</li>
+      <li data-key="c">2 and 1: thumbs up + skin-tone modifier, displayed as one character</li>
+      <li data-key="d">2 and 2</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">The modifier is a separate scalar value.</p>
+      <p data-for="b">4 is its UTF-16 length (C#), and 8 its byte length.</p>
+      <p data-for="c">Correct (Lab step 2).</p>
+      <p data-for="d">Grapheme rules join the modifier to its base.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your C# service upper-cases rule keywords with <code>ToUpper()</code>, and a customer in Turkey reports that rules with "if" stopped matching. What happens with Rust's <code>to_uppercase()</code>?</div>
+    <ol class="options">
+      <li data-key="a">It always gives "IF": Rust's standard library uses Unicode's default case mapping with no culture, so the result doesn't depend on the machine's locale</li>
+      <li data-key="b">The same bug: it gives "İF" on Turkish machines</li>
+      <li data-key="c">It panics on non-ASCII</li>
+      <li data-key="d">It returns the input unchanged</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab steps 2 and 4).</p>
+      <p data-for="b">There's no culture setting in std.</p>
+      <p data-for="c">It handles all of Unicode.</p>
+      <p data-for="d">It upper-cases.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li><code>String</code> owns growable UTF-8 text (24 bytes: pointer, length, capacity); <code>&amp;str</code> borrows it, or a literal (16 bytes: pointer, length). Store and return <code>String</code>; accept <code>&amp;str</code>.</li>
+  <li>Slices <code>&amp;[T]</code>/<code>&amp;mut [T]</code> are bounds-checked fat pointers into arrays and <code>Vec</code>s. Deref coercion lets one <code>&amp;str</code> or <code>&amp;[T]</code> parameter accept every caller.</li>
+  <li>Text has several lengths: bytes (<code>len</code>), <code>char</code>s, UTF-16 units (C#'s <code>Length</code>) and graphemes. There's no <code>s[i]</code>; slicing is by byte range and panics mid-character (<code>get</code> returns <code>None</code>).</li>
+  <li>Slices are borrows: they can't outlive or watch their <code>String</code> change. <code>+</code> consumes its left side; <code>format!</code> doesn't. <code>Cow</code> returns borrowed text when possible and owned text when necessary.</li>
+  <li>Borrowing, <code>Cow</code> and buffer reuse took a tokenizer from 170,000 allocations to 1,003, and from 4.17 ms to 0.55 ms. Comparison and case mapping are byte-wise and culture-free, unlike .NET's defaults.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">String</li><li class="chip">string slice</li><li class="chip">slice</li><li class="chip">fat pointer</li><li class="chip">deref coercion</li>
+  <li class="chip">UTF-8</li><li class="chip">char</li><li class="chip">grapheme cluster</li><li class="chip">char boundary</li><li class="chip">Cow</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch08-02-strings.html">The Rust Programming Language — “Storing UTF-8 Encoded Text with Strings”</a> and <a href="https://doc.rust-lang.org/book/ch04-03-slices.html">“The Slice Type”</a><span class="why">The sources of the indexing rationale, the three views of text, and the <code>first_word</code> example.</span></li>
+  <li><span class="ref-type doc">Doc</span>Standard library: <a href="https://doc.rust-lang.org/std/primitive.str.html"><code>str</code></a>, <a href="https://doc.rust-lang.org/std/string/struct.String.html"><code>String</code></a>, <a href="https://doc.rust-lang.org/std/primitive.char.html"><code>char</code></a>, <a href="https://doc.rust-lang.org/std/primitive.slice.html">slices</a>, <a href="https://doc.rust-lang.org/std/borrow/enum.Cow.html"><code>Cow</code></a><span class="why">Every method used here, and the exact guarantees (UTF-8 validity, char = scalar value).</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://docs.rs/unicode-segmentation/latest/unicode_segmentation/"><code>unicode-segmentation</code></a> and <a href="https://www.unicode.org/reports/tr29/">Unicode Standard Annex #29 — Text Segmentation</a><span class="why">How grapheme clusters are defined, and the crate that implements the rules.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://9p.io/sys/doc/utf.html">“Hello World or Καλημέρα κόσμε or こんにちは 世界”</a> — Rob Pike, Ken Thompson, USENIX Winter 1993<span class="why">UTF-8's designers on why they chose it for Plan 9: the reasoning behind ASCII compatibility and self-synchronisation.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://www.rfc-editor.org/rfc/rfc3629">RFC 3629 — UTF-8</a> and <a href="https://utf8everywhere.org/">UTF-8 Everywhere</a><span class="why">The encoding's definition, and the case for UTF-8 over UTF-16 as a program's internal encoding.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/api/system.string.length"><code>String.Length</code></a>, <a href="https://learn.microsoft.com/dotnet/standard/base-types/character-encoding-introduction">Character encoding in .NET</a>, <a href="https://learn.microsoft.com/dotnet/standard/base-types/best-practices-strings">Best practices for comparing strings</a>, <a href="https://learn.microsoft.com/dotnet/standard/memory-and-spans/">Memory and spans</a><span class="why">The .NET side: UTF-16 code units, surrogates, culture-sensitive comparison, and <code>Span&lt;T&gt;</code>.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=MijmeoH9LT4">“Characters, Symbols and the Unicode Miracle”</a> — Computerphile<span class="why">Tom Scott's explanation of how UTF-8 works, the clearest 10 minutes on the subject.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- UTF-8 explorer (Figure 2) ----------
+  // How Rust's {:?} prints a non-ASCII char inside a panic message.
+  var ESC_RE = /[\p{Grapheme_Extend}\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cn}\p{Co}\p{Zs}]/u;
+  function rustDebugChar(c) {
+    var cp = c.codePointAt(0);
+    var esc = cp === 0x115F || cp === 0x1160 || cp === 0x3164 || cp === 0xFFA0 ||
+      (cp !== 0xFF9E && cp !== 0xFF9F && ESC_RE.test(c));
+    return esc ? "\\u{" + cp.toString(16) + "}" : c;
+  }
+  var enc = new TextEncoder();
+  function analyze(s) {
+    var bytes = Array.from(enc.encode(s));
+    var chars = Array.from(s); // splits by code point, like Rust's chars()
+    var bounds = [], at = 0;
+    chars.forEach(function (c) { bounds.push(at); at += enc.encode(c).length; });
+    bounds.push(at);
+    var seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    var graphemes = Array.from(seg.segment(s), function (g) { return g.segment; });
+    return { bytes: bytes, chars: chars, utf16: s.length, graphemes: graphemes, bounds: bounds };
+  }
+  // What `&s[a..b]` does in Rust 1.99: the slice, or the exact panic message.
+  function sliceStr(s, a, b) {
+    var bytes = enc.encode(s), len = bytes.length, starts = [], at = 0, chars = Array.from(s);
+    chars.forEach(function (c) { starts.push(at); at += enc.encode(c).length; });
+    function charAt(i) { // the char whose bytes contain byte i
+      for (var k = 0; k < starts.length; k++) {
+        var end = k + 1 < starts.length ? starts[k + 1] : len;
+        if (i >= starts[k] && i < end) return { c: chars[k], from: starts[k], to: end };
+      }
+    }
+    function boundary(i) { return i === len || starts.indexOf(i) >= 0; }
+    if (a > len) return { ok: false, text: "start byte index " + a + " is out of bounds for string of length " + len };
+    if (b > len) return { ok: false, text: "end byte index " + b + " is out of bounds for string of length " + len };
+    if (a > b) return { ok: false, text: "byte range starts at " + a + " but ends at " + b };
+    if (!boundary(a)) { var x = charAt(a); return { ok: false, text: "start byte index " + a + " is not a char boundary; it is inside '" + rustDebugChar(x.c) + "' (bytes " + x.from + ".." + x.to + " of string)" }; }
+    if (!boundary(b)) { var y = charAt(b); return { ok: false, text: "end byte index " + b + " is not a char boundary; it is inside '" + rustDebugChar(y.c) + "' (bytes " + y.from + ".." + y.to + " of string)" }; }
+    return { ok: true, text: new TextDecoder().decode(bytes.slice(a, b)) };
+  }
+  window.__ux = { analyze: analyze, sliceStr: sliceStr, rustDebugChar: rustDebugChar };
+
+  function el(id) { return document.getElementById(id); }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  var PRESETS = ["café 👍🏽", "café", "🇳🇱🇩🇪", "👨‍👩‍👧‍👦", "Søren Kierkegaard", "नमस्ते", "規則 v7", "straße"];
+  PRESETS.forEach(function (p) {
+    var b = document.createElement("button"); b.type = "button"; b.textContent = p;
+    b.onclick = function () { el("ux-text").value = p; render(); };
+    el("ux-presets").appendChild(b);
+  });
+  function render() {
+    var s = el("ux-text").value, r = analyze(s);
+    el("ux-n-bytes").textContent = r.bytes.length;
+    el("ux-n-chars").textContent = r.chars.length;
+    el("ux-n-utf16").textContent = r.utf16;
+    el("ux-n-graph").textContent = r.graphemes.length;
+    var h = "", ci = 0, bi = 0;
+    r.graphemes.forEach(function (g) {
+      h += '<div class="ux-g">';
+      Array.from(g).forEach(function (c) {
+        var cp = c.codePointAt(0), shown = rustDebugChar(c);
+        var glyph = shown !== c || c === " " ? (c === " " ? "␠" : "◌") : c;
+        h += '<div class="ux-c k' + (ci % 2) + '"><div class="ux-glyph">' + esc(glyph) + '</div><div class="ux-cp">U+' + cp.toString(16).toUpperCase().padStart(4, "0") + '</div><div class="ux-bytes">';
+        Array.from(enc.encode(c)).forEach(function (byte) {
+          h += '<span class="ux-b">' + byte.toString(16).padStart(2, "0") + "<i>" + bi + "</i></span>"; bi++;
+        });
+        h += "</div></div>"; ci++;
+      });
+      h += "</div>";
+    });
+    el("ux-map").innerHTML = h || '<span class="ux-legend">(empty string: 0 bytes)</span>';
+    el("ux-a").max = el("ux-b").max = r.bytes.length + 1;
+    slice();
+  }
+  function slice() {
+    var a = parseInt(el("ux-a").value, 10), b = parseInt(el("ux-b").value, 10), out = el("ux-out");
+    if (!(a >= 0) || !(b >= 0)) { out.className = "ux-out"; out.textContent = "Enter two byte indices."; return; }
+    var r = sliceStr(el("ux-text").value, a, b);
+    out.className = "ux-out " + (r.ok ? "ok" : "bad");
+    out.textContent = r.ok ? "→ " + JSON.stringify(r.text) + "  (" + (b - a) + " bytes)" : "panicked: " + r.text;
+  }
+  el("ux-text").oninput = render;
+  el("ux-a").oninput = slice; el("ux-b").oninput = slice;
+  render();
+
+  // ---------- allocations and time (Figure 4) ----------
+  Course.chart("alloc-chart", function (c) {
+    return {
+      data: {
+        labels: ["A: String per token", "B: &str tokens", "C: &str + Cow", "D: C + reused Vec"],
+        datasets: [
+          { type: "bar", label: "allocations", data: [170000, 60000, 31000, 1003], backgroundColor: [c.red, c.amber, c.teal, c.green], borderRadius: 5, yAxisID: "y" },
+          { type: "line", label: "time (ms, median)", data: [4.17, 2.17, 1.45, 0.55], borderColor: c.accent, backgroundColor: c.accent, yAxisID: "y1", tension: 0.1 }
+        ]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          y: { type: "logarithmic", min: 500, max: 300000, title: { display: true, text: "allocations (log scale)" },
+            ticks: { callback: function (v) { return [1000, 10000, 100000].indexOf(v) >= 0 ? v.toLocaleString("en") : ""; } } },
+          y1: { position: "right", min: 0, grid: { drawOnChartArea: false }, title: { display: true, text: "ms for 10,000 lines" } }
+        }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

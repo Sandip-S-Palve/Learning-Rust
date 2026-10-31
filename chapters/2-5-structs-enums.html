@@ -1,0 +1,1697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2.5 Structs, enums and pattern matching</title>
+<meta name="description" content="Structs, impl blocks and methods, enums with data, Option, match and every kind of pattern, if let, let-else and let chains, compared with C# records and switch expressions, with an exhaustiveness explorer checked against rustc on 512 programs.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .mx-code { border: 1px solid var(--border); border-radius: 8px; background: var(--code-bg); color: var(--code-text); padding: 8px 0; font: .82rem var(--font-mono); }
+  .mx-line { display: flex; gap: 8px; align-items: center; padding: 2px 10px; white-space: pre; overflow-x: auto; }
+  .mx-line label { display: flex; gap: 8px; align-items: center; cursor: pointer; min-width: 0; }
+  .mx-line input { margin: 0; flex: none; }
+  .mx-line.off .mx-text { opacity: .35; text-decoration: line-through; }
+  .mx-line.unreach { background: var(--amber-soft); }
+  .mx-tag { font: .7rem var(--font-body); color: var(--amber); white-space: nowrap; }
+  .mx-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  .mx-presets button { font: .78rem var(--font-body); padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .mx-cover { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 6px; }
+  @media (max-width: 760px) { .mx-cover { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .mx-v { border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; font-size: .78rem; min-width: 0; }
+  .mx-v b { display: block; font: .78rem var(--font-mono); overflow-wrap: anywhere; }
+  .mx-v.full { background: var(--green-soft); } .mx-v.part { background: var(--amber-soft); } .mx-v.none { background: var(--red-soft); }
+  .mx-out { font: .82rem var(--font-mono); margin-top: 8px; overflow-wrap: anywhere; min-height: 1.4em; }
+  .mx-out.ok { color: var(--green); } .mx-out.bad { color: var(--red); }
+</style>
+</head>
+<body data-chapter="2.5">
+<article class="content">
+<h1>Structs, enums and pattern matching</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Define named, tuple and unit structs, add behaviour in <code>impl</code> blocks, and choose between <code>&amp;self</code>, <code>&amp;mut self</code>, <code>self</code> and associated functions</li>
+      <li>Model alternatives with enums whose variants carry data, and use <code>Option</code>'s methods instead of hand-written matches</li>
+      <li>Write <code>match</code> with every kind of pattern (literals, ranges, or-patterns, bindings, <code>@</code>, guards, nested and slice patterns) and predict which arm runs</li>
+      <li>Read exhaustiveness errors (E0004), and use <code>if let</code>, <code>while let</code>, <code>let-else</code>, let chains and <code>matches!</code> where each fits</li>
+      <li>Compare Rust's structs, enums and <code>match</code> with C# classes, records and switch expressions, and design state machines the compiler checks</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Chapter F8 made the case for product types, sum types and "make illegal states unrepresentable". This chapter is the Rust you write every day to do it. Nearly every type in your two products is a struct or an enum: a rule's condition, an operator, an expression tree, a workflow step, its state, the events that move it on. Nearly every decision about them is a <code>match</code>.</p>
+  <p>In C# you would reach for classes, records, an inheritance hierarchy and <code>switch</code> expressions, and the compiler would <em>warn</em> if a switch missed a case, but only when it could see the whole hierarchy, and you'd still need a default that throws. In Rust, an enum's variants are closed and known, and a <code>match</code> that misses one doesn't compile. For a workflow engine that is the difference between "a new state was added and the compiler showed every place that must decide what to do with it" and "a new state was added and an old <code>switch</code> fell through to <code>default: throw</code> in production at 3 a.m."</p>
+</div>
+
+<h2 id="intuition">Intuition first: forms and multiple-choice boxes</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <ul>
+    <li><strong>A struct is a paper form</strong>: every box must be filled in (name, amount, currency). Leave one out and the form is rejected (error E0063).</li>
+    <li><strong>An enum is a set of tick-boxes where you tick exactly one</strong>, and each choice opens its own small sub-form: "Card: number and expiry", "Invoice: due date", "Cash: nothing more".</li>
+    <li><strong><code>match</code> is the clerk's checklist</strong>, read from the top, stopping at the first line that fits. The rule that makes it Rust: the checklist must have a line for <em>every</em> possible tick-box, or the clerk refuses to start work.</li>
+    <li><strong>Patterns are stencils</strong> laid over the form: "a card payment, any number, expiry before 2027". Where a stencil has a hole, the matching part of the form is copied out into a name you can use.</li>
+  </ul>
+  <p>A C# class hierarchy is more like forms that anyone can extend with a new page later. That's flexible, but the clerk can never be sure the checklist is complete.</p>
+</div>
+
+<div class="compare">
+  <div><div class="compare-label">C#</div>
+<pre><code class="language-csharp">abstract record Payment;
+record Pending : Payment;
+record Authorized(int Amount) : Payment;
+record Failed(string Reason) : Payment;
+
+string Label(Payment p) =&gt; p switch {
+    Pending =&gt; "waiting",
+    Authorized { Amount: &gt; 10_000 } a =&gt; $"large {a.Amount}",
+    Authorized a =&gt; $"authorized {a.Amount}",
+    _ =&gt; throw new InvalidOperationException(), // needed
+};</code></pre></div>
+  <div><div class="compare-label">Rust</div>
+<pre><code class="language-rust">enum Payment {
+    Pending,
+    Authorized(u32),
+    Failed(String),
+}
+
+fn label(p: &amp;Payment) -&gt; String {
+    match p {
+        Payment::Pending =&gt; "waiting".into(),
+        Payment::Authorized(a) if *a &gt; 10_000 =&gt; format!("large {a}"),
+        Payment::Authorized(a) =&gt; format!("authorized {a}"),
+        Payment::Failed(r) =&gt; format!("failed: {r}"), // or it won't compile
+    }
+}</code></pre></div>
+</div>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="structs">Structs: three shapes</h3>
+<p>A <dfn data-term="struct" data-def="A named product type grouping fields: named-field (struct S { a: T }), tuple (struct S(T, U)) or unit (struct S;). Every field must be initialised at construction (E0063 otherwise).">struct</dfn> groups named values into one type (a product type, chapter F8). Rust has three shapes:</p>
+<pre data-title="the three kinds of struct"><code class="language-rust">struct RetryPolicy { max_attempts: u32, backoff_ms: u64 } // named fields
+struct StepId(u64);                                       // tuple struct (a newtype)
+struct Approved;                                          // unit struct: no fields, 0 bytes
+
+let p = RetryPolicy { max_attempts: 3, backoff_ms: 500 };
+let id = StepId(7);
+let a = Approved;
+println!("{} {} {}", p.max_attempts + p.backoff_ms as u32, id.0, std::mem::size_of_val(&amp;a));</code></pre>
+<p><strong>Named-field structs</strong> are the default. <strong><dfn data-term="tuple struct" data-def="A struct whose fields are positional, accessed as .0, .1: struct StepId(u64). A one-field tuple struct is the newtype pattern.">Tuple structs</dfn></strong> have positional fields (<code>.0</code>, <code>.1</code>); with one field they're F8's <em>newtype</em>, the cheapest way to stop a <code>StepId</code> being passed where a <code>RuleId</code> is expected. <strong>Unit structs</strong> have no data and take no space (Lab step 1 prints 0); they serve as markers and as types that exist only to implement behaviour (chapter 2.9).</p>
+<p>Every field must be given a value when you construct a struct (forgetting one is error E0063, Lab step 2). Rust has no constructors that run automatically and no "default" field values, so the conventional constructor is an ordinary function, usually called <code>new</code>. Two pieces of syntax save typing. <strong>Field init shorthand</strong> lets you write <code>RetryPolicy { max_attempts, backoff_ms }</code> when variables of those names exist. <strong>Struct update syntax</strong>, <code>RetryPolicy { backoff_ms: 2_000, ..other }</code>, takes the remaining fields from another value. Note that "takes" means <em>moves</em>: non-<code>Copy</code> fields are moved out of <code>other</code> (chapter 2.2, Lab step 2). It's a cousin of C#'s <code>with</code> expression, with ownership attached.</p>
+
+<h3 id="impl">Behaviour: <code>impl</code> blocks, methods and associated functions</h3>
+<p>Data and behaviour are declared separately. An <dfn data-term="impl block" data-def="impl Type { ... }: the block where a type's methods and associated functions are defined. A type can have several impl blocks; impl Trait for Type implements a trait (chapter 2.9).">impl block</dfn> attaches functions to a type. The Book's definition: methods "are defined within the context of a struct (or an enum or a trait object…), and their first parameter is always <code>self</code>". The kind of <code>self</code> is the ownership rule from chapters 2.2 and 2.3, applied to the receiver:</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · the four kinds of function in an impl block</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="An impl block with an associated function new, and methods taking &amp;self, &amp;mut self and self, each mapped to what the caller keeps">
+    <rect x="20" y="30" width="250" height="230" rx="8" class="svg-box-strong"/>
+    <text x="145" y="20" class="svg-title" text-anchor="middle">impl Step { … }</text>
+    <text x="34" y="66" class="svg-mono">fn new(id, name) -&gt; Self</text>
+    <text x="34" y="122" class="svg-mono">fn can_retry(&amp;self) -&gt; bool</text>
+    <text x="34" y="178" class="svg-mono">fn record_attempt(&amp;mut self)</text>
+    <text x="34" y="234" class="svg-mono">fn into_name(self) -&gt; String</text>
+    <rect x="300" y="40" width="400" height="44" rx="6" class="svg-amber"/>
+    <text x="314" y="60" class="svg-mono">Step::new(7, "charge")</text>
+    <text x="314" y="77" class="svg-text-sm">associated function: no instance needed; called with ::</text>
+    <rect x="300" y="96" width="400" height="44" rx="6" class="svg-teal"/>
+    <text x="314" y="116" class="svg-mono">step.can_retry()  →  Step::can_retry(&amp;step)</text>
+    <text x="314" y="133" class="svg-text-sm">shared borrow: reads; caller keeps the step (2.3)</text>
+    <rect x="300" y="152" width="400" height="44" rx="6" class="svg-purple"/>
+    <text x="314" y="172" class="svg-mono">step.record_attempt()  →  (&amp;mut step)</text>
+    <text x="314" y="189" class="svg-text-sm">exclusive borrow: changes in place; needs `let mut` (2.3)</text>
+    <rect x="300" y="208" width="400" height="44" rx="6" class="svg-red"/>
+    <text x="314" y="228" class="svg-mono">step.into_name()  →  Step::into_name(step)</text>
+    <text x="314" y="245" class="svg-text-sm">move: consumes the step; `step` is unusable after (2.2)</text>
+    <path d="M270 62 L298 62" class="svg-line"/><path d="M270 118 L298 118" class="svg-line"/>
+    <path d="M270 174 L298 174" class="svg-line"/><path d="M270 230 L298 230" class="svg-line"/>
+    <text x="360" y="285" class="svg-text-sm" text-anchor="middle">The method call adds the &amp;, &amp;mut or move for you ("automatic referencing"), so the call site looks the same.</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> Choose the receiver by what the method does: <code>&amp;self</code> for queries, <code>&amp;mut self</code> for commands that change state, <code>self</code> for conversions and "finishing" operations (a builder's <code>build</code>, a transaction's <code>commit</code>), and no <code>self</code> for constructors. Lab step 1 calls one of each.</figcaption>
+</figure>
+
+<p>A <dfn data-term="method" data-def="A function in an impl block whose first parameter is self, &amp;self or &amp;mut self, called with value.method(). The receiver type decides whether the call reads, mutates or consumes the value.">method</dfn> is called with a dot. The Book explains why the call site never needs <code>&amp;</code>: "When you call a method with <code>object.something()</code>, Rust automatically adds in <code>&amp;</code>, <code>&amp;mut</code>, or <code>*</code> so that <code>object</code> matches the signature of the method." So <code>step.record_attempt()</code> and <code>Step::record_attempt(&amp;mut step)</code> are the same call. An <dfn data-term="associated function" data-def="A function in an impl block without a self parameter, called with Type::name(); used for constructors (new, with_capacity, from_...). C#'s static methods.">associated function</dfn> has no <code>self</code>, like C#'s static methods, and is called with <code>::</code>. "These are often called <code>new</code>, but <code>new</code> isn't a special name and isn't built into the language." <code>Self</code> (capital S) inside an <code>impl</code> is an alias for the type being implemented.</p>
+<p>Trying to change a field through <code>&amp;self</code> is error E0594, and the compiler suggests <code>&amp;mut self</code> (Lab step 2). That's the C# rule "a <code>readonly</code> method can't modify state" enforced on every method, because the receiver states the intent.</p>
+
+<h3 id="derive"><code>derive</code>: behaviour you'd otherwise write by hand</h3>
+<p>Structs and enums start with no behaviour at all: you can't print, compare, copy or clone them. The <dfn data-term="derive" data-def="#[derive(...)]: an attribute that generates standard trait implementations for a struct or enum from its fields: Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default.">derive</dfn> attribute generates the standard implementations from the fields:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th><code>#[derive(…)]</code></th><th>Gives you</th><th>C# equivalent</th></tr></thead>
+  <tbody>
+    <tr><td><code>Debug</code></td><td><code>{:?}</code> and pretty <code>{:#?}</code> printing (Lab step 1)</td><td>A record's generated <code>ToString</code></td></tr>
+    <tr><td><code>Clone</code>, <code>Copy</code></td><td><code>.clone()</code>; implicit copies for plain data (chapter 2.2)</td><td>— (a struct copy; <code>with</code>)</td></tr>
+    <tr><td><code>PartialEq</code>, <code>Eq</code></td><td><code>==</code> and <code>!=</code>, field by field</td><td>A record's value equality</td></tr>
+    <tr><td><code>Hash</code></td><td>Use as a <code>HashMap</code> key (chapter F4)</td><td>A record's <code>GetHashCode</code></td></tr>
+    <tr><td><code>PartialOrd</code>, <code>Ord</code></td><td><code>&lt;</code>, sorting (fields compared in declaration order)</td><td><code>IComparable</code> by hand</td></tr>
+    <tr><td><code>Default</code></td><td><code>Type::default()</code>: zeros, empty strings, <code>None</code></td><td>Parameterless constructor</td></tr>
+  </tbody>
+</table></div>
+<p>These are <em>traits</em> (chapter F8's term, treated fully in chapter 2.9). Deriving only what you need is deliberate: a type without <code>Clone</code> can't be duplicated by accident, and that's how chapter 2.2's leases and transactions stay unique.</p>
+
+<h3 id="enums">Enums: alternatives that carry data</h3>
+<p>Each <dfn data-term="variant" data-def="One alternative of an enum. A variant can be unit-like (Pending), tuple-like (Authorized(u32)) or struct-like (Captured { amount: u32 }), each carrying its own data.">variant</dfn> of a Rust enum can carry its own data, in any of the three struct shapes:</p>
+<pre data-title="an enum with data"><code class="language-rust">enum Payment {
+    Pending,                                  // unit-like
+    Authorized(u32),                          // tuple-like
+    Captured { amount: u32, refunded: bool }, // struct-like
+    Failed(String),
+}
+
+let p = Payment::Captured { amount: 9_900, refunded: false };
+if let Payment::Captured { amount, .. } = p {
+    println!("captured {amount}");
+}</code></pre>
+<p>That's F8's sum type in code: a <code>Payment</code> is exactly one of these, and the data that only makes sense for <code>Captured</code> can't exist on a <code>Pending</code> payment. In memory, an enum is a tag saying which variant it is, plus room for the largest variant's data (F8 measured this, including the niche optimisation that makes <code>Option&lt;&amp;T&gt;</code> pointer-sized). Enums get <code>impl</code> blocks and <code>derive</code> exactly like structs (Lab step 3).</p>
+
+<h3 id="option"><code>Option</code>: the enum you'll use most</h3>
+<p>There's no <code>null</code> in safe Rust. "Maybe a value" is the standard library enum <code>enum Option&lt;T&gt; { None, Some(T) }</code>, so the type system knows which values can be absent and makes you deal with it. Matching on it every time would be tedious, so <code>Option</code> has a method for each common need (Lab step 3, section 2):</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>You want</th><th>Write</th><th>C# with nullable</th></tr></thead>
+  <tbody>
+    <tr><td>A default when absent</td><td><code>x.unwrap_or(0)</code>, <code>unwrap_or_default()</code>, <code>unwrap_or_else(|| …)</code></td><td><code>x ?? 0</code></td></tr>
+    <tr><td>Transform if present</td><td><code>x.map(|v| v * 2)</code></td><td><code>x?.Something</code></td></tr>
+    <tr><td>Chain another maybe</td><td><code>x.and_then(|v| lookup(v))</code>, or <code>?</code> inside a function returning <code>Option</code></td><td><code>?.</code> chains</td></tr>
+    <tr><td>Keep only if a test passes</td><td><code>x.filter(|v| *v &gt; 10)</code></td><td>—</td></tr>
+    <tr><td>Test without unwrapping</td><td><code>x.is_some()</code>, <code>x.is_some_and(|v| v &gt; 10)</code></td><td><code>x is &gt; 10</code></td></tr>
+    <tr><td>Turn absence into an error</td><td><code>x.ok_or("missing")</code> (chapter 2.6)</td><td><code>?? throw</code></td></tr>
+    <tr><td>Take it out, leave <code>None</code></td><td><code>x.take()</code>, <code>x.replace(v)</code> (chapter 2.2)</td><td>—</td></tr>
+    <tr><td>Borrow the inside</td><td><code>x.as_ref()</code>, <code>x.as_deref()</code> (<code>Option&lt;String&gt;</code> → <code>Option&lt;&amp;str&gt;</code>)</td><td>—</td></tr>
+    <tr><td>Crash if absent</td><td><code>x.unwrap()</code>, <code>x.expect("why it can't be None")</code></td><td><code>x!.</code> / <code>x.Value</code></td></tr>
+  </tbody>
+</table></div>
+<p class="small muted">The <code>|v| …</code> arguments are closures, Rust's lambdas, introduced in chapter 2.3's reading note and covered in chapter 2.10.</p>
+
+<h3 id="match"><code>match</code> and patterns</h3>
+<p><code>match</code> compares a value against a list of <dfn data-term="pattern" data-def="A shape a value is tested against and destructured by: literals, ranges, _, bindings, tuples, structs, enum variants, slices, or-patterns (|), @ bindings. Used in match, let, if let, while let, function parameters and for loops.">patterns</dfn>. The Book: "it compares the resultant value against the pattern of each arm, in order. If a pattern matches the value, the code associated with that pattern is executed." Two properties make it more than C#'s <code>switch</code>. It's an <em>expression</em> (chapter F8), so each arm produces a value and all arms must produce the same type. And it's <em>exhaustive</em>: "Matches in Rust are exhaustive: We must exhaust every last possibility in order for the code to be valid."</p>
+<p>The pattern language is the same everywhere patterns appear (<code>match</code>, <code>let</code>, <code>if let</code>, function parameters, <code>for</code> loops). Lab step 4 runs every form:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Pattern</th><th>Example</th><th>Matches</th></tr></thead>
+  <tbody>
+    <tr><td>Literal</td><td><code>0</code>, <code>"NL"</code>, <code>true</code></td><td>Exactly that value</td></tr>
+    <tr><td>Range</td><td><code>1..=999</code>, <code>100_000..</code>, <code>'a'..='z'</code></td><td>Any value in the range</td></tr>
+    <tr><td>Or-pattern</td><td><code>"NL" | "BE"</code></td><td>Any of the alternatives</td></tr>
+    <tr><td>Wildcard</td><td><code>_</code></td><td>Anything, binding nothing</td></tr>
+    <tr><td>Binding</td><td><code>n</code></td><td>Anything, naming it <code>n</code></td></tr>
+    <tr><td><code>@</code> binding</td><td><code>big @ 100_000..</code></td><td>The sub-pattern, also naming the value</td></tr>
+    <tr><td>Tuple / struct / variant</td><td><code>(a, _)</code>, <code>Order { id, .. }</code>, <code>Some(x)</code></td><td>The shape, destructuring the parts</td></tr>
+    <tr><td>Rest</td><td><code>..</code></td><td>All remaining fields or elements</td></tr>
+    <tr><td>Slice</td><td><code>[]</code>, <code>[only]</code>, <code>[first, .., last]</code></td><td>Slices of that length or shape</td></tr>
+    <tr><td>Reference</td><td><code>&amp;x</code></td><td>A reference, binding what it points to</td></tr>
+  </tbody>
+</table></div>
+<p>A <dfn data-term="match guard" data-def="An extra boolean condition on a match arm: pattern if condition =&gt; .... The arm is chosen only if the pattern matches and the guard is true. Guards are not considered for exhaustiveness.">match guard</dfn> adds a condition: <code>Payment::Authorized(n) if n &gt; 1000 =&gt; …</code>. The arm applies only if the pattern matches <em>and</em> the guard is true; otherwise matching continues with the next arm. The compiler can't reason about arbitrary conditions, so <strong>guards don't count towards exhaustiveness</strong>, and you still need an arm without the guard. Order matters: the first arm that fits wins, so specific arms go before general ones. Put a <code>_</code> first and every later arm is dead, which the compiler reports as an unreachable pattern (Lab step 2, w8).</p>
+
+<figure class="visual stepper" data-interval="3000">
+  <span class="visual-tag">Animation · how a match picks an arm</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Two values tested against five match arms in order; guards can reject an arm whose pattern matched">
+    <text x="20" y="26" class="svg-mono">match payment {</text>
+    <rect x="30" y="40" width="430" height="34" rx="5" class="svg-box" data-hl="1,6"/>
+    <rect x="30" y="80" width="430" height="34" rx="5" class="svg-box" data-hl="2,6"/>
+    <rect x="30" y="120" width="430" height="34" rx="5" class="svg-box" data-hl="3,4,7"/>
+    <rect x="30" y="160" width="430" height="34" rx="5" class="svg-box" data-hl="8"/>
+    <rect x="30" y="200" width="430" height="34" rx="5" class="svg-box"/>
+    <text x="44" y="62" class="svg-mono">Payment::Pending =&gt; …,</text>
+    <text x="44" y="102" class="svg-mono">Payment::Authorized(0) =&gt; …,</text>
+    <text x="44" y="142" class="svg-mono">Payment::Authorized(n) if n &gt; 1000 =&gt; …,</text>
+    <text x="44" y="182" class="svg-mono">Payment::Authorized(_) =&gt; …,</text>
+    <text x="44" y="222" class="svg-mono">_ =&gt; …,</text>
+    <text x="20" y="256" class="svg-mono">}</text>
+    <g data-show="1-5"><rect x="490" y="40" width="210" height="40" rx="6" class="svg-teal"/><text x="595" y="65" class="svg-mono" text-anchor="middle">Authorized(1500)</text></g>
+    <g data-show="6-8"><rect x="490" y="40" width="210" height="40" rx="6" class="svg-purple"/><text x="595" y="65" class="svg-mono" text-anchor="middle">Authorized(500)</text></g>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=1">arm 1: wrong variant ✗</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=2">arm 2: 1500 ≠ 0 ✗</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=3">arm 3: shape fits, n = 1500</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=4">guard 1500 &gt; 1000 ✓ → runs arm 3</text>
+    <text x="595" y="130" class="svg-text-sm" text-anchor="middle" data-show="=4">arms 4 and 5 are never tried</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=5">first match wins; nothing else runs</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=6">arms 1 and 2 ✗ as before</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=7">arm 3: shape fits, n = 500</text>
+    <text x="595" y="130" class="svg-text-sm" text-anchor="middle" data-show="=7">guard 500 &gt; 1000 ✗ → keep going</text>
+    <text x="595" y="110" class="svg-text-sm" text-anchor="middle" data-show="=8">arm 4: Authorized(_) ✓ → runs</text>
+    <text x="360" y="288" class="svg-text-sm" text-anchor="middle" data-show="=8">without arm 4 or 5 this wouldn't compile: the guard can't count towards exhaustiveness</text>
+  </svg>
+  <ol class="stepper-captions">
+    <li>The value <code>Payment::Authorized(1500)</code> is tested against the arms from the top. Arm 1 expects a different variant, so it doesn't fit.</li>
+    <li>Arm 2 is the right variant, but its literal <code>0</code> doesn't match 1500.</li>
+    <li>Arm 3's pattern <code>Authorized(n)</code> fits any authorized amount, and binds <code>n = 1500</code>.</li>
+    <li>Then its guard runs: <code>1500 &gt; 1000</code> is true, so arm 3's code runs. Later arms are never looked at.</li>
+    <li>First match wins. That's why a specific arm placed after a general one is unreachable, and the compiler warns about it.</li>
+    <li>Now the value <code>Authorized(500)</code>. Arms 1 and 2 fail as before.</li>
+    <li>Arm 3's pattern fits again (<code>n = 500</code>), but the guard is false, so matching <em>continues</em>: a failed guard is like a failed pattern.</li>
+    <li>Arm 4 catches every remaining authorized amount. Because guards can be false, the compiler insists on an unguarded arm like this one (or <code>_</code>).</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> Matching is a top-to-bottom search: pattern, then guard, then the next arm. The same order rule explains Lab step 4's first version of <code>classify</code>, where a guard placed before a range arm swallowed the values the range was meant for.</figcaption>
+</figure>
+
+<h3 id="if-let"><code>if let</code>, <code>while let</code>, <code>let-else</code>, let chains and <code>matches!</code></h3>
+<p>Writing a full <code>match</code> when you care about one case is noisy, so Rust has shorter forms. They all rest on one distinction. A <dfn data-term="refutable pattern" data-def="A pattern that can fail to match (Some(x), 0, [first, ..]). Allowed in match arms, if let, while let and let-else; a plain let or function parameter needs an irrefutable pattern (E0005).">refutable pattern</dfn> can fail to match (<code>Some(x)</code> fails on <code>None</code>); an <em>irrefutable</em> one can't (<code>(a, b)</code> on a pair). A plain <code>let</code> needs an irrefutable pattern (otherwise error E0005, which suggests <code>let-else</code>).</p>
+<ul>
+  <li><strong><code>if let PAT = expr { … } else { … }</code></strong>: run code when one pattern matches.</li>
+  <li><strong><code>while let PAT = expr { … }</code></strong>: loop while it matches, as in <code>while let Some(job) = queue.pop()</code>.</li>
+  <li><strong><dfn data-term="let-else" data-def="let PATTERN = expr else { diverge }; binds the pattern's variables for the rest of the scope if it matches; otherwise the else block must diverge (return, break, continue, panic). Stable since Rust 1.65.">let-else</dfn></strong>: <code>let Some(x) = expr else { return …; };</code> binds <code>x</code> for the rest of the function if the pattern matches. If it doesn't, the <code>else</code> block must leave (<code>return</code>, <code>break</code>, <code>continue</code> or panic), which the compiler checks (Lab step 2, e5). It's the "guard clause" style: handle the failure first, then carry on with the happy path at the same indentation.</li>
+  <li><strong><dfn data-term="let chain" data-def="Combining let patterns and boolean conditions with &amp;&amp; in if and while: if let Some(o) = x &amp;&amp; o.ok &amp;&amp; let [first, ..] = o.lines { ... }. Stable in Rust 1.88, edition 2024 only.">Let chains</dfn></strong> (Rust 1.88, edition 2024): "This feature allows <code>&amp;&amp;</code>-chaining <code>let</code> statements inside <code>if</code> and <code>while</code> conditions, even intermingling with boolean expressions." They replace nested <code>if let</code>s (Lab step 4, section 7). They are "only available in the Rust 2024 edition, as this feature depends on the <code>if let</code> temporary scope change for more consistent drop order."</li>
+  <li><strong><code>matches!(value, PAT)</code></strong>: a pattern test as a <code>bool</code>, as in <code>.filter(|p| matches!(p, Payment::Captured { .. }))</code>.</li>
+</ul>
+
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: records, hierarchies and switch expressions</div>
+  <ul>
+    <li><strong>Struct vs class vs record.</strong> A Rust struct is a value: no inheritance, no hidden reference, no null, and the same type whether it lives on the stack or inside a <code>Box</code>. <code>#[derive(Debug, Clone, PartialEq, Hash)]</code> gives what a C# <code>record</code> generates; struct update syntax is <code>with</code>, but it moves rather than copies.</li>
+    <li><strong>Enums vs C# enums.</strong> A C# <code>enum</code> is a named integer: any integer can be cast to it, and it carries no data. A Rust enum is closed (no invalid values) and its variants carry data. The C# idiom for the same thing is an abstract record plus subclasses, or the C# 15 <code>union</code> types in preview (chapter F8).</li>
+    <li><strong>Exhaustiveness: warning vs error.</strong> Lab step 5 shows C# compiling a switch that forgot <code>Failed</code>, with warning CS8509, and the program throwing <code>SwitchExpressionException</code> when a <code>Failed</code> arrived. The warning couldn't even name the missing case ("the pattern '_' is not covered"), because a class hierarchy is open: anyone can add a subclass. In Rust it's error E0004, naming the exact missing pattern.</li>
+    <li><strong>Pattern syntax is close.</strong> C# property patterns <code>{ Amount: &gt; 10_000 }</code>, relational patterns, list patterns <code>[var first, .., var last]</code> and <code>when</code> guards all have Rust equivalents (struct patterns, ranges, slice patterns, <code>if</code> guards). The concepts transfer directly; Rust adds exhaustiveness and binding by reference.</li>
+  </ul>
+</div>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="exhaustive">Exhaustiveness in practice</h3>
+<p>Try the compiler's check yourself. The explorer below is a <code>match</code> on a four-variant <code>Payment</code> with nine candidate arms. Untick arms to see exactly what rustc 1.99 says:</p>
+
+<figure class="visual" id="mx">
+  <span class="visual-tag">Interactive · exhaustiveness explorer</span>
+  <div class="mx-presets" id="mx-presets"></div>
+  <div class="mx-code" id="mx-code"></div>
+  <div class="mx-cover" id="mx-cover"></div>
+  <div class="mx-out" id="mx-out" aria-live="polite"></div>
+  <figcaption><strong>Figure 3.</strong> <code>enum Payment { Pending, Authorized(u32), Captured { amount: u32, refunded: bool }, Failed }</code>. All 512 combinations of these arms were compiled with rustc 1.99. The explorer reproduces rustc's verdict, its exact E0004 message, and its unreachable-pattern warnings for every one (0 mismatches). The coverage boxes show the reasoning: green is fully covered, amber partly, red not at all.</figcaption>
+</figure>
+
+<p>Three things the explorer shows that are worth knowing:</p>
+<ul>
+  <li><strong>rustc reports missing variants first.</strong> If some variant appears in no arm at all, the error lists only those. Keep just <code>Pending</code>, <code>Authorized(0)</code> and <code>Failed</code>: rustc reports only <code>Captured { .. }</code>, although authorized amounts above 0 are unhandled too. Tick <code>Captured { .. }</code> and a <em>second</em> error appears for <code>Authorized(1_u32..=u32::MAX)</code> (the "Authorized(0) only" preset). Fixing one E0004 can reveal another.</li>
+  <li><strong>Guards never help.</strong> With only the guarded arm for <code>Authorized</code>, the match isn't exhaustive. Integer literals cover just themselves, so <code>Authorized(0)</code> leaves <code>1..=u32::MAX</code> to be handled, and rustc names that range.</li>
+  <li><strong><code>_</code> silences the check, for the future too.</strong> Tick <code>_</code> and everything compiles. That's convenient today, but if someone adds a <code>Refunded</code> variant next year, this match will quietly send it to the <code>_</code> arm. For enums you own, especially states and events, list the variants explicitly so new ones become compile errors. Exercise 2 shows this.</li>
+</ul>
+<p>For enums in a <em>library</em> that may gain variants, the author can mark them <code>#[non_exhaustive]</code>. Code in other crates must then include a <code>_</code> arm, so adding a variant isn't a breaking change (chapter 3.5).</p>
+
+<h3 id="state-machines">State machines: <code>match</code> on (state, event)</h3>
+<p>The most valuable use of exhaustiveness in your products is a state machine written as one <code>match</code> over a <code>(state, event)</code> tuple. Every combination is either a transition or an explicit rejection, and the compiler proves nothing is forgotten. Lab step 6 runs a workflow step's lifecycle, with retries, timers and final states, written this way. Guards express conditions (<code>if attempt &gt;= MAX_ATTEMPTS</code>), <code>@</code> bindings keep the whole state when an arm only needs to pass it through (<code>s @ State::Waiting { .. }</code>), and or-patterns group final states (<code>State::Completed | State::Failed { .. }</code>). Taking <code>state</code> by value and returning the new state means the old one can't be reused by accident (chapter 2.2). Chapter 10.3 builds the workflow engine's step model from this shape.</p>
+
+<h3 id="recursive">Recursive enums need <code>Box</code></h3>
+<p>A rule expression tree is naturally an enum whose variants contain more expressions: <code>And(Expr, Expr)</code>. But an enum's size is the size of its largest variant, and a variant containing itself would be infinitely large:</p>
+<pre data-title="e2.rs"><code class="language-rust">// A recursive enum without indirection.
+enum Expr {
+    Num(i64),
+    Not(Expr),
+}
+
+fn main() {
+    let _e = Expr::Not(Expr::Num(1));
+}</code></pre>
+<pre class="output error">error[E0072]: recursive type `Expr` has infinite size
+ --&gt; errs/e2.rs:2:1
+  |
+2 | enum Expr {
+  | ^^^^^^^^^
+3 |     Num(i64),
+4 |     Not(Expr),
+  |         ---- recursive without indirection
+  |
+help: insert some indirection (e.g., a `Box`, `Rc`, or `&amp;`) to break the cycle
+  |
+4 |     Not(Box&lt;Expr&gt;),
+  |         ++++    +</pre>
+<p><code>Box&lt;T&gt;</code> is an owning pointer to a value on the heap: 8 bytes, whatever <code>T</code> is, and it frees its value when dropped (chapter 2.12 covers it fully). <code>Not(Box&lt;Expr&gt;)</code> has a fixed size, and the tree's nodes live on the heap. Lab step 6 evaluates a real rule tree, <code>amount &gt;= 10000 AND (country_code == 31 OR NOT vip == 0)</code>, with one recursive <code>match</code>, the core of chapter 9.3's tree-walking interpreter.</p>
+
+<details class="deep-dive"><summary>Deep dive: binding modes — what <code>match &amp;value</code> does to your bindings</summary><div class="body">
+  <p>When you match a <em>reference</em> against a pattern that isn't a reference pattern, Rust automatically dereferences and switches bindings to borrow (<em>default binding modes</em>, often called "match ergonomics"). In Lab step 4, section 3, <code>match &amp;order { Order { country, .. } … }</code> binds <code>country</code> as a <code>&amp;String</code>, and the program prints that type. So matching through a reference never moves anything out. Inside a by-value <code>let</code>, write <code>ref</code> to borrow a field instead of moving it (section 2: <code>let Order { id, ref country, .. } = order;</code> keeps <code>order</code> usable).</p>
+  <p>Rust 2024 tightened the rules where they were surprising. The edition guide: "When the default binding mode is not <code>move</code>, writing <code>mut</code>, <code>ref</code>, or <code>ref mut</code> on a binding is an error", and "reference patterns can only match against references in the scrutinee when the default binding mode is <code>move</code>". Code that compiled under 2021 can fail under 2024:</p>
+<pre data-title="e9.rs"><code class="language-rust">// Edition 2024: `mut` on a binding inside a pattern that is matching through a reference.
+fn main() {
+    let [x, mut y] = &amp;[(), ()];
+    let _ = (x, &amp;mut y);
+}</code></pre>
+<pre class="output error">error: cannot mutably bind by value within an implicitly-borrowing pattern
+ --&gt; errs/e9.rs:3:13
+  |
+3 |     let [x, mut y] = &amp;[(), ()];
+  |             ^^^ `mut` binding modifier not allowed when implicitly borrowing
+  |
+  = note: for more information, see &lt;https://doc.rust-lang.org/reference/patterns.html#binding-modes&gt;
+note: matching on a reference type with a non-reference pattern implicitly borrows the contents
+ --&gt; errs/e9.rs:3:9
+  |
+3 |     let [x, mut y] = &amp;[(), ()];
+  |         ^^^^^^^^^^ this non-reference pattern matches on a reference type `&amp;_`
+help: match on the reference with a reference pattern and borrow explicitly using a variable binding mode
+  |
+3 |     let &amp;[ref x, mut y] = &amp;[(), ()];
+  |         + +++</pre>
+  <p>The same file compiles with <code>--edition 2021</code> (checked). <code>cargo fix --edition</code> rewrites such patterns into the fully explicit form the help shows.</p>
+</div></details>
+
+<details class="deep-dive"><summary>Deep dive: what a <code>match</code> compiles to</summary><div class="body">
+  <p>A <code>match</code> on an enum is a test of its tag, and the compiler picks the cheapest machine code: a jump table, a chain of compares, or, for small arms, no branches at all. Here is a six-way operator match compiled with <code>-O</code> for the lab Mac (arm64):</p>
+<pre data-title="src/jt.rs"><code class="language-rust">#[derive(Clone, Copy)]
+pub enum Op { Gt, Ge, Lt, Le, Eq, Ne }
+#[unsafe(no_mangle)]
+pub fn eval_enum(op: Op, lhs: i64, rhs: i64) -&gt; bool {
+    match op { Op::Gt =&gt; lhs &gt; rhs, Op::Ge =&gt; lhs &gt;= rhs, Op::Lt =&gt; lhs &lt; rhs, Op::Le =&gt; lhs &lt;= rhs, Op::Eq =&gt; lhs == rhs, Op::Ne =&gt; lhs != rhs }
+}</code></pre>
+<pre class="output">_eval_enum:
+	and	w8, w0, #0xff
+	cmp	x1, x2
+	cset	w9, le
+	cset	w10, eq
+	cset	w11, ne
+	cmp	w8, #4
+	csel	w10, w10, w11, eq
+	cmp	w8, #3
+	csel	w9, w9, w10, eq
+	cmp	x1, x2
+	cset	w10, gt
+	cset	w11, ge
+	cset	w12, lt
+	cmp	w8, #1
+	csel	w11, w11, w12, eq
+	cmp	w8, #0
+	csel	w10, w10, w11, eq
+	cmp	w8, #2
+	csel	w0, w9, w10, gt
+	ret</pre>
+  <p>No jumps: it computes all six comparisons (<code>cset</code>) and selects the right one by the tag (<code>csel</code>), which is cheaper than an unpredictable branch on modern CPUs. A <code>match</code> on strings compiles to length checks and byte comparisons, which is why Lab step 7 measures matching on a parsed enum as 1.6× faster than matching on the operator's text. The bigger benefit is that an invalid operator is rejected once, at parse time, instead of on every evaluation.</p>
+</div></details>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac (Apple M2 Pro); outputs are verbatim. Put each program in <code>src/bin/</code> and run <code>cargo run --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — structs, methods and derive</h3>
+<pre data-playground data-title="src/bin/structs.rs"><code class="language-rust">use std::mem::size_of;
+
+// A named-field struct; derive generates Debug, Clone, PartialEq and Default for it.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct RetryPolicy {
+    max_attempts: u32,
+    backoff_ms: u64,
+}
+
+// A tuple struct: fields by position. A one-field tuple struct is a newtype (chapter F8).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StepId(u64);
+
+// A unit struct: no fields, zero bytes. Useful as a marker.
+#[derive(Debug)]
+struct Approved;
+
+#[derive(Debug, Clone)]
+struct Step {
+    id: StepId,
+    name: String,
+    retry: RetryPolicy,
+    attempts: u32,
+}
+
+impl Step {
+    // An associated function (no self): the conventional constructor.
+    fn new(id: u64, name: &amp;str) -&gt; Self {
+        Step { id: StepId(id), name: name.to_string(), retry: RetryPolicy::default(), attempts: 0 }
+    }
+
+    // &amp;self: reads the step.
+    fn can_retry(&amp;self) -&gt; bool {
+        self.attempts &lt; self.retry.max_attempts
+    }
+
+    // &amp;mut self: changes it in place.
+    fn record_attempt(&amp;mut self) {
+        self.attempts += 1;
+    }
+
+    // self: consumes the step and returns a modified one (builder style).
+    fn with_retries(mut self, max_attempts: u32, backoff_ms: u64) -&gt; Self {
+        self.retry = RetryPolicy { max_attempts, backoff_ms }; // field init shorthand
+        self
+    }
+
+    // self: consumes the step and gives back one of its parts.
+    fn into_name(self) -&gt; String {
+        self.name
+    }
+}
+
+fn main() {
+    // 1. Constructing, and the three kinds of struct.
+    let mut charge = Step::new(7, "charge-card").with_retries(3, 500);
+    let id = charge.id;
+    println!("1. {:?} id.0 = {}, {:?}, size_of::&lt;Approved&gt;() = {}", id, id.0, Approved, size_of::&lt;Approved&gt;());
+
+    // 2. Methods: `charge.record_attempt()` is sugar for `Step::record_attempt(&amp;mut charge)`.
+    while charge.can_retry() {
+        charge.record_attempt();
+    }
+    Step::record_attempt(&amp;mut charge); // the same call, written out
+    println!("2. attempts = {}, can_retry = {}", charge.attempts, charge.can_retry());
+
+    // 3. Struct update syntax: take the rest of the fields from another value.
+    let gentle = RetryPolicy { backoff_ms: 2_000, ..RetryPolicy::default() };
+    let notify = Step { id: StepId(8), name: String::from("notify"), ..charge.clone() };
+    println!("3. {gentle:?}; notify.retry == charge.retry: {}", notify.retry == charge.retry);
+
+    // 4. Derived Debug, single-line and pretty.
+    println!("4. {notify:?}");
+    println!("{notify:#?}");
+
+    // 5. A consuming method: `charge` can't be used afterwards (E0382 if you try).
+    let name = charge.into_name();
+    println!("5. took the name out: {name:?}");
+}</code></pre>
+<pre class="output">1. StepId(7) id.0 = 7, Approved, size_of::&lt;Approved&gt;() = 0
+2. attempts = 4, can_retry = false
+3. RetryPolicy { max_attempts: 0, backoff_ms: 2000 }; notify.retry == charge.retry: true
+4. Step { id: StepId(8), name: "notify", retry: RetryPolicy { max_attempts: 3, backoff_ms: 500 }, attempts: 4 }
+Step {
+    id: StepId(
+        8,
+    ),
+    name: "notify",
+    retry: RetryPolicy {
+        max_attempts: 3,
+        backoff_ms: 500,
+    },
+    attempts: 4,
+}
+5. took the name out: "charge-card"</pre>
+<p>Section 2 calls <code>record_attempt</code> both ways: the method-call form and the explicit <code>Step::record_attempt(&amp;mut charge)</code> form are the same function. Section 3 uses struct update syntax twice: from <code>RetryPolicy::default()</code>, and from a <em>clone</em> of <code>charge</code>, because <code>..charge</code> would move its <code>String</code> fields out (Step 2, e6). Section 4 is <code>derive(Debug)</code>'s output, the free equivalent of a record's <code>ToString</code>.</p>
+
+<h3 id="lab-2">Step 2 — what the compiler rejects</h3>
+<pre data-title="e3.rs — a missing field"><code class="language-rust">// Forgetting a field when constructing a struct.
+struct RetryPolicy { max_attempts: u32, backoff_ms: u64 }
+
+fn main() {
+    let p = RetryPolicy { max_attempts: 3 };
+    println!("{}", p.max_attempts);
+}</code></pre>
+<pre class="output error">error[E0063]: missing field `backoff_ms` in initializer of `RetryPolicy`
+ --&gt; errs/e3.rs:5:13
+  |
+5 |     let p = RetryPolicy { max_attempts: 3 };
+  |             ^^^^^^^^^^^ missing `backoff_ms`</pre>
+<pre data-title="e4.rs — mutating through &amp;self"><code class="language-rust">// Changing a field inside a &amp;self method.
+struct Step { attempts: u32 }
+
+impl Step {
+    fn record_attempt(&amp;self) {
+        self.attempts += 1;
+    }
+}
+
+fn main() {
+    let s = Step { attempts: 0 };
+    s.record_attempt();
+}</code></pre>
+<pre class="output error">error[E0594]: cannot assign to `self.attempts`, which is behind a `&amp;` reference
+ --&gt; errs/e4.rs:6:9
+  |
+6 |         self.attempts += 1;
+  |         ^^^^^^^^^^^^^^^^^^ `self` is a `&amp;` reference, so it cannot be written to
+  |
+help: consider changing this to be a mutable reference
+  |
+5 |     fn record_attempt(&amp;mut self) {
+  |                        +++</pre>
+<pre data-title="e6.rs — struct update moves fields"><code class="language-rust">// Struct update syntax moves the remaining fields out of the source.
+#[derive(Debug)]
+struct Step { name: String, queue: String, attempts: u32 }
+
+fn main() {
+    let charge = Step { name: String::from("charge"), queue: String::from("payments"), attempts: 0 };
+    let refund = Step { name: String::from("refund"), ..charge };
+    println!("{refund:?}");
+    println!("{charge:?}");
+}</code></pre>
+<pre class="output error">error[E0382]: borrow of partially moved value: `charge`
+ --&gt; errs/e6.rs:9:16
+  |
+7 |     let refund = Step { name: String::from("refund"), ..charge };
+  |                  ----------------------------------------------- value partially moved here
+8 |     println!("{refund:?}");
+9 |     println!("{charge:?}");
+  |                ^^^^^^ value borrowed here after partial move
+  |
+  = note: partial move occurs because `charge.queue` has type `String`, which does not implement the `Copy` trait</pre>
+<pre data-title="e1.rs — a forgotten variant"><code class="language-rust">// A match that forgets a variant.
+enum Payment { Pending, Authorized(u32), Captured { amount: u32 }, Failed(String) }
+
+fn label(p: &amp;Payment) -&gt; &amp;'static str {
+    match p {
+        Payment::Pending =&gt; "pending",
+        Payment::Authorized(_) =&gt; "authorized",
+        Payment::Captured { .. } =&gt; "captured",
+    }
+}
+
+fn main() {
+    println!("{}", label(&amp;Payment::Failed(String::from("expired"))));
+}</code></pre>
+<pre class="output error">error[E0004]: non-exhaustive patterns: `&amp;Payment::Failed(_)` not covered
+ --&gt; errs/e1.rs:5:11
+  |
+5 |     match p {
+  |           ^ pattern `&amp;Payment::Failed(_)` not covered
+  |
+note: `Payment` defined here
+ --&gt; errs/e1.rs:2:6
+  |
+2 | enum Payment { Pending, Authorized(u32), Captured { amount: u32 }, Failed(String) }
+  |      ^^^^^^^                                                       ------ not covered
+  = note: the matched value is of type `&amp;Payment`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+  |
+8 ~         Payment::Captured { .. } =&gt; "captured",
+9 ~         &amp;Payment::Failed(_) =&gt; todo!(),
+  |</pre>
+<pre data-title="e7.rs — a refutable pattern in let"><code class="language-rust">// A refutable pattern in a plain let.
+fn main() {
+    let input: Option&lt;u32&gt; = "42".parse().ok();
+    let Some(limit) = input;
+    println!("{limit}");
+}</code></pre>
+<pre class="output error">error[E0005]: refutable pattern in local binding
+ --&gt; errs/e7.rs:4:9
+  |
+4 |     let Some(limit) = input;
+  |         ^^^^^^^^^^^ pattern `None` not covered
+  |
+  = note: `let` bindings require an "irrefutable pattern", like a `struct` or an `enum` with only one variant
+  = note: for more information, visit https://doc.rust-lang.org/book/ch19-02-refutability.html
+  = note: the matched value is of type `Option&lt;u32&gt;`
+help: you might want to use `let...else` to handle the variant that isn't matched
+  |
+4 |     let Some(limit) = input else { todo!() };
+  |                             ++++++++++++++++</pre>
+<pre data-title="e5.rs — a let-else that doesn't leave"><code class="language-rust">// A let-else whose else block doesn't leave.
+fn port(s: &amp;str) -&gt; u16 {
+    let Ok(p) = s.parse::&lt;u16&gt;() else {
+        println!("bad port {s:?}, using 8080");
+    };
+    p
+}
+
+fn main() {
+    println!("{}", port("80"));
+}</code></pre>
+<pre class="output error">error[E0308]: `else` clause of `let...else` does not diverge
+ --&gt; errs/e5.rs:3:39
+  |
+3 |       let Ok(p) = s.parse::&lt;u16&gt;() else {
+  |  _______________________________________^
+4 | |         println!("bad port {s:?}, using 8080");
+5 | |     };
+  | |_____^ expected `!`, found `()`
+  |
+  = note:   expected type `!`
+          found unit type `()`
+  = help: try adding a diverging expression, such as `return` or `panic!(..)`
+  = help: ...or use `match` instead of `let...else`</pre>
+<pre data-title="w8.rs — a catch-all too early"><code class="language-rust">// A catch-all placed before more specific arms.
+fn fee(country: &amp;str) -&gt; u32 {
+    match country {
+        "NL" =&gt; 0,
+        _ =&gt; 250,
+        "DE" | "BE" =&gt; 100,
+    }
+}
+
+fn main() {
+    println!("{}", fee("DE"));
+}</code></pre>
+<pre class="output">warning: unreachable pattern
+ --&gt; errs/w8.rs:6:9
+  |
+5 |         _ =&gt; 250,
+  |         - matches any value
+6 |         "DE" | "BE" =&gt; 100,
+  |         ^^^^^^^^^^^ no value can reach this
+  |
+  = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default</pre>
+<pre class="output">250</pre>
+<p>w8 is only a warning, and the program runs: <code>"DE"</code> gets the catch-all fee of 250, not 100. Treat unreachable-pattern warnings as bugs. With <code>cargo clippy -- -D warnings</code> in CI (chapter 6.5) they fail the build. Note how each error suggests the fix: add the arm, add <code>&amp;mut</code>, add <code>Box</code>, use <code>let-else</code>, make the <code>else</code> diverge.</p>
+
+<h3 id="lab-3">Step 3 — enums with data, and Option's toolbox</h3>
+<pre data-playground data-title="src/bin/enums.rs"><code class="language-rust">// An enum whose variants carry different data (a sum type, chapter F8).
+#[derive(Debug, Clone, PartialEq)]
+enum Payment {
+    Pending,
+    Authorized(u32),                            // tuple-like variant
+    Captured { amount: u32, refunded: bool },   // struct-like variant
+    Failed(String),
+}
+
+impl Payment {
+    // Methods on enums work exactly like methods on structs.
+    fn amount(&amp;self) -&gt; Option&lt;u32&gt; {
+        match self {
+            Payment::Authorized(a) =&gt; Some(*a),
+            Payment::Captured { amount, .. } =&gt; Some(*amount),
+            Payment::Pending | Payment::Failed(_) =&gt; None,
+        }
+    }
+
+    fn is_final(&amp;self) -&gt; bool {
+        matches!(self, Payment::Captured { .. } | Payment::Failed(_))
+    }
+}
+
+// `?` on an Option returns None early (chapter 2.6 does the same for Result).
+fn first_captured_amount(payments: &amp;[Payment]) -&gt; Option&lt;u32&gt; {
+    let captured = payments.iter().find(|p| matches!(p, Payment::Captured { .. }))?;
+    captured.amount()
+}
+
+fn main() {
+    let payments = vec![
+        Payment::Pending,
+        Payment::Authorized(12_000),
+        Payment::Captured { amount: 9_900, refunded: false },
+        Payment::Failed(String::from("card expired")),
+    ];
+
+    // 1. match on every variant.
+    for p in &amp;payments {
+        let text = match p {
+            Payment::Pending =&gt; String::from("waiting"),
+            Payment::Authorized(a) =&gt; format!("authorized {a}"),
+            Payment::Captured { amount, refunded: false } =&gt; format!("captured {amount}"),
+            Payment::Captured { refunded: true, .. } =&gt; String::from("refunded"),
+            Payment::Failed(reason) =&gt; format!("failed: {reason}"),
+        };
+        println!("1. {:&lt;34} final = {:&lt;5} amount = {:?}", text, p.is_final(), p.amount());
+    }
+
+    // 2. Option's most-used methods: no match needed for the common cases.
+    let some = payments[1].amount();
+    let none = payments[0].amount();
+    println!("2. map: {:?} / {:?}", some.map(|a| a / 100), none.map(|a| a / 100));
+    println!("   unwrap_or(0): {} / {}", some.unwrap_or(0), none.unwrap_or(0));
+    println!("   filter(&gt; 10_000): {:?}", some.filter(|a| *a &gt; 10_000));
+    println!("   ok_or(\"no amount\"): {:?}", none.ok_or("no amount"));
+    println!("   is_some_and(&gt; 10_000): {}", some.is_some_and(|a| a &gt; 10_000));
+    println!("   first_captured_amount: {:?}", first_captured_amount(&amp;payments));
+    println!("   ...on an empty list:   {:?}", first_captured_amount(&amp;[]));
+
+    // 3. take / replace: move a value out of an Option in place (chapter 2.2).
+    let mut lease: Option&lt;String&gt; = Some(String::from("lease-42"));
+    let taken = lease.take();
+    let old = lease.replace(String::from("lease-43"));
+    println!("3. taken {taken:?}, old {old:?}, now {lease:?}");
+
+    // 4. as_deref: look inside an Option&lt;String&gt; as an Option&lt;&amp;str&gt; without moving it.
+    let label: Option&lt;&amp;str&gt; = lease.as_deref();
+    println!("4. label = {label:?}, lease still = {lease:?}");
+}</code></pre>
+<pre class="output">1. waiting                            final = false amount = None
+1. authorized 12000                   final = false amount = Some(12000)
+1. captured 9900                      final = true  amount = Some(9900)
+1. failed: card expired               final = true  amount = None
+2. map: Some(120) / None
+   unwrap_or(0): 12000 / 0
+   filter(&gt; 10_000): Some(12000)
+   ok_or("no amount"): Err("no amount")
+   is_some_and(&gt; 10_000): true
+   first_captured_amount: Some(9900)
+   ...on an empty list:   None
+3. taken Some("lease-42"), old None, now Some("lease-43")
+4. label = Some("lease-43"), lease still = Some("lease-43")</pre>
+<p><code>amount()</code> returns <code>Option&lt;u32&gt;</code>, so the caller can't forget that pending and failed payments have no amount. <code>first_captured_amount</code> uses <code>?</code> on an <code>Option</code>: if <code>find</code> returns <code>None</code>, the function returns <code>None</code> at once, the same early-return that chapter 2.6 uses for errors.</p>
+
+<h3 id="lab-4">Step 4 — every kind of pattern</h3>
+<pre data-playground data-title="src/bin/patterns.rs"><code class="language-rust">#[derive(Debug)]
+struct Order {
+    id: u32,
+    country: String,
+    amount: u32,
+    lines: Vec&lt;u32&gt;,
+}
+
+fn classify(amount: u32) -&gt; String {
+    match amount {
+        0 =&gt; "free".into(),                          // literal
+        1..=999 =&gt; "small".into(),                   // inclusive range
+        1_000 | 2_000 =&gt; "round".into(),             // or-pattern
+        big @ 100_000.. =&gt; format!("large ({big})"), // @ binds the value that matched the range
+        n if n % 1_000 == 0 =&gt; format!("{} thousand", n / 1_000), // binding + guard
+        _ =&gt; "other".into(),                         // wildcard
+    }
+}
+
+fn describe_lines(lines: &amp;[u32]) -&gt; String {
+    match lines {
+        [] =&gt; String::from("no lines"),
+        [only] =&gt; format!("one line: {only}"),
+        [first, .., last] =&gt; format!("{} lines, first {first}, last {last}", lines.len()),
+    }
+}
+
+fn parse_kv(s: &amp;str) -&gt; Result&lt;(&amp;str, u32), String&gt; {
+    // let-else: bind if the pattern matches; otherwise the else block must leave the function.
+    let Some((key, value)) = s.split_once('=') else {
+        return Err(format!("no '=' in {s:?}"));
+    };
+    let Ok(n) = value.trim().parse::&lt;u32&gt;() else {
+        return Err(format!("{:?} is not a number", value.trim()));
+    };
+    Ok((key.trim(), n))
+}
+
+fn main() {
+    // 1. Literals, ranges, or-patterns, guards, @ bindings.
+    for a in [0, 250, 2_000, 7_000, 150_000, 1_234] {
+        println!("1. {a:&gt;7} -&gt; {}", classify(a));
+    }
+
+    // 2. Destructuring a struct, ignoring fields with `..`.
+    let order = Order { id: 42, country: String::from("NL"), amount: 25_000, lines: vec![3, 9, 4] };
+    let Order { id, ref country, .. } = order; // `ref` borrows instead of moving the String
+    println!("2. id {id}, country {country}, order still usable: {}", order.amount);
+
+    // 3. Matching through a reference: bindings become references automatically.
+    match &amp;order {
+        Order { country, amount, .. } if country == "NL" &amp;&amp; *amount &gt; 10_000 =&gt; {
+            println!("3. big Dutch order: country is a {}", std::any::type_name_of_val(&amp;country));
+        }
+        _ =&gt; println!("3. other"),
+    }
+
+    // 4. Slice patterns.
+    for lines in [&amp;[][..], &amp;[5][..], &amp;order.lines[..]] {
+        println!("4. {}", describe_lines(lines));
+    }
+
+    // 5. Tuples, and nested Options.
+    let pair = (Some(3), None::&lt;u32&gt;);
+    match pair {
+        (Some(a), Some(b)) =&gt; println!("5. both {a} {b}"),
+        (Some(a), None) | (None, Some(a)) =&gt; println!("5. exactly one: {a}"),
+        (None, None) =&gt; println!("5. neither"),
+    }
+
+    // 6. let-else.
+    for s in ["limit = 500", "limit=abc", "no equals sign"] {
+        println!("6. {s:?} -&gt; {:?}", parse_kv(s));
+    }
+
+    // 7. if let ... else, and let chains (edition 2024).
+    let maybe: Option&lt;&amp;Order&gt; = Some(&amp;order);
+    if let Some(o) = maybe
+        &amp;&amp; o.country == "NL"
+        &amp;&amp; let [first, ..] = o.lines.as_slice()
+    {
+        println!("7. Dutch order {} starts with line {first}", o.id);
+    } else {
+        println!("7. no match");
+    }
+
+    // 8. while let: loop as long as the pattern matches.
+    let mut stack = vec!["validate", "charge", "ship"];
+    while let Some(step) = stack.pop() {
+        print!("{}{step}", if stack.len() == 2 { "8. undo " } else { ", " });
+    }
+    println!();
+
+    // 9. matches!: a pattern test as a bool.
+    let big = order.lines.iter().filter(|n| matches!(n, 5..)).count();
+    println!("9. lines &gt;= 5: {big}");
+}</code></pre>
+<pre class="output">1.       0 -&gt; free
+1.     250 -&gt; small
+1.    2000 -&gt; round
+1.    7000 -&gt; 7 thousand
+1.  150000 -&gt; large (150000)
+1.    1234 -&gt; other
+2. id 42, country NL, order still usable: 25000
+3. big Dutch order: country is a &amp;alloc::string::String
+4. no lines
+4. one line: 5
+4. 3 lines, first 3, last 4
+5. exactly one: 3
+6. "limit = 500" -&gt; Ok(("limit", 500))
+6. "limit=abc" -&gt; Err("\"abc\" is not a number")
+6. "no equals sign" -&gt; Err("no '=' in \"no equals sign\"")
+7. Dutch order 42 starts with line 3
+8. undo ship, charge, validate
+9. lines &gt;= 5: 1</pre>
+<p>A real mistake from writing this program: the first version of <code>classify</code> had the guard arm (<code>n if n % 1_000 == 0</code>) <em>above</em> the <code>big @ 100_000..</code> arm, and 150,000 came out as "even thousands", because it's divisible by 1,000 and that arm came first. No warning is possible there: the compiler can't know that a guard overlaps a later range. Order your arms from specific to general.</p>
+
+<h3 id="lab-5">Step 5 — the same model in C#</h3>
+<pre data-title="l25cs/Program.cs (.NET 10, Release)"><code class="language-csharp">// The Payment type as a C# "union by convention": an abstract record and subclasses.
+var payments = new Payment[] { new Pending(), new Authorized(12_000), new Captured(9_900, false), new Failed("card expired") };
+
+foreach (var p in payments)
+{
+    try { Console.WriteLine($"1. {Label(p)}"); }
+    catch (Exception e) { Console.WriteLine($"1. {e.GetType().Name}: {e.Message}"); }
+}
+
+// 2. Records: value equality and non-destructive mutation with `with`.
+var policy = new RetryPolicy(3, 500);
+var gentle = policy with { BackoffMs = 2_000 };
+Console.WriteLine($"2. {gentle}; equal to a fresh (3, 2000)? {gentle == new RetryPolicy(3, 2_000)}");
+
+// 3. Property, relational and list patterns.
+int[] lines = [3, 9, 4];
+var described = lines switch
+{
+    [] =&gt; "no lines",
+    [var only] =&gt; $"one line: {only}",
+    [var first, .., var last] =&gt; $"{lines.Length} lines, first {first}, last {last}",
+};
+Console.WriteLine($"3. {described}");
+
+// Forgot Failed: the compiler only warns (CS8509), and the program throws at run time.
+static string Label(Payment p) =&gt; p switch
+{
+    Pending =&gt; "waiting",
+    Authorized { Amount: &gt; 10_000 } a =&gt; $"large authorization {a.Amount}",
+    Authorized a =&gt; $"authorized {a.Amount}",
+    Captured { Refunded: false } c =&gt; $"captured {c.Amount}",
+    Captured =&gt; "refunded",
+};
+
+abstract record Payment;
+record Pending : Payment;
+record Authorized(int Amount) : Payment;
+record Captured(int Amount, bool Refunded) : Payment;
+record Failed(string Reason) : Payment;
+record RetryPolicy(int MaxAttempts, int BackoffMs);</code></pre>
+<pre class="output">Program.cs(26,37): warning CS8509: The switch expression does not handle all possible values of its input type (it is not exhaustive). For example, the pattern '_' is not covered.</pre>
+<pre class="output">1. waiting
+1. large authorization 12000
+1. captured 9900
+1. SwitchExpressionException: Non-exhaustive switch expression failed to match its input.
+Unmatched value was Failed { Reason = card expired }.
+2. RetryPolicy { MaxAttempts = 3, BackoffMs = 2000 }; equal to a fresh (3, 2000)? True
+3. 3 lines, first 3, last 4</pre>
+<p>The build printed one warning, which is easy to miss in a large solution, and the program threw at run time on the fourth payment. The records, <code>with</code> and the list pattern behave like their Rust counterparts. The difference is entirely in who guarantees the cases are complete.</p>
+
+<h3 id="lab-6">Step 6 — a rule expression tree and a workflow state machine</h3>
+<pre data-playground data-title="src/bin/engine.rs"><code class="language-rust">use std::collections::HashMap;
+
+// ---------- Part A: a rule expression tree ----------
+#[derive(Debug, Clone, Copy)]
+enum Op { Gt, Ge, Eq, Ne }
+
+#[derive(Debug)]
+enum Expr {
+    Num(i64),
+    Field(String),
+    Cmp(Box&lt;Expr&gt;, Op, Box&lt;Expr&gt;), // Box: the sub-expressions live on the heap
+    And(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Or(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Not(Box&lt;Expr&gt;),
+}
+
+#[derive(Debug, PartialEq)]
+enum Value { Int(i64), Bool(bool) }
+
+fn eval(e: &amp;Expr, facts: &amp;HashMap&lt;&amp;str, i64&gt;) -&gt; Result&lt;Value, String&gt; {
+    match e {
+        Expr::Num(n) =&gt; Ok(Value::Int(*n)),
+        Expr::Field(name) =&gt; match facts.get(name.as_str()) {
+            Some(v) =&gt; Ok(Value::Int(*v)),
+            None =&gt; Err(format!("unknown field {name:?}")),
+        },
+        Expr::Cmp(l, op, r) =&gt; match (eval(l, facts), eval(r, facts)) {
+            (Ok(Value::Int(a)), Ok(Value::Int(b))) =&gt; Ok(Value::Bool(match op {
+                Op::Gt =&gt; a &gt; b,
+                Op::Ge =&gt; a &gt;= b,
+                Op::Eq =&gt; a == b,
+                Op::Ne =&gt; a != b,
+            })),
+            (Err(e), _) | (_, Err(e)) =&gt; Err(e),
+            _ =&gt; Err(String::from("comparison needs two numbers")),
+        },
+        Expr::And(l, r) =&gt; match eval(l, facts) {
+            Ok(Value::Bool(false)) =&gt; Ok(Value::Bool(false)), // short-circuit
+            Ok(Value::Bool(true)) =&gt; eval(r, facts),
+            Ok(Value::Int(_)) =&gt; Err(String::from("AND needs booleans")),
+            Err(e) =&gt; Err(e),
+        },
+        Expr::Or(l, r) =&gt; match eval(l, facts) {
+            Ok(Value::Bool(true)) =&gt; Ok(Value::Bool(true)),
+            Ok(Value::Bool(false)) =&gt; eval(r, facts),
+            Ok(Value::Int(_)) =&gt; Err(String::from("OR needs booleans")),
+            Err(e) =&gt; Err(e),
+        },
+        Expr::Not(inner) =&gt; match eval(inner, facts) {
+            Ok(Value::Bool(b)) =&gt; Ok(Value::Bool(!b)),
+            Ok(Value::Int(_)) =&gt; Err(String::from("NOT needs a boolean")),
+            Err(e) =&gt; Err(e),
+        },
+    }
+}
+
+fn cmp(field: &amp;str, op: Op, n: i64) -&gt; Expr {
+    Expr::Cmp(Box::new(Expr::Field(field.to_string())), op, Box::new(Expr::Num(n)))
+}
+
+// ---------- Part B: a workflow step's state machine ----------
+#[derive(Debug, Clone, PartialEq)]
+enum State {
+    Pending,
+    Running { attempt: u32 },
+    Waiting { attempt: u32, until: u64 },
+    Completed,
+    Failed { reason: String },
+}
+
+#[derive(Debug)]
+enum Event { Start, Succeeded, Errored(String), TimerFired(u64) }
+
+const MAX_ATTEMPTS: u32 = 3;
+
+// Match on the (state, event) pair: every combination is handled, or the code doesn't compile.
+fn transition(state: State, event: Event) -&gt; Result&lt;State, String&gt; {
+    match (state, event) {
+        (State::Pending, Event::Start) =&gt; Ok(State::Running { attempt: 1 }),
+        (State::Running { .. }, Event::Succeeded) =&gt; Ok(State::Completed),
+        (State::Running { attempt }, Event::Errored(reason)) if attempt &gt;= MAX_ATTEMPTS =&gt; {
+            Ok(State::Failed { reason: format!("{reason} (after {attempt} attempts)") })
+        }
+        (State::Running { attempt }, Event::Errored(_)) =&gt; {
+            Ok(State::Waiting { attempt, until: u64::from(attempt) * 1_000 }) // linear backoff
+        }
+        (State::Waiting { attempt, until }, Event::TimerFired(now)) if now &gt;= until =&gt; {
+            Ok(State::Running { attempt: attempt + 1 })
+        }
+        (s @ State::Waiting { .. }, Event::TimerFired(_)) =&gt; Ok(s), // too early: stay
+        (s @ (State::Completed | State::Failed { .. }), e) =&gt; {
+            Err(format!("{s:?} is final; ignored {e:?}"))
+        }
+        (s, e) =&gt; Err(format!("illegal: {e:?} in {s:?}")),
+    }
+}
+
+fn run(events: Vec&lt;Event&gt;) {
+    let mut s = State::Pending;
+    for ev in events {
+        let label = format!("{ev:?}");
+        match transition(s.clone(), ev) {
+            Ok(next) =&gt; {
+                println!("B. {label:&lt;26} -&gt; {next:?}");
+                s = next;
+            }
+            Err(msg) =&gt; println!("B. {label:&lt;26} -&gt; rejected: {msg}"),
+        }
+    }
+    println!("   ---");
+}
+
+fn main() {
+    // amount &gt;= 10000 AND (country_code == 31 OR NOT vip == 0)
+    let rule = Expr::And(
+        Box::new(cmp("amount", Op::Ge, 10_000)),
+        Box::new(Expr::Or(
+            Box::new(cmp("country_code", Op::Eq, 31)),
+            Box::new(Expr::Not(Box::new(cmp("vip", Op::Eq, 0)))),
+        )),
+    );
+    let order1 = HashMap::from([("amount", 25_000), ("country_code", 49), ("vip", 1)]);
+    let order2 = HashMap::from([("amount", 25_000), ("country_code", 49), ("vip", 0)]);
+    let order3 = HashMap::from([("amount", 25_000)]);
+    println!("A. order1 -&gt; {:?}", eval(&amp;rule, &amp;order1));
+    println!("   order2 -&gt; {:?}", eval(&amp;rule, &amp;order2));
+    println!("   order3 -&gt; {:?}", eval(&amp;rule, &amp;order3));
+    println!("   Gt on order1 -&gt; {:?}", eval(&amp;cmp("amount", Op::Gt, 30_000), &amp;order1));
+    println!("   Ne on order1 -&gt; {:?}", eval(&amp;cmp("vip", Op::Ne, 0), &amp;order1));
+
+    run(vec![
+        Event::Start,
+        Event::Errored(String::from("timeout")),
+        Event::TimerFired(500),
+        Event::TimerFired(1_000),
+        Event::Errored(String::from("timeout")),
+        Event::TimerFired(2_000),
+        Event::Errored(String::from("card declined")),
+        Event::Start,
+    ]);
+    run(vec![Event::Succeeded, Event::Start, Event::Succeeded, Event::TimerFired(9)]);
+}</code></pre>
+<pre class="output">A. order1 -&gt; Ok(Bool(true))
+   order2 -&gt; Ok(Bool(false))
+   order3 -&gt; Err("unknown field \"country_code\"")
+   Gt on order1 -&gt; Ok(Bool(false))
+   Ne on order1 -&gt; Ok(Bool(true))
+B. Start                      -&gt; Running { attempt: 1 }
+B. Errored("timeout")         -&gt; Waiting { attempt: 1, until: 1000 }
+B. TimerFired(500)            -&gt; Waiting { attempt: 1, until: 1000 }
+B. TimerFired(1000)           -&gt; Running { attempt: 2 }
+B. Errored("timeout")         -&gt; Waiting { attempt: 2, until: 2000 }
+B. TimerFired(2000)           -&gt; Running { attempt: 3 }
+B. Errored("card declined")   -&gt; Failed { reason: "card declined (after 3 attempts)" }
+B. Start                      -&gt; rejected: Failed { reason: "card declined (after 3 attempts)" } is final; ignored Start
+   ---
+B. Succeeded                  -&gt; rejected: illegal: Succeeded in Pending
+B. Start                      -&gt; Running { attempt: 1 }
+B. Succeeded                  -&gt; Completed
+B. TimerFired(9)              -&gt; rejected: Completed is final; ignored TimerFired(9)
+   ---</pre>
+<p>Part A: order 1 passes because <code>NOT vip == 0</code> is true, order 2 fails because the customer is neither Dutch (31) nor VIP, and order 3 reports the missing field instead of guessing. <code>And</code> short-circuits, as the <code>Ok(Value::Bool(false))</code> arm shows. Part B: the retry path waits until the timer reaches the backoff, fails for good after three attempts, and rejects events in final states. The last run shows the catch-all <code>(s, e)</code> arm rejecting <code>Succeeded</code> in <code>Pending</code>. Exercise 2 removes that catch-all to make the compiler check every pair.</p>
+
+<h3 id="lab-7">Step 7 — operators as text vs as an enum</h3>
+<pre data-playground data-title="src/bin/cost.rs"><code class="language-rust">use std::hint::black_box;
+use std::mem::size_of;
+use std::time::Instant;
+
+// Version A: the operator kept as text and compared on every evaluation.
+struct TextCond {
+    op: String,
+    rhs: i64,
+}
+
+fn eval_text(c: &amp;TextCond, lhs: i64) -&gt; bool {
+    match c.op.as_str() {
+        "&gt;" =&gt; lhs &gt; c.rhs,
+        "&gt;=" =&gt; lhs &gt;= c.rhs,
+        "&lt;" =&gt; lhs &lt; c.rhs,
+        "&lt;=" =&gt; lhs &lt;= c.rhs,
+        "==" =&gt; lhs == c.rhs,
+        "!=" =&gt; lhs != c.rhs,
+        other =&gt; panic!("unknown operator {other}"), // only discovered while evaluating
+    }
+}
+
+// Version B: the operator parsed once into an enum; invalid text is rejected at parse time.
+#[derive(Clone, Copy)]
+enum Op { Gt, Ge, Lt, Le, Eq, Ne }
+
+struct EnumCond {
+    op: Op,
+    rhs: i64,
+}
+
+fn parse_op(s: &amp;str) -&gt; Option&lt;Op&gt; {
+    Some(match s {
+        "&gt;" =&gt; Op::Gt,
+        "&gt;=" =&gt; Op::Ge,
+        "&lt;" =&gt; Op::Lt,
+        "&lt;=" =&gt; Op::Le,
+        "==" =&gt; Op::Eq,
+        "!=" =&gt; Op::Ne,
+        _ =&gt; return None,
+    })
+}
+
+fn eval_enum(c: &amp;EnumCond, lhs: i64) -&gt; bool {
+    match c.op {
+        Op::Gt =&gt; lhs &gt; c.rhs,
+        Op::Ge =&gt; lhs &gt;= c.rhs,
+        Op::Lt =&gt; lhs &lt; c.rhs,
+        Op::Le =&gt; lhs &lt;= c.rhs,
+        Op::Eq =&gt; lhs == c.rhs,
+        Op::Ne =&gt; lhs != c.rhs,
+    }
+}
+
+fn best_of_5(mut f: impl FnMut() -&gt; usize) -&gt; (f64, usize) {
+    let mut best = f64::INFINITY;
+    let mut hits = 0;
+    for _ in 0..5 {
+        let t = Instant::now();
+        hits = black_box(f());
+        best = best.min(t.elapsed().as_secs_f64() * 1e3);
+    }
+    (best, hits)
+}
+
+fn main() {
+    let ops = ["&gt;", "&gt;=", "&lt;", "&lt;=", "==", "!="];
+    let text: Vec&lt;TextCond&gt; = (0..1_000)
+        .map(|i| TextCond { op: ops[i % 6].to_string(), rhs: (i as i64 * 37) % 1_000 })
+        .collect();
+    let parsed: Vec&lt;EnumCond&gt; = text
+        .iter()
+        .map(|c| EnumCond { op: parse_op(&amp;c.op).expect("valid operator"), rhs: c.rhs })
+        .collect();
+    let facts: Vec&lt;i64&gt; = (0..10_000).map(|i| (i * 7919) % 1_000).collect();
+
+    let (t_text, h_text) = best_of_5(|| {
+        let mut hits = 0;
+        for &amp;lhs in black_box(&amp;facts) {
+            for c in &amp;text {
+                hits += eval_text(c, lhs) as usize;
+            }
+        }
+        hits
+    });
+    let (t_enum, h_enum) = best_of_5(|| {
+        let mut hits = 0;
+        for &amp;lhs in black_box(&amp;facts) {
+            for c in &amp;parsed {
+                hits += eval_enum(c, lhs) as usize;
+            }
+        }
+        hits
+    });
+    assert_eq!(h_text, h_enum);
+    println!("1,000 conditions x 10,000 facts = 10 million evaluations, best of 5:");
+    println!("  operator as String: {t_text:&gt;6.1} ms   (condition = {} bytes)", size_of::&lt;TextCond&gt;());
+    println!("  operator as enum:   {t_enum:&gt;6.1} ms   (condition = {} bytes)", size_of::&lt;EnumCond&gt;());
+    println!("  same {h_enum} hits; enum is {:.1}x faster", t_text / t_enum);
+    println!("  parse_op(\"=&gt;\") = {:?}", parse_op("=&gt;").map(|_| "an Op"));
+}</code></pre>
+<pre class="output">1,000 conditions x 10,000 facts = 10 million evaluations, best of 5:
+  operator as String:   13.2 ms   (condition = 32 bytes)
+  operator as enum:      8.5 ms   (condition = 16 bytes)
+  same 5067160 hits; enum is 1.6x faster
+  parse_op("=&gt;") = None</pre>
+<figure class="visual">
+  <span class="visual-tag">Chart · evaluating 10 million conditions</span>
+  <div class="chart-box"><canvas id="op-chart" aria-label="Bar chart: operator stored as String 13.2 ms, as enum 8.5 ms"></canvas></div>
+  <figcaption><strong>Figure 4.</strong> Release build, best of 5 per run, median of 3 runs (String: 14.4, 13.1, 13.2 ms; enum: 8.5 ms each time). The enum version is 1.6× faster and half the size per condition (16 vs 32 bytes). More importantly, an invalid operator like <code>"=&gt;"</code> is rejected when the rule is loaded (<code>parse_op</code> returns <code>None</code>) instead of panicking in the middle of evaluation.</figcaption>
+</figure>
+<p>That's the "parse, don't validate" principle from chapter F8, measured: convert untrusted text into an enum once at the boundary, then let exhaustive <code>match</code>es work on values that can only be valid.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs (1 and 2 with <code>assert!</code>s) and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — money that can't be mixed <span class="difficulty">★☆☆ product skill</span></div>
+  <p>Define <code>enum Currency { Eur, Usd }</code> and <code>struct Money { cents: i64, currency: Currency }</code> with <code>new</code>, <code>add(self, other) -&gt; Option&lt;Money&gt;</code> (returning <code>None</code> for different currencies) and <code>is_zero(&amp;self)</code>. Derive what you need so that <code>assert_eq!</code> works and values can be reused after <code>add</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">#[derive(Debug, Clone, Copy, PartialEq)]
+enum Currency {
+    Eur,
+    Usd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Money {
+    cents: i64,
+    currency: Currency,
+}
+
+impl Money {
+    fn new(cents: i64, currency: Currency) -&gt; Self {
+        Money { cents, currency }
+    }
+
+    // Adding different currencies isn't an error you can ignore: the type says "maybe".
+    fn add(self, other: Money) -&gt; Option&lt;Money&gt; {
+        if self.currency == other.currency {
+            Some(Money { cents: self.cents + other.cents, ..self })
+        } else {
+            None
+        }
+    }
+
+    fn is_zero(&amp;self) -&gt; bool {
+        self.cents == 0
+    }
+}
+
+fn main() {
+    let a = Money::new(1_250, Currency::Eur);
+    let b = Money::new(750, Currency::Eur);
+    let c = Money::new(500, Currency::Usd);
+    println!("{:?}", a.add(b));
+    println!("{:?}", a.add(c));
+    assert_eq!(a.add(b), Some(Money::new(2_000, Currency::Eur)));
+    assert_eq!(a.add(c), None);
+    assert!(Money::new(0, Currency::Usd).is_zero());
+    println!("a is still usable (Money is Copy): {a:?}");
+}</code></pre>
+<pre class="output">Some(Money { cents: 2000, currency: Eur })
+None
+a is still usable (Money is Copy): Money { cents: 1250, currency: Eur }</pre>
+  <p><code>PartialEq</code> makes <code>assert_eq!</code> and <code>==</code> work, <code>Debug</code> lets <code>assert_eq!</code> print the values when it fails, and <code>Clone, Copy</code> mean <code>add(self, …)</code> copies instead of moving, which is fine for 16 bytes of plain data (chapter 2.2's decision table). <code>..self</code> takes the currency from <code>self</code>. Returning <code>Option</code> makes "adding euros to dollars" impossible to ignore; chapter 2.6 turns it into a proper error type.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — add cancellation, with the compiler's help <span class="difficulty">★★☆ product skill</span></div>
+  <p>Add a <code>Cancelled { by: String }</code> state and a <code>Cancel(String)</code> event to Lab step 6's state machine. A step may be cancelled while <code>Pending</code> or <code>Waiting</code>, but not while <code>Running</code>, and <code>Cancelled</code> is final. First remove the catch-all <code>(s, e) =&gt;</code> arm so the compiler lists every pair you haven't decided.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">#[derive(Debug, Clone, PartialEq)]
+enum State {
+    Pending,
+    Running { attempt: u32 },
+    Waiting { attempt: u32, until: u64 },
+    Completed,
+    Failed { reason: String },
+    Cancelled { by: String }, // new
+}
+
+#[derive(Debug)]
+enum Event {
+    Start,
+    Succeeded,
+    Errored(String),
+    TimerFired(u64),
+    Cancel(String), // new
+}
+
+const MAX_ATTEMPTS: u32 = 3;
+
+// No catch-all `(s, e) =&gt;` arm: every illegal pair is listed, so adding a State or Event
+// variant makes this match fail to compile until the new cases are decided.
+fn transition(state: State, event: Event) -&gt; Result&lt;State, String&gt; {
+    use Event::*;
+    use State::*;
+    match (state, event) {
+        (Pending, Start) =&gt; Ok(Running { attempt: 1 }),
+        (Pending | Waiting { .. }, Cancel(by)) =&gt; Ok(Cancelled { by }),
+        (Running { .. }, Cancel(_)) =&gt; Err(String::from("can't cancel a running step; wait for it")),
+        (Running { .. }, Succeeded) =&gt; Ok(Completed),
+        (Running { attempt }, Errored(reason)) if attempt &gt;= MAX_ATTEMPTS =&gt; {
+            Ok(Failed { reason: format!("{reason} (after {attempt} attempts)") })
+        }
+        (Running { attempt }, Errored(_)) =&gt; Ok(Waiting { attempt, until: u64::from(attempt) * 1_000 }),
+        (Waiting { attempt, until }, TimerFired(now)) if now &gt;= until =&gt; Ok(Running { attempt: attempt + 1 }),
+        (s @ Waiting { .. }, TimerFired(_)) =&gt; Ok(s),
+        (s @ (Completed | Failed { .. } | Cancelled { .. }), e) =&gt; Err(format!("{s:?} is final; ignored {e:?}")),
+        (s @ Pending, e @ (Succeeded | Errored(_) | TimerFired(_))) =&gt; Err(format!("illegal: {e:?} in {s:?}")),
+        (s @ Running { .. }, e @ (Start | TimerFired(_))) =&gt; Err(format!("illegal: {e:?} in {s:?}")),
+        (s @ Waiting { .. }, e @ (Start | Succeeded | Errored(_))) =&gt; Err(format!("illegal: {e:?} in {s:?}")),
+    }
+}
+
+fn main() {
+    let cancelled = transition(State::Pending, Event::Cancel(String::from("ops")));
+    println!("{cancelled:?}");
+    assert_eq!(cancelled, Ok(State::Cancelled { by: String::from("ops") }));
+
+    let running = transition(State::Pending, Event::Start).unwrap();
+    println!("{:?}", transition(running.clone(), Event::Cancel(String::from("ops"))));
+    assert!(transition(running, Event::Cancel(String::from("ops"))).is_err());
+
+    let waiting = State::Waiting { attempt: 1, until: 1_000 };
+    assert!(matches!(transition(waiting, Event::Cancel(String::from("sla"))), Ok(State::Cancelled { .. })));
+    let done = State::Cancelled { by: String::from("ops") };
+    println!("{:?}", transition(done, Event::Start));
+    // The original retry path still works.
+    let mut s = State::Pending;
+    for e in [Event::Start, Event::Errored(String::from("timeout")), Event::TimerFired(1_000), Event::Succeeded] {
+        s = transition(s, e).unwrap();
+    }
+    assert_eq!(s, State::Completed);
+    println!("retry path ends in {s:?}; ok");
+}</code></pre>
+<pre class="output">Ok(Cancelled { by: "ops" })
+Err("can't cancel a running step; wait for it")
+Err("Cancelled { by: \"ops\" } is final; ignored Start")
+retry path ends in Completed; ok</pre>
+  <p>Without the catch-all, the last three arms list the illegal pairs explicitly, grouped with or-patterns. It's more typing, and that's the point. I checked what happens if someone later adds a <code>Paused</code> state without updating this function: <code>error[E0004]: non-exhaustive patterns: `(State::Paused, _)` not covered</code>. The compiler forces a decision about pausing in every combination. With the catch-all it would have compiled and silently rejected every event while paused. <code>use State::*;</code> inside the function shortens the arms without polluting the module.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — which arm runs? <span class="difficulty">★★☆</span></div>
+  <p>Predict the six lines this program prints, then check.</p>
+<pre data-title="route.rs"><code class="language-rust">fn route(amount: u32, country: &amp;str, vip: bool) -&gt; &amp;'static str {
+    match (amount, country, vip) {
+        (0, _, _) =&gt; "reject",
+        (_, "NL" | "BE", true) =&gt; "fast-lane",
+        (a, _, _) if a &gt; 50_000 =&gt; "manual-review",
+        (_, "NL" | "BE", _) =&gt; "benelux",
+        (1..=999, _, true) =&gt; "small-vip",
+        _ =&gt; "standard",
+    }
+}
+
+fn main() {
+    println!("1 {}", route(0, "NL", true));
+    println!("2 {}", route(80_000, "BE", true));
+    println!("3 {}", route(80_000, "BE", false));
+    println!("4 {}", route(500, "DE", true));
+    println!("5 {}", route(500, "NL", false));
+    println!("6 {}", route(2_000, "FR", true));
+}</code></pre>
+  <details class="solution"><summary>Show solution</summary>
+<pre class="output">1 reject
+2 fast-lane
+3 manual-review
+4 small-vip
+5 benelux
+6 standard</pre>
+  <ul>
+    <li><strong>1</strong>: amount 0 hits the first arm before anything else is considered.</li>
+    <li><strong>2</strong>: a Belgian VIP gets the fast lane even for 80,000, because that arm comes <em>before</em> the manual-review guard.</li>
+    <li><strong>3</strong>: not a VIP, so arm 2 fails; the guard <code>a &gt; 50_000</code> catches it.</li>
+    <li><strong>4</strong>: German, 500, VIP: arms 2–4 fail; <code>1..=999</code> with <code>true</code> matches.</li>
+    <li><strong>5</strong>: Dutch, not VIP, 500: arm 4 (<code>benelux</code>) comes before the small-VIP arm, and wouldn't match it anyway.</li>
+    <li><strong>6</strong>: a French VIP with 2,000 is outside <code>1..=999</code>, so it falls to <code>_</code>.</li>
+  </ul>
+  <p>If line 2 surprised you, that's a real business-rule bug hiding in arm order: should large VIP orders skip review? A rule engine should make such priorities explicit data (chapter 9.4's conflict resolution), not an accident of arm order.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which construct?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>You need…</th><th>Use</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Several values that belong together</td><td>Named-field struct</td><td><code>RetryPolicy { max_attempts, backoff_ms }</code></td></tr>
+    <tr><td>A distinct type around one value</td><td>Tuple struct (newtype)</td><td><code>StepId(u64)</code>, <code>Cents(i64)</code></td></tr>
+    <tr><td>One of several alternatives, each with its own data</td><td>Enum</td><td><code>Payment</code>, <code>State</code>, <code>Expr</code></td></tr>
+    <tr><td>Maybe a value</td><td><code>Option&lt;T&gt;</code></td><td><code>fn amount(&amp;self) -&gt; Option&lt;u32&gt;</code></td></tr>
+    <tr><td>Handle every case</td><td><code>match</code> without <code>_</code></td><td>State transitions</td></tr>
+    <tr><td>Handle one case, ignore the rest</td><td><code>if let</code> (with <code>else</code> if needed)</td><td><code>if let Some(lease) = slot { … }</code></td></tr>
+    <tr><td>Bail out early unless a pattern matches</td><td><code>let-else</code></td><td><code>let Some(x) = … else { return Err(…) };</code></td></tr>
+    <tr><td>Several conditions and patterns at once</td><td>Let chains (edition 2024)</td><td><code>if let Some(o) = x &amp;&amp; o.ok &amp;&amp; let [first, ..] = …</code></td></tr>
+    <tr><td>A yes/no pattern test</td><td><code>matches!</code></td><td><code>matches!(p, Payment::Captured { .. })</code></td></tr>
+    <tr><td>Simple transformations of an <code>Option</code></td><td>Its methods</td><td><code>map</code>, <code>unwrap_or</code>, <code>and_then</code>, <code>?</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: data and decisions</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Concern</th><th>C# / .NET</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td>Grouping data</td><td><code>class</code>, <code>struct</code>, <code>record</code></td><td><code>struct</code> (always a value)</td></tr>
+    <tr><td>Constructors</td><td>Special members, run automatically</td><td>Ordinary associated functions (<code>new</code>)</td></tr>
+    <tr><td>Methods</td><td>Inside the class; <code>this</code> is implicit</td><td>In <code>impl</code> blocks; <code>self</code>, <code>&amp;self</code>, <code>&amp;mut self</code> are explicit</td></tr>
+    <tr><td>Equality, hashing, printing</td><td>Generated for records</td><td><code>#[derive(PartialEq, Hash, Debug)]</code></td></tr>
+    <tr><td>Non-destructive update</td><td><code>with</code> (copies)</td><td>Struct update <code>..other</code> (moves)</td></tr>
+    <tr><td>Enumerations</td><td>Named integers, no data, any int castable</td><td>Closed sum types with data</td></tr>
+    <tr><td>Alternatives with data</td><td>Abstract record + subclasses (open); <code>union</code> (C# 15 preview)</td><td><code>enum</code> (closed)</td></tr>
+    <tr><td>Missing case</td><td>Warning CS8509 + run-time exception</td><td>Error E0004 naming the case</td></tr>
+    <tr><td>Absence</td><td><code>null</code> / <code>T?</code></td><td><code>Option&lt;T&gt;</code></td></tr>
+    <tr><td>Guards</td><td><code>when</code></td><td><code>if</code></td></tr>
+    <tr><td>Early exit on mismatch</td><td><code>if (x is not Foo f) return;</code></td><td><code>let Foo(f) = x else { return };</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ Reaching for <code>_</code> in matches on your own enums</div>
+  <p>It compiles today and hides tomorrow's new variant. List variants explicitly, especially for states, events and commands; use <code>_</code> for open-ended types like integers and strings.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Arm order with guards and ranges</div>
+  <p>The first matching arm wins, and the compiler can't detect a guard that overlaps a later arm (Lab step 4's <code>classify</code>, Exercise 3). Order specific to general, and test boundaries.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ <code>unwrap()</code> everywhere</div>
+  <p>It turns <code>None</code> into a crash. Use <code>unwrap_or</code>, <code>?</code>, <code>let-else</code> or a <code>match</code>; keep <code>unwrap</code>/<code>expect</code> for cases that truly can't happen, with <code>expect</code> explaining why (chapter 2.6).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Expecting struct update to copy</div>
+  <p><code>..other</code> moves <code>other</code>'s non-<code>Copy</code> fields (e6). Clone first if you still need <code>other</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Booleans and strings where an enum belongs</div>
+  <p><code>is_active: bool, is_deleted: bool</code> allows the impossible "active and deleted"; <code>op: String</code> allows <code>"=&gt;"</code>. Model the real alternatives as an enum (chapter F8) and parse text into it at the boundary (Lab step 7).</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Writing getters and setters for every field</div>
+  <p>That's a C#/Java habit. Inside a module, fields are accessed directly; expose methods that mean something (<code>record_attempt</code>, <code>can_retry</code>) and control visibility with modules (chapter 2.7).</p></div>
+
+<h2 id="real-world">Real-world view: types in your products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine:</strong> the parsed rule is an <code>Expr</code> enum tree; operators, value types and actions are enums; evaluation is a recursive <code>match</code> (Lab step 6). Adding an operator makes every unfinished <code>match</code> a compile error, which is exactly the checklist a language implementer wants (chapters 9.2–9.3).</li>
+    <li><strong>Workflow engine:</strong> step state and events are enums and transitions are one exhaustive <code>match</code>, so persisted states can only be ones the code knows how to resume (chapters 10.3, 10.7). Serialising enums with data maps naturally to tagged JSON (chapter 7.1).</li>
+    <li><strong>Parse at the boundary:</strong> API payloads and rule text become structs and enums once, at the edge. Inside, functions take types that can only hold valid data, so validation code doesn't repeat.</li>
+    <li><strong>Commands and queries:</strong> <code>&amp;self</code> methods are queries, <code>&amp;mut self</code> methods commands, <code>self</code> methods finish or convert, and the signatures document intent.</li>
+    <li><strong>Review checklist:</strong> <code>_</code> arms on owned enums; boolean flag combinations that should be an enum; <code>String</code> fields holding a fixed set of values; <code>unwrap()</code> on data from outside; struct update syntax that moves more than intended; unreachable-pattern warnings left in the build.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="2.5">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which receiver should a method that changes a step's attempt counter take?</div>
+    <ol class="options">
+      <li data-key="a"><code>&amp;self</code></li>
+      <li data-key="b"><code>&amp;mut self</code>: it changes the step in place and the caller keeps it</li>
+      <li data-key="c"><code>self</code></li>
+      <li data-key="d">No <code>self</code>: make it an associated function</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Mutating through <code>&amp;self</code> is error E0594 (Lab step 2).</p>
+      <p data-for="b">Correct (Figure 1).</p>
+      <p data-for="c">That would consume the step; the caller would lose it.</p>
+      <p data-for="d">Then it would have no step to change.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>Step { name: new_name, ..old }</code> do with <code>old</code>?</div>
+    <ol class="options">
+      <li data-key="a">Copies all remaining fields, leaving <code>old</code> untouched</li>
+      <li data-key="b">Takes references to <code>old</code>'s fields</li>
+      <li data-key="c">Moves <code>old</code>'s remaining non-<code>Copy</code> fields into the new value, so <code>old</code> is partially moved</li>
+      <li data-key="d">Drops <code>old</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's C#'s <code>with</code>; Rust moves (e6).</p>
+      <p data-for="b">Struct fields own their values.</p>
+      <p data-for="c">Correct. Clone <code>old</code> first if you still need it.</p>
+      <p data-for="d">Copy fields of <code>old</code> remain usable.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A <code>match</code> on <code>Payment</code> has arms for <code>Pending</code>, <code>Authorized(n) if n &gt; 1000</code>, <code>Captured { .. }</code> and <code>Failed</code>. Does it compile?</div>
+    <ol class="options">
+      <li data-key="a">No: guards don't count for exhaustiveness, so authorized amounts ≤ 1000 are unhandled (E0004)</li>
+      <li data-key="b">Yes, every variant is mentioned</li>
+      <li data-key="c">Yes, but it panics for small amounts</li>
+      <li data-key="d">No: guards aren't allowed on tuple variants</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Try it in Figure 3.</p>
+      <p data-for="b">Mentioning a variant isn't enough if a guard can fail.</p>
+      <p data-for="c">It never compiles, so it can't panic.</p>
+      <p data-for="d">Guards work on any arm.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why can't you write <code>let Some(limit) = input;</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>Some</code> is a function, not a pattern</li>
+      <li data-key="b"><code>let</code> can't destructure</li>
+      <li data-key="c">It needs <code>mut</code></li>
+      <li data-key="d">The pattern is refutable (it fails on <code>None</code>), and a plain <code>let</code> needs an irrefutable pattern (E0005). Use <code>let-else</code> or <code>if let</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a"><code>Some(x)</code> is a valid pattern; it just can fail.</p>
+      <p data-for="b"><code>let (a, b) = pair;</code> destructures fine.</p>
+      <p data-for="c">Mutability isn't the issue.</p>
+      <p data-for="d">Correct (e7).</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your colleague adds <code>_ =&gt; Err("illegal")</code> to the workflow's transition <code>match</code> "to save typing". What risk does that create?</div>
+    <ol class="options">
+      <li data-key="a">It's slower</li>
+      <li data-key="b">A state or event added later compiles without anyone deciding its transitions, and is silently rejected at run time</li>
+      <li data-key="c">It doesn't compile</li>
+      <li data-key="d">None</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Performance is the same.</p>
+      <p data-for="b">Correct (Exercise 2: without it, adding <code>Paused</code> gives E0004).</p>
+      <p data-for="c">A catch-all always compiles.</p>
+      <p data-for="d">It trades a compile error for a production surprise.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why does a recursive <code>enum Expr { Not(Expr), … }</code> fail, and what fixes it?</div>
+    <ol class="options">
+      <li data-key="a">Enums can't refer to themselves; use a struct</li>
+      <li data-key="b">It needs <code>#[derive(Clone)]</code></li>
+      <li data-key="c">Its size would be infinite (E0072); <code>Not(Box&lt;Expr&gt;)</code> stores the child on the heap behind a fixed-size pointer</li>
+      <li data-key="d">Use <code>&amp;Expr</code> always</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">They can, through indirection.</p>
+      <p data-for="b">Derives don't change size.</p>
+      <p data-for="c">Correct (e2, Lab step 6).</p>
+      <p data-for="d">A reference works only if something else owns the child; <code>Box</code> owns it.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Which is the idiomatic way to get an order's amount or 0 from <code>amount: Option&lt;u32&gt;</code>?</div>
+    <ol class="options">
+      <li data-key="a"><code>amount.unwrap_or(0)</code></li>
+      <li data-key="b"><code>if amount == null { 0 } else { amount }</code></li>
+      <li data-key="c"><code>amount.unwrap()</code></li>
+      <li data-key="d"><code>amount as u32</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct (Lab step 3).</p>
+      <p data-for="b">There's no <code>null</code>.</p>
+      <p data-for="c">That panics on <code>None</code>.</p>
+      <p data-for="d"><code>Option</code> can't be cast.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">In C#, a switch expression over an abstract-record hierarchy misses one subclass. What happens, compared with Rust?</div>
+    <ol class="options">
+      <li data-key="a">Both are compile errors</li>
+      <li data-key="b">C#: compile error; Rust: warning</li>
+      <li data-key="c">Both compile silently</li>
+      <li data-key="d">C#: warning CS8509, then <code>SwitchExpressionException</code> at run time; Rust: error E0004 naming the missing variant</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">C# only warns (Lab step 5).</p>
+      <p data-for="b">Reversed.</p>
+      <p data-for="c">Both report it, at different severities.</p>
+      <p data-for="d">Correct.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">What does <code>match &amp;order { Order { country, .. } =&gt; … }</code> bind <code>country</code> to?</div>
+    <ol class="options">
+      <li data-key="a">A moved <code>String</code></li>
+      <li data-key="b">A <code>&amp;String</code>: matching through a reference makes bindings borrow (default binding modes)</li>
+      <li data-key="c">A copy of the string</li>
+      <li data-key="d">It doesn't compile</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Nothing can be moved out through a reference.</p>
+      <p data-for="b">Correct (Lab step 4, section 3, prints the type).</p>
+      <p data-for="c">Rust never copies a <code>String</code> implicitly.</p>
+      <p data-for="d">It does; that's match ergonomics.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Rules store their operator as a <code>String</code> and <code>match</code> on it during evaluation. What's the better design?</div>
+    <ol class="options">
+      <li data-key="a">Keep the String; it's more flexible</li>
+      <li data-key="b">Use integers for operators</li>
+      <li data-key="c">Parse the text into an <code>Op</code> enum when the rule is loaded, rejecting bad operators there; evaluate with an exhaustive <code>match</code> on the enum</li>
+      <li data-key="d">Use a C#-style enum with explicit numbers</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Bad operators then surface only during evaluation.</p>
+      <p data-for="b">Integers allow invalid values.</p>
+      <p data-for="c">Correct (Lab step 7: 1.6× faster, half the size, and errors at load time).</p>
+      <p data-for="d">Explicit discriminants are allowed but don't add anything here.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Structs come in three shapes (named, tuple/newtype, unit); every field is set at construction. Behaviour goes in <code>impl</code> blocks: <code>&amp;self</code> reads, <code>&amp;mut self</code> changes, <code>self</code> consumes, no <code>self</code> constructs.</li>
+  <li><code>#[derive(...)]</code> generates <code>Debug</code>, <code>Clone</code>, <code>Copy</code>, <code>PartialEq</code>, <code>Hash</code>, <code>Default</code> and the rest; derive only what the type should be able to do.</li>
+  <li>Enum variants carry their own data; <code>Option&lt;T&gt;</code> replaces null, and its methods (<code>map</code>, <code>unwrap_or</code>, <code>and_then</code>, <code>?</code>) cover most uses without a <code>match</code>.</li>
+  <li><code>match</code> tests arms top to bottom (pattern, then guard) and must be exhaustive; guards don't count. rustc reports wholly missing variants first. Avoid <code>_</code> on your own enums so new variants become compile errors.</li>
+  <li><code>if let</code>, <code>while let</code>, <code>let-else</code>, let chains (edition 2024) and <code>matches!</code> are the short forms. A state machine as one <code>match</code> on (state, event) is the most valuable pattern for the workflow engine.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">struct</li><li class="chip">tuple struct</li><li class="chip">impl block</li><li class="chip">method</li><li class="chip">associated function</li><li class="chip">derive</li>
+  <li class="chip">variant</li><li class="chip">pattern</li><li class="chip">match guard</li><li class="chip">refutable pattern</li><li class="chip">let-else</li><li class="chip">let chain</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span>The Rust Programming Language: <a href="https://doc.rust-lang.org/book/ch05-00-structs.html">Structs</a>, <a href="https://doc.rust-lang.org/book/ch05-03-method-syntax.html">Method Syntax</a>, <a href="https://doc.rust-lang.org/book/ch06-00-enums.html">Enums and Pattern Matching</a>, <a href="https://doc.rust-lang.org/book/ch19-00-patterns.html">Patterns and Matching</a><span class="why">The sources of the method and match quotes, and the full catalogue of pattern syntax.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/patterns.html">The Rust Reference — Patterns</a> and <a href="https://doc.rust-lang.org/edition-guide/rust-2024/match-ergonomics.html">Edition Guide — Rust 2024 match ergonomics reservations</a><span class="why">Exact rules for binding modes, refutability and the 2024 changes in the binding-modes deep dive.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/std/option/enum.Option.html"><code>Option</code></a> and <a href="https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/">Rust 1.88.0 release (let chains)</a><span class="why">Every <code>Option</code> method, and the announcement of let chains with its edition requirement.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/csharp/fundamentals/functional/pattern-matching">Pattern matching overview</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">Records</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/operators/switch-expression">switch expression</a><span class="why">The C# side of Lab step 5: patterns, records and the non-exhaustive switch warning.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1017/S0956796807006223">“Warnings for pattern matching”</a> — Luc Maranget, Journal of Functional Programming, 2007<span class="why">The usefulness algorithm for exhaustiveness and unreachable-pattern checking; rustc's own docs say its checker is "inspired from" this paper, adapted for Rust's richer patterns.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=n3bPhdiJm9I">“Structs in Rust”</a> — Let's Get Rusty<span class="why">A walk through the Book's struct chapter, including method syntax.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- exhaustiveness explorer (Figure 3) ----------
+  var ARMS = [
+    "Payment::Pending => 1,",
+    "Payment::Authorized(0) => 2,",
+    "Payment::Authorized(n) if n > 1000 => 3,",
+    "Payment::Authorized(_) => 4,",
+    "Payment::Captured { refunded: true, .. } => 5,",
+    "Payment::Captured { refunded: false, amount } => 6,",
+    "Payment::Captured { .. } => 7,",
+    "_ => 8,",
+    "Payment::Failed => 9,"
+  ];
+  // Arms (by index): 0 Pending, 1 Authorized(0), 2 Authorized(n) if n>1000, 3 Authorized(_),
+  // 4 Captured{refunded:true,..}, 5 Captured{refunded:false,amount}, 6 Captured{..}, 7 _, 8 Failed
+  function check(on) { // on: array of 9 booleans, arms kept in this fixed order
+    var missing = [], unreachable = [];
+    var wild = on[7];
+    if (on[6] && on[4] && on[5]) unreachable.push(6);   // Captured{..} after both refunded arms
+    if (on[8] && wild) unreachable.push(8);             // Failed after `_`
+    if (!wild) {
+      // rustc first reports variants that appear in no arm at all (a guarded arm counts as appearing);
+      // only when every variant appears does it report what is missing inside partly covered ones.
+      var present = [on[0], on[1] || on[2] || on[3], on[4] || on[5] || on[6], on[8]];
+      var whole = ["Payment::Pending", "Payment::Authorized(_)", "Payment::Captured { .. }", "Payment::Failed"];
+      if (present.indexOf(false) >= 0) {
+        present.forEach(function (p, v) { if (!p) missing.push(whole[v]); });
+      } else {
+        if (!on[3]) missing.push(on[1] ? "Payment::Authorized(1_u32..=u32::MAX)" : "Payment::Authorized(_)");
+        if (!on[6] && !(on[4] && on[5])) missing.push(on[4] ? "Payment::Captured { refunded: false, .. }" : "Payment::Captured { refunded: true, .. }");
+      }
+    }
+    var q = missing.map(function (m) { return "`" + m + "`"; }), list;
+    if (q.length === 1) list = q[0];
+    else if (q.length === 2) list = q[0] + " and " + q[1];
+    else if (q.length === 3) list = q[0] + ", " + q[1] + " and " + q[2];
+    else if (q.length > 3) list = q.slice(0, 3).join(", ") + " and " + (q.length - 3) + " more";
+    return { err: q.length ? "error[E0004]: non-exhaustive patterns: " + list + " not covered" : null, unreachable: unreachable, missing: missing };
+  }
+  window.__mx = { check: check };
+
+  var on = [true, true, true, true, true, true, false, false, false];
+  var PRESETS = [
+    ["Forgot Failed", [1, 1, 1, 1, 1, 1, 0, 0, 0]],
+    ["Only a guard for Authorized", [1, 0, 1, 0, 0, 0, 1, 0, 1]],
+    ["Authorized(0) only", [1, 1, 0, 0, 0, 0, 1, 0, 1]],
+    ["Complete, no _", [1, 1, 1, 1, 1, 1, 0, 0, 1]],
+    ["Catch-all first", [1, 0, 0, 1, 1, 1, 1, 1, 1]]
+  ];
+  function el(id) { return document.getElementById(id); }
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  PRESETS.forEach(function (p) {
+    var b = document.createElement("button"); b.type = "button"; b.textContent = p[0];
+    b.onclick = function () { on = p[1].map(Boolean); render(); };
+    el("mx-presets").appendChild(b);
+  });
+  function render() {
+    var r = check(on);
+    var h = '<div class="mx-line"><span class="mx-text">match payment {</span></div>';
+    ARMS.forEach(function (a, i) {
+      var cls = "mx-line" + (on[i] ? "" : " off") + (r.unreachable.indexOf(i) >= 0 ? " unreach" : "");
+      h += '<div class="' + cls + '"><label><input type="checkbox" data-i="' + i + '"' + (on[i] ? " checked" : "") + '> <span class="mx-text">    ' + esc(a) + "</span></label>" +
+        (r.unreachable.indexOf(i) >= 0 ? '<span class="mx-tag">warning: unreachable pattern</span>' : "") + "</div>";
+    });
+    h += '<div class="mx-line"><span class="mx-text">}</span></div>';
+    el("mx-code").innerHTML = h;
+    Array.prototype.forEach.call(el("mx-code").querySelectorAll("input"), function (c) {
+      c.onchange = function () { on[+c.dataset.i] = c.checked; render(); };
+    });
+    // coverage per variant, ignoring guards (as the compiler does)
+    var w = on[7];
+    var cov = [
+      ["Pending", w || on[0] ? "full" : "none"],
+      ["Authorized(u32)", w || on[3] ? "full" : on[1] || on[2] ? "part" : "none"],
+      ["Captured { .. }", w || on[6] || (on[4] && on[5]) ? "full" : on[4] || on[5] ? "part" : "none"],
+      ["Failed", w || on[8] ? "full" : "none"]
+    ];
+    var words = { full: "covered", part: "partly covered", none: "not covered" };
+    el("mx-cover").innerHTML = cov.map(function (c) { return '<div class="mx-v ' + c[1] + '"><b>' + c[0] + "</b>" + words[c[1]] + "</div>"; }).join("");
+    var out = el("mx-out");
+    if (r.err) { out.className = "mx-out bad"; out.textContent = r.err; }
+    else { out.className = "mx-out ok"; out.textContent = "✓ compiles" + (r.unreachable.length ? " (with " + r.unreachable.length + " unreachable-pattern warning" + (r.unreachable.length > 1 ? "s" : "") + ")" : ""); }
+  }
+  render();
+
+  // ---------- operator dispatch cost (Figure 4) ----------
+  Course.chart("op-chart", function (c) {
+    return {
+      type: "bar",
+      data: {
+        labels: ["operator as String", "operator as enum"],
+        datasets: [{ label: "ms for 10 million evaluations (median)", data: [13.2, 8.5], backgroundColor: [c.amber, c.teal], borderRadius: 5 }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: { y: { min: 0, title: { display: true, text: "ms (lower is better)" } } }
+      }
+    };
+  });
+});
+</script>
+</body>
+</html>

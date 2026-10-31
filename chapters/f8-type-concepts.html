@@ -1,0 +1,1285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F8 Type-system concepts</title>
+<meta name="description" content="Static vs dynamic typing, value vs reference semantics, product and sum types, generics, polymorphism styles, expressions vs statements, and making illegal states unrepresentable, with an interactive state-space explorer and every C# and Rust snippet run.">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/course-data.js"></script>
+<script src="../assets/app.js"></script>
+<style>
+  .ise { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 14px; }
+  @media (max-width: 760px) { .ise { grid-template-columns: 1fr; } }
+  .ise-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; background: var(--surface); min-width: 0; }
+  .ise-panel h4 { margin: 0 0 8px; font-size: .95rem; }
+  .ise-panel pre { margin: 6px 0 10px; font-size: .74rem; overflow-x: auto; max-width: 100%; }
+  .ise-variants label span { min-width: 0; overflow-wrap: anywhere; }
+  .ise-row { display: flex; align-items: center; gap: 8px; font: .85rem var(--font-mono); padding: 3px 0; }
+  .ise-row input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .ise-row .val { color: var(--muted); }
+  .ise-verdict { margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: .9rem; }
+  .ise-verdict.ok { background: var(--green-soft); color: var(--green); }
+  .ise-verdict.bad { background: var(--red-soft); color: var(--red); }
+  .ise-grid { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; margin-top: 10px; }
+  .ise-grid span { aspect-ratio: 1; border-radius: 3px; background: var(--red-soft); cursor: pointer; }
+  .ise-grid span.valid { background: var(--green); }
+  .ise-grid span.cur { outline: 2px solid var(--text); outline-offset: 1px; }
+  .ise-count { font: .8rem var(--font-mono); color: var(--muted); margin-top: 6px; }
+  .ise-variants label { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font: .85rem var(--font-mono); }
+  .ise-variants label:hover { background: var(--surface-2); }
+  .ise-variants input { accent-color: var(--accent); margin-top: 2px; }
+  .ise-variants .fields { color: var(--muted); }
+</style>
+</head>
+<body data-chapter="F8">
+<article class="content">
+<h1>Type-system concepts</h1>
+
+<div data-meta>
+  <div class="objectives"><h4>Learning objectives</h4>
+    <ul>
+      <li>Explain static vs dynamic typing, keep it separate from "strong vs weak", and say where type inference and nominal typing fit</li>
+      <li>Predict what assignment does under value semantics and under reference semantics, and say why Rust makes every indirection visible in the type</li>
+      <li>Model data with product types (AND) and sum types (OR), count their possible values, and read their memory size</li>
+      <li>Distinguish parametric, ad-hoc and subtype polymorphism, static and dynamic dispatch, and how Rust and .NET compile generics</li>
+      <li>Use expression-oriented code and read the "missing tail expression" error</li>
+      <li>Redesign a flag-based model so that illegal states cannot be represented, and know when that pays off</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="why">Why this matters</h2>
+<div class="callout why"><div class="callout-title">💡 Why this matters</div>
+  <p>Chapters F1–F7 were about how data sits in memory and how fast you can process it. This chapter is about <em>what the compiler knows</em> about that data, and so which mistakes it can stop before your code ships. In C# you lean on the type system for some guarantees and on unit tests, null checks and code review for the rest. Rust moves much more of that work into types. Most of what feels new about Rust (no null, <code>match</code> that refuses to compile, explicit <code>&amp;</code>, enums that carry data) comes from the ideas in this chapter.</p>
+  <p>Both of your products depend on this directly. A <strong>rule engine</strong> has to decide how to represent facts whose shape it only learns at runtime: a statically typed host carrying dynamically typed values (chapter 9.5). A <strong>workflow engine</strong> is a set of state machines, and every production incident that reads "the run was marked completed but had no output" is an <em>illegal state</em> that the data model allowed. By the end of this chapter you'll have the words, and the design moves, to talk about both with a client's architects.</p>
+</div>
+
+<h2 id="intuition">Intuition first: forms with "AND" and forms with "OR"</h2>
+<div class="callout analogy"><div class="callout-title">🧭 Analogy</div>
+  <p>Think of a type as a <strong>paper form</strong> that a value must fit.</p>
+  <ul>
+    <li>A <strong>product type</strong> is a form where you fill in <em>every</em> box: name <strong>and</strong> address <strong>and</strong> phone. A C# <code>class</code> or <code>record</code> and a Rust <code>struct</code> are product types.</li>
+    <li>A <strong>sum type</strong> is a form that says "tick <em>exactly one</em> of these", where each option has its own sub-boxes: pay by card (card number) <strong>or</strong> bank transfer (IBAN) <strong>or</strong> invoice (nothing extra). Rust's <code>enum</code> is a sum type. C# has never had a general one; C# 15 adds a <code>union</code> type, which is in preview as of today.</li>
+  </ul>
+  <p>Most badly designed data models are "OR" forms printed as "AND" forms: one box per option plus a set of tick boxes, with a note at the bottom saying "please only tick one". Nothing enforces the note.</p>
+</div>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · product vs sum, and their memory</span>
+  <svg viewBox="0 0 720 350" role="img" aria-label="A product type struct Money with both fields side by side, a sum type enum Payment with three alternative shapes sharing one slot, and Option of a reference using the null address as None">
+    <text x="185" y="22" class="svg-title" text-anchor="middle">struct Money: cents AND currency</text>
+    <rect x="25" y="40" width="160" height="44" rx="4" class="svg-teal"/><text x="105" y="62" class="svg-mono" text-anchor="middle">cents: i64</text>
+    <rect x="185" y="40" width="60" height="44" rx="4" class="svg-purple"/><text x="215" y="62" class="svg-mono" text-anchor="middle">[u8;3]</text>
+    <rect x="245" y="40" width="100" height="44" rx="4" class="svg-box" stroke-dasharray="5 4"/><text x="295" y="62" class="svg-text-sm" text-anchor="middle">padding</text>
+    <text x="105" y="102" class="svg-text-sm" text-anchor="middle">8 B</text><text x="215" y="102" class="svg-text-sm" text-anchor="middle">3 B</text><text x="295" y="102" class="svg-text-sm" text-anchor="middle">5 B</text>
+    <text x="185" y="126" class="svg-text-sm" text-anchor="middle">every value has both fields: 16 B (measured)</text>
+    <text x="185" y="146" class="svg-text-sm" text-anchor="middle">possible values = |i64| × |[u8;3]|</text>
+
+    <text x="545" y="22" class="svg-title" text-anchor="middle">enum Payment: Card OR Bank OR Invoice</text>
+    <rect x="385" y="40" width="40" height="30" rx="4" class="svg-amber"/><text x="405" y="56" class="svg-mono" text-anchor="middle">0</text>
+    <rect x="425" y="40" width="265" height="30" rx="4" class="svg-box"/><text x="557" y="56" class="svg-mono" text-anchor="middle">Card { last4: u16 }</text>
+    <rect x="385" y="76" width="40" height="30" rx="4" class="svg-amber"/><text x="405" y="92" class="svg-mono" text-anchor="middle">1</text>
+    <rect x="425" y="76" width="265" height="30" rx="4" class="svg-box"/><text x="557" y="92" class="svg-mono" text-anchor="middle">Bank { iban_id: u64 }</text>
+    <rect x="385" y="112" width="40" height="30" rx="4" class="svg-amber"/><text x="405" y="128" class="svg-mono" text-anchor="middle">2</text>
+    <rect x="425" y="112" width="265" height="30" rx="4" class="svg-box" stroke-dasharray="5 4"/><text x="557" y="128" class="svg-mono" text-anchor="middle">Invoice (no data)</text>
+    <text x="405" y="160" class="svg-text-sm" text-anchor="middle">tag</text><text x="557" y="160" class="svg-text-sm" text-anchor="middle">one shared slot, sized for the largest variant</text>
+    <text x="545" y="182" class="svg-text-sm" text-anchor="middle">only ONE row exists at a time: 16 B (measured)</text>
+    <text x="545" y="202" class="svg-text-sm" text-anchor="middle">possible values = |Card| + |Bank| + |Invoice|</text>
+
+    <line x1="20" y1="222" x2="700" y2="222" class="svg-line-dash"/>
+    <text x="360" y="246" class="svg-title" text-anchor="middle">Option&lt;&amp;u64&gt;: the tag hides in a value a reference can never have</text>
+    <text x="150" y="282" class="svg-mono" text-anchor="end">Some(&amp;x)</text>
+    <rect x="165" y="262" width="200" height="32" rx="4" class="svg-teal"/><text x="265" y="282" class="svg-mono" text-anchor="middle">0x16f2a3c08</text>
+    <text x="150" y="324" class="svg-mono" text-anchor="end">None</text>
+    <rect x="165" y="304" width="200" height="32" rx="4" class="svg-accent"/><text x="265" y="324" class="svg-mono" text-anchor="middle">0x0</text>
+    <text x="390" y="282" class="svg-text-sm">a real address</text>
+    <text x="390" y="324" class="svg-text-sm">address 0 is never a valid &amp;T, so it can mean None</text>
+    <text x="390" y="344" class="svg-text-sm">8 B, the same as &amp;u64 itself (measured)</text>
+  </svg>
+  <figcaption><strong>Figure 1.</strong> A product stores all of its fields side by side, so sizes add (plus alignment padding, chapter F1). A sum stores a small <em>tag</em> saying which variant it is, plus one slot big enough for the largest variant. The bottom row is the <em>niche optimisation</em>: when a type has a bit pattern that can never occur (a null reference), <code>Option</code> uses it to mean "None" and needs no separate tag. Sizes are from Lab step 3. Exactly where the compiler places fields inside a default (<code>repr(Rust)</code>) type isn't guaranteed (chapter 5.2); the sizes are what <code>size_of</code> reports today.</figcaption>
+</figure>
+
+<h2 id="core">Core explanation</h2>
+<span class="layer-label basic">Basic</span>
+
+<h3 id="what-is-a-type">What a type is</h3>
+<p>A <strong>type</strong> is two things at once: a <em>set of possible values</em> (a <code>bool</code> is one of {false, true}; a <code>u8</code> is one of 0…255) and the <em>operations allowed</em> on those values (you can add two <code>u8</code>s; you can't add a <code>bool</code> to a string). A <strong>type checker</strong> is the part of the language that refuses operations the type doesn't allow. Everything in this chapter is a variation on two questions: <em>when</em> does the checking happen, and <em>how precisely</em> can a type describe the set of values you actually mean?</p>
+
+<h3 id="static-dynamic">Static vs dynamic typing</h3>
+<p>Under <dfn data-term="static typing" data-def="Types are checked before the program runs (at compile time); a type error stops the build. C#, Rust, Java, Go.">static typing</dfn>, every expression has a type known before the program runs, and type errors stop the build. Under <dfn data-term="dynamic typing" data-def="Types belong to runtime values and are checked as each operation executes; a type error is a runtime exception. Python, JavaScript, Ruby; C#'s dynamic keyword.">dynamic typing</dfn>, types belong to <em>values</em> at runtime and are checked when each operation executes; a type error is an exception in production. You've used both without naming them. C# is statically typed, but its <code>dynamic</code> keyword switches checking off for one variable, and the lab shows the result: <code>fact * 2</code> on a string compiles, then throws <code>RuntimeBinderException</code> when it runs.</p>
+<p>Static typing buys you errors at build time instead of in production, editor tooling that knows what every name is (rename, go-to-definition, completion), and faster code, because the compiler knows sizes and layouts in advance (chapter F1). The price is that you must describe your data up front. Dynamic typing buys flexibility for data whose shape you don't know until runtime, which is exactly a rule engine's situation with customer-defined facts. Statically typed languages handle that case by modelling "a value of some runtime type" as an ordinary type: a sum type of the possible kinds (the Real-world view below).</p>
+
+<h3 id="strong-weak">Strong vs weak: a different axis</h3>
+<p>People often say "strongly typed" when they mean "statically typed". They're separate questions. Static vs dynamic is about <em>when</em> types are checked. Strong vs weak is an informal description of <em>how much the language converts for you silently</em>. There's no agreed formal definition, so in reviews ask the precise question instead: "which implicit conversions does this language perform?"</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Language</th><th>When checked</th><th>Silent conversions</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Rust</td><td>Compile time</td><td>Almost none: not even <code>i32</code> → <code>i64</code></td><td><code>let t: i64 = count;</code> is error E0308 (Lab step 2)</td></tr>
+    <tr><td>C#</td><td>Compile time (except <code>dynamic</code>)</td><td>Safe widenings: <code>int</code> → <code>long</code>, <code>int</code> → <code>double</code>, user-defined <code>implicit</code> operators</td><td><code>long t = count;</code> compiles</td></tr>
+    <tr><td>Python</td><td>Run time</td><td>Few: <code>"1" + 1</code> is a <code>TypeError</code></td><td>Dynamic but strict</td></tr>
+    <tr><td>JavaScript</td><td>Run time</td><td>Many: <code>"1" + 1</code> is <code>"11"</code>, <code>"6" * "2"</code> is <code>12</code></td><td>Dynamic and permissive</td></tr>
+  </tbody>
+</table></div>
+<p>Rust's refusal to widen numbers silently is deliberate. A conversion is either written <code>.into()</code> (only offered when it can't lose information, like <code>i32</code> → <code>i64</code>), <code>try_into()</code> (may fail, returns a <code>Result</code>), or <code>as</code> (an explicit cast that may truncate). You'll see all three in chapter 2.1. In a code review, an <code>as</code> on a money or ID value is worth a second look.</p>
+
+<h3 id="inference-nominal">Type inference and nominal typing</h3>
+<p>Static typing doesn't mean writing types everywhere. With <dfn data-term="type inference" data-def="The compiler works out types you didn't write from how values are used. Rust infers within function bodies (even from later uses); function signatures are always written.">type inference</dfn> the compiler works out the types you leave out. C#'s <code>var</code> infers a local's type from its initialiser only. Rust goes further inside a function body: <code>let mut ids = Vec::new();</code> has no element type yet, and a later <code>ids.push(7u32)</code> settles it as <code>Vec&lt;u32&gt;</code>. Rust deliberately stops at function boundaries. Every function signature spells out its parameter and return types, so a function's contract is always readable without its body, and a change inside one function can't silently change another's types.</p>
+<p>Rust and C# are both <dfn data-term="nominal typing" data-def="Type compatibility decided by declared names: two types with identical fields are still different types. Rust and C# structs/classes are nominal; TypeScript is structural.">nominal</dfn>: what matters is a type's declared <em>name</em>, not its shape. Two structs with identical fields are still different types. (TypeScript is <em>structural</em>: anything with the right fields fits.) Nominal typing is what makes the <dfn data-term="newtype" data-def="A single-field wrapper struct, e.g. struct Meters(f64), giving a primitive its own type so it can't be mixed up with others; zero runtime cost.">newtype</dfn> pattern work. <code>struct Meters(f64)</code> and <code>struct Feet(f64)</code> have the same layout and zero runtime cost, but passing <code>Feet</code> where <code>Meters</code> is expected is a compile error (Lab step 2). That's the class of bug that destroyed NASA's Mars Climate Orbiter in September 1999: ground software from Lockheed Martin produced thruster impulse in pound-force seconds, and the NASA system that consumed it expected newton-seconds. Both were plain numbers, so nothing objected.</p>
+
+<h3 id="value-reference">Value semantics vs reference semantics</h3>
+<p>What does <code>b = a</code> do? There are two possible answers, and mixing them up is one of the most common sources of bugs in any language.</p>
+<ul>
+  <li><dfn data-term="value semantics" data-def="Assignment and passing copy (or move) the value itself; afterwards the two variables are independent. C# structs; every Rust type.">Value semantics</dfn>: <code>b</code> gets its <em>own copy</em> of the value. Changing <code>b</code> can't affect <code>a</code>. In C#: <code>struct</code>, <code>record struct</code>, <code>int</code>, <code>DateTime</code>.</li>
+  <li><dfn data-term="reference semantics" data-def="Assignment and passing copy a reference, so both variables name the same object and a change through one is seen through the other. C# classes, records, arrays, strings.">Reference semantics</dfn>: <code>b</code> gets a copy of a <em>reference</em>, so <code>a</code> and <code>b</code> are two names for one object on the heap. Changing the object through <code>b</code> is visible through <code>a</code>. In C#: <code>class</code>, <code>record</code> (a record <em>class</em>), arrays, <code>string</code> (immutable, so you rarely notice), delegates.</li>
+</ul>
+<p>Two names for one object is called <dfn data-term="aliasing" data-def="Two or more names (variables, references, pointers) referring to the same memory. Aliasing plus mutation is the root of many bugs; Rust allows many shared aliases or one mutable one, never both.">aliasing</dfn>. Aliasing is harmless while nobody mutates. Aliasing <em>plus</em> mutation is the source of a whole family of bugs: a method that "just reads" a list while another component adds to it, a cached object changed by a caller who didn't know it was shared, the "collection was modified" exception from chapter 0.1, and, with threads, data races (chapter F9).</p>
+<p>In C#, which semantics you get is decided <strong>by the type's declaration</strong>, which may be in another file or another assembly. You can't tell from <code>var b = a;</code> whether you just copied or aliased. Rust makes a different choice: <strong>every type has value semantics</strong>. <code>let b = a;</code> always transfers the value itself. If the type is a small plain value like <code>i32</code> or a <code>Copy</code> struct, the bits are copied and both stay usable. Otherwise the value is <em>moved</em> and <code>a</code> can't be used any more (chapter 2.2 covers this in full). Indirection exists in Rust only when you ask for it, and then it's <strong>visible in the type</strong>: <code>&amp;Customer</code> (a shared reference), <code>&amp;mut Customer</code> (an exclusive, mutable reference), <code>Box&lt;Customer&gt;</code> (an owned heap pointer), <code>Rc</code>/<code>Arc</code> (shared ownership, chapter 2.12).</p>
+
+<figure class="visual stepper" data-interval="2600">
+  <span class="visual-tag">Animation · what assignment does</span>
+  <svg viewBox="0 0 720 340" role="img" aria-label="C# class assignment creating an alias to one heap object, compared with Rust clone creating an independent value and an explicit mutable reference">
+    <defs>
+      <marker id="vr-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker>
+      <marker id="vr-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead-accent"/></marker>
+    </defs>
+    <text x="80" y="20" class="svg-text-sm" text-anchor="middle">stack</text>
+    <text x="470" y="20" class="svg-text-sm" text-anchor="middle">heap</text>
+    <text x="20" y="44" class="svg-title">C#: class Customer (reference type)</text>
+    <rect x="30" y="58" width="110" height="34" rx="4" class="svg-box-strong"/><text x="85" y="80" class="svg-mono" text-anchor="middle">c1 ●</text>
+    <g data-show="2"><rect x="30" y="104" width="110" height="34" rx="4" class="svg-box-strong"/><text x="85" y="126" class="svg-mono" text-anchor="middle">c2 ●</text></g>
+    <rect x="370" y="66" width="200" height="50" rx="6" class="svg-teal" data-hl="3"/>
+    <text x="470" y="88" class="svg-mono" text-anchor="middle">Customer</text>
+    <text x="470" y="106" class="svg-mono" text-anchor="middle" data-show="-2">CreditLimit 1000</text>
+    <text x="470" y="106" class="svg-mono" text-anchor="middle" data-show="3">CreditLimit 5000</text>
+    <path d="M140 75 L366 85" class="svg-line" marker-end="url(#vr-a)"/>
+    <path d="M140 121 L366 100" class="svg-line-accent" marker-end="url(#vr-b)" data-show="2"/>
+    <text x="590" y="94" class="svg-text-sm" data-show="3">c1 sees 5000 too</text>
+
+    <line x1="20" y1="160" x2="700" y2="160" class="svg-line-dash" data-show="4"/>
+    <g data-show="4">
+      <text x="20" y="186" class="svg-title">Rust: every type is a value; sharing is spelled out</text>
+      <rect x="30" y="200" width="110" height="34" rx="4" class="svg-box-strong"/><text x="85" y="222" class="svg-mono" text-anchor="middle">c1 ●</text>
+      <rect x="370" y="196" width="200" height="44" rx="6" class="svg-teal"/><text x="470" y="216" class="svg-mono" text-anchor="middle">"Acme"</text><text x="470" y="232" class="svg-mono" text-anchor="middle">limit 1000</text>
+      <path d="M140 217 L366 217" class="svg-line" marker-end="url(#vr-a)"/>
+      <rect x="30" y="250" width="110" height="34" rx="4" class="svg-box-strong"/><text x="85" y="272" class="svg-mono" text-anchor="middle">c2 ●</text>
+      <rect x="370" y="250" width="200" height="44" rx="6" class="svg-purple" data-hl="5,6"/><text x="470" y="270" class="svg-mono" text-anchor="middle">"Acme" (copy)</text>
+      <text x="470" y="286" class="svg-mono" text-anchor="middle" data-show="-4">limit 1000</text>
+      <text x="470" y="286" class="svg-mono" text-anchor="middle" data-show="=5">limit 5000</text>
+      <text x="470" y="286" class="svg-mono" text-anchor="middle" data-show="6">limit 7500</text>
+      <path d="M140 267 L366 271" class="svg-line" marker-end="url(#vr-a)"/>
+      <text x="590" y="222" class="svg-text-sm" data-show="5">c1 unchanged</text>
+    </g>
+    <g data-show="6">
+      <rect x="180" y="300" width="130" height="34" rx="4" class="svg-accent"/><text x="245" y="322" class="svg-mono" text-anchor="middle">r: &amp;mut</text>
+      <path d="M180 312 L144 280" class="svg-line-accent" marker-end="url(#vr-b)"/>
+      <text x="330" y="322" class="svg-text-sm">the reference has its own type: you can see it</text>
+    </g>
+  </svg>
+  <ol class="stepper-captions">
+    <li><code>var c1 = new Customer { CreditLimit = 1000 };</code>: the object lives on the heap; the variable <code>c1</code> on the stack holds a reference to it (chapter F1).</li>
+    <li><code>var c2 = c1;</code> copies the <em>reference</em>. There is still one object, and now it has two names: an alias. Nothing in this line tells you that; you have to know that <code>Customer</code> is a class.</li>
+    <li><code>c2.CreditLimit = 5000;</code> changes the one shared object, so <code>c1.CreditLimit</code> is now 5000 as well. If <code>Customer</code> were a <code>struct</code>, <code>c1</code> would still say 1000: same syntax, different behaviour.</li>
+    <li>Rust: <code>let c1 = Customer { … };</code>. Its <code>String</code> name lives on the heap, but <code>c1</code> <em>is</em> the value; there is no hidden reference type.</li>
+    <li><code>let mut c2 = c1.clone();</code> asks for an independent copy, in so many words. Changing <code>c2.credit_limit</code> to 5000 leaves <code>c1</code> at 1000. (Writing <code>let c2 = c1;</code> would <em>move</em> the value, and <code>c1</code> would be unusable: chapter 2.2.)</li>
+    <li>When you do want to change something through another name, you create a reference, and its type says so: <code>let r: &amp;mut Customer = &amp;mut c2;</code>. Sharing is now visible, and the compiler checks it (chapter 2.3).</li>
+  </ol>
+  <figcaption><strong>Figure 2.</strong> The same two lines mean different things in C# depending on how a type was declared, possibly in another assembly. In Rust the behaviour is visible where it happens: <code>.clone()</code> means "copy", <code>&amp;mut</code> means "shared mutable access", and plain assignment means "this value now lives here". Lab steps 1 and 3 run both programs.</figcaption>
+</figure>
+
+<p><strong>Equality follows the same split.</strong> For a C# class, <code>==</code> means "same object" unless the type overrides it. A <code>record</code> overrides it to compare fields, which is why the lab's two identical <code>MoneyRecord</code>s are <code>==</code> but not <code>ReferenceEquals</code>. In Rust, <code>==</code> always compares <em>values</em>, and a type has no <code>==</code> at all until you derive or implement <code>PartialEq</code> (chapter 2.9). Identity ("is this the same allocation?") is a separate, explicit question: <code>std::ptr::eq</code>.</p>
+
+<h3 id="products">Product types</h3>
+<p>A <dfn data-term="product type" data-def="A type made of several fields that are all present at once (AND): struct, tuple, record. Its number of possible values is the product of its fields' counts.">product type</dfn> holds several fields at the same time. Rust has three forms: a <code>struct</code> with named fields, a <em>tuple struct</em> with positional fields (<code>struct Meters(f64);</code>), and an anonymous <em>tuple</em> (<code>(u8, bool)</code>). The name comes from counting. If a type has 2 possible values (<code>bool</code>) and another has 256 (<code>u8</code>), a pair of them has 2 × 256 = 512 possible values. <em>Product</em> types multiply.</p>
+<p>The smallest product is the empty one: the <dfn data-term="unit type" data-def="The type () with exactly one value, also written (). Rust's equivalent of void, but a real value: what statements and functions with no return value produce. Zero bytes.">unit type</dfn> <code>()</code>, which has exactly one value, also written <code>()</code>. It's Rust's "nothing interesting here", like C#'s <code>void</code>, but it's a real type you can store in a variable or a <code>HashMap&lt;String, ()&gt;</code>. It takes zero bytes (Lab step 3). In C# terms, <code>void</code> can't be used as a type argument, which is why .NET needs both <code>Action</code> and <code>Func&lt;T&gt;</code>, and <code>Task</code> and <code>Task&lt;T&gt;</code>. Rust needs only one of each, because "returns nothing" is just "returns <code>()</code>".</p>
+
+<h3 id="sums">Sum types</h3>
+<p>A <dfn data-term="sum type" data-def="A type whose value is exactly one of several variants, each with its own data (OR); also called a tagged or discriminated union. Rust enum. Its number of values is the sum of its variants' counts.">sum type</dfn> (also called a <em>tagged union</em> or <em>discriminated union</em>) is a value that is exactly <strong>one of</strong> several variants, each of which can carry its own data. Rust's <code>enum</code> is a sum type:</p>
+<pre data-title="a sum type"><code class="language-rust">enum Payment {
+    Card { last4: u16 },
+    Bank { iban_id: u64 },
+    Invoice,
+}</code></pre>
+<p>A <code>Payment</code> is a <code>Card</code> with a <code>last4</code>, <em>or</em> a <code>Bank</code> with an <code>iban_id</code>, <em>or</em> an <code>Invoice</code> with nothing. A <code>Card</code> has no <code>iban_id</code> field at all, not even a null one. Counting again: the number of possible values is the <em>sum</em> of the variants' counts. Product and sum types together are called <dfn data-term="algebraic data type" data-def="A type built from products (AND, struct) and sums (OR, enum). Not the same as 'abstract data type' (F3), though both are abbreviated ADT.">algebraic data types</dfn>. (Careful: "ADT" also abbreviates <em>abstract</em> data type from chapter F3, a different idea. Say the full name in documents.)</p>
+<p>Two sum types from the standard library replace two things C# developers take for granted:</p>
+<ul>
+  <li><code>Option&lt;T&gt;</code> is <code>Some(T)</code> or <code>None</code>. It replaces <strong>null</strong>. Rust references can never be null, so "might be missing" has to be stated in the type, and the compiler makes you handle the <code>None</code> case before you can use the value. Tony Hoare, who introduced null references in ALGOL W in 1965, later called that decision his "billion-dollar mistake".</li>
+  <li><code>Result&lt;T, E&gt;</code> is <code>Ok(T)</code> or <code>Err(E)</code>. It replaces <strong>exceptions</strong> for expected failures: the possible failure appears in the function's signature, not just in its documentation (chapter 2.6).</li>
+</ul>
+<div class="callout dotnet"><div class="callout-title">🟣 Coming from C#/.NET: what you've used instead of sum types</div>
+  <ul>
+    <li><strong><code>enum</code> + fields.</strong> A C# <code>enum</code> is a set of named integers. It can't carry per-case data, so the data goes in nullable fields next to it, and nothing links "Status is Failed" to "Error is set". An enum variable can also hold <em>any</em> integer: <code>(Payment)7</code> is legal, which is why the compiler can never treat a switch over an enum as complete (Lab step 4).</li>
+    <li><strong>Class hierarchy + pattern matching.</strong> <code>abstract record Shape</code> with <code>Circle</code> and <code>Rect</code> subclasses is the closest classic equivalent, but the hierarchy is <em>open</em>: anyone can add a subclass in another assembly, so the compiler again can't know a <code>switch</code> is complete.</li>
+    <li><strong>Nullable reference types</strong> (C# 8+) are compile-time annotations and flow-analysis <em>warnings</em>. They catch many null bugs, but a <code>string</code> (non-nullable) can still be null at runtime, from older libraries, deserialisation, or <code>default</code>. Rust's <code>Option</code> is the type itself, not an annotation.</li>
+    <li><strong>C# 15 <code>union</code> (preview).</strong> <code>public union Pet(Cat, Dog, Bird);</code> declares a closed set of <em>case types</em> with exhaustive <code>switch</code> checking. Unlike Rust's enum, the cases are existing types rather than named variants, and the generated form is a struct that stores its contents as <code>object?</code>, boxing value-type cases (per Microsoft's docs). F# has had full discriminated unions since its first release.</li>
+  </ul>
+</div>
+<div class="callout verify"><div class="callout-title">⚠ Verify</div>
+  <p>As of 2026-10-31, C# <code>union</code> types are documented as a <strong>preview</strong> feature of C# 15 / .NET 11. .NET 11's general release is expected in November 2026, but that date comes from third-party reporting, not an official announcement. Check the C# "What's new" page before relying on the feature or its exact syntax in a client recommendation.</p>
+</div>
+
+<h3 id="exhaustive">Pattern matching and exhaustiveness</h3>
+<p>You take a sum type apart with <code>match</code>, which picks the arm for the variant actually present and binds its fields to names:</p>
+<pre data-title="match"><code class="language-rust">fn fee_cents(p: &amp;Payment) -&gt; u32 {
+    match p {
+        Payment::Card { .. } =&gt; 30,
+        Payment::Bank { .. } =&gt; 10,
+        Payment::Invoice =&gt; 0,
+    }
+}</code></pre>
+<p>Because a Rust enum is <em>closed</em> (its variants are listed in one place and can't hold anything else), the compiler can check <dfn data-term="exhaustiveness checking" data-def="The compiler verifies that a match handles every possible variant; in Rust a non-exhaustive match is error E0004, so adding a variant flags every match that must change.">exhaustiveness</dfn>: a <code>match</code> that forgets a variant is <strong>error E0004</strong>, not a warning. That turns adding a variant into a guided refactoring. Add <code>Wallet</code> to <code>Payment</code>, and the build lists every place in the codebase that now has to decide what a wallet payment means (Lab step 4). The equivalent C# code compiles with warnings CS8524 or CS8509 and throws <code>SwitchExpressionException</code> at runtime. A catch-all arm (<code>_ =&gt; …</code>) gives up that safety, so use it on purpose, not by habit.</p>
+
+<span class="layer-label intermediate">Intermediate</span>
+
+<h3 id="niche">Sum types in memory</h3>
+<p>Figure 1 showed the layout: a tag plus a slot as big as the largest variant, rounded up to the alignment. <code>Payment</code> is 16 bytes, because its largest variant holds a <code>u64</code> (8 bytes, alignment 8) and the tag needs at least one more byte, which rounds to 16. <code>Option&lt;u64&gt;</code> is also 16 bytes, because every one of the 2⁶⁴ bit patterns of a <code>u64</code> is a valid number, leaving nowhere to hide "None".</p>
+<p>When the payload has <em>impossible</em> bit patterns, the compiler uses them instead. This <dfn data-term="niche optimisation" data-def="Using bit patterns a type can never hold (null for references, 0 for NonZero, 2..255 for bool) to store an enum's tag, so Option&lt;&amp;T&gt; is the same size as &amp;T.">niche optimisation</dfn> is why <code>Option&lt;&amp;u64&gt;</code>, <code>Option&lt;Box&lt;u64&gt;&gt;</code> and <code>Option&lt;NonZeroU32&gt;</code> are the same size as the type inside, and <code>Option&lt;bool&gt;</code> fits in one byte (a <code>bool</code> only uses 0 and 1, leaving 254 spare patterns). The niche optimisation for <code>Option</code> of a reference, <code>Box</code>, function pointer or <code>NonZero*</code> is <em>guaranteed</em> by the standard library docs. The practical consequence: Rust's replacement for null costs nothing compared with a nullable pointer, so there's no performance argument for avoiding <code>Option</code>.</p>
+
+<details class="deep-dive"><summary>Deep dive: the algebra of types, and refactoring with it</summary><div class="body">
+  <p>Write \(|T|\) for the number of values of type T. The names "product" and "sum" are literal:</p>
+  $$ |(A, B)| = |A| \times |B| \qquad |\,\texttt{enum}\{A, B\}\,| = |A| + |B| \qquad |\texttt{Option<}T\texttt{>}| = 1 + |T| $$
+  <p>The unit type <code>()</code> has 1 value (the "1" in Option's formula is <code>None</code>). An enum with no variants, <code>enum Never {}</code>, has 0 values, so no value of it can ever be created. Rust uses this idea for the <em>never type</em> <code>!</code>, the return type of functions that never return, such as <code>std::process::exit</code>. Functions count too: there are \(|B|^{|A|}\) different functions from A to B (one choice of output per input), which is why function types are sometimes called <em>exponentials</em>.</p>
+  <p>This algebra is practical, because the usual laws hold and let you refactor with confidence. The distributive law \(A \times (B + C) = A \times B + A \times C\) says these two designs hold exactly the same information:</p>
+<pre><code class="language-rust">// A × (B + C): shared fields once, plus a sum for what varies
+struct Run { id: u64, tenant: String, status: Status }
+enum Status { Running { worker: String }, Failed { error: String } }
+
+// A × B + A × C: the shared fields repeated in every variant
+enum Run2 {
+    Running { id: u64, tenant: String, worker: String },
+    Failed  { id: u64, tenant: String, error: String },
+}</code></pre>
+  <p>The first form is usually better: code that only needs <code>id</code> doesn't have to <code>match</code>. When you see the same fields repeated across every variant, factor them out. A model is correct when its count matches reality. If your type admits 64 states and the domain has 4, the other 60 are bugs waiting for a code path (Figure 4).</p>
+</div></details>
+
+<h3 id="generics">Generics: parametric polymorphism</h3>
+<p><dfn data-term="generics" data-def="Code written once with type parameters (T) and used with many concrete types, constrained by bounds (Rust) or constraints (C# where).">Generics</dfn> let you write code once for many types: <code>Vec&lt;T&gt;</code>, <code>HashMap&lt;K, V&gt;</code>, <code>fn largest&lt;T&gt;(items: &amp;[T]) -&gt; T</code>. You already know them from C#'s <code>List&lt;T&gt;</code>. As in C#, a generic function may only do with <code>T</code> what its <em>constraints</em> promise. C# writes <code>where T : IComparable&lt;T&gt;</code>; Rust writes a <strong>trait bound</strong>, <code>T: PartialOrd</code>. A <dfn data-term="trait" data-def="Rust's named set of methods a type can implement, used as generic bounds and for dynamic dispatch; close to a C# interface, but implementable for types you didn't write.">trait</dfn> is Rust's version of an interface: a named set of methods a type can implement. You'll study traits in depth in chapters 2.9 and 3.1. For now, treat them as interfaces.</p>
+<p>The big difference is how generics become machine code:</p>
+<ul>
+  <li><strong>.NET: shared code, specialised by the runtime.</strong> Generics are kept in the compiled assembly (<em>reified</em>; reflection can see <code>List&lt;int&gt;</code>). Microsoft's docs describe the rule: the runtime creates a specialised copy "one time for each unique value type" argument, while all reference-type arguments share a single copy, "because all references are the same size".</li>
+  <li><strong>Rust: <dfn data-term="monomorphisation" data-def="Compiling a separate copy of generic code for each concrete type it's used with (Rust), enabling inlining and per-type optimisation at the cost of binary size and compile time.">monomorphisation</dfn> at compile time.</strong> The compiler generates a separate copy of the generic function for <em>every</em> concrete type it's used with, value or reference alike. <code>largest::&lt;i32&gt;</code>, <code>largest::&lt;f64&gt;</code> and <code>largest::&lt;char&gt;</code> in Lab step 5 are three different functions in the binary, each optimised and inlined as if written by hand. That's a large part of what "zero-cost abstraction" (chapter 0.1) means.</li>
+  <li><strong>Java: type erasure.</strong> One copy for everything, with type arguments erased at compile time. Worth knowing so you can explain why the three platforms behave differently.</li>
+</ul>
+<p>Monomorphisation's costs are a larger binary and longer compile times when a generic is used with many types. Chapter 6.2 shows how to measure and control both.</p>
+
+<h3 id="polymorphism">Polymorphism styles</h3>
+<p><dfn data-term="polymorphism" data-def="One piece of code working with values of different types. Styles: parametric (generics), ad hoc (overloading, traits/type classes) and subtype (inheritance, virtual calls).">Polymorphism</dfn> means one piece of code working with values of several types. Christopher Strachey's 1967 lecture notes gave us the split between <em>parametric</em> and <em>ad hoc</em> polymorphism; Cardelli and Wegner's 1985 survey refined it into the classification still used today. In the terms you'll use in reviews:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Style</th><th>Idea</th><th>C#</th><th>Rust</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Parametric</strong></td><td>Same code for every T</td><td>Generics</td><td>Generics (monomorphised)</td></tr>
+    <tr><td><strong>Ad hoc</strong></td><td>Different code per type, under one name</td><td>Method and operator overloading; implicit conversions</td><td>No function overloading. Traits play this role: <code>impl Display for Money</code> gives <code>Money</code> its own formatting. Operators are traits too (<code>Add</code>, chapter 2.9)</td></tr>
+    <tr><td><strong>Subtype</strong> (inclusion)</td><td>A value of a derived type is usable where the base is expected; calls dispatch at runtime</td><td>Class inheritance, <code>virtual</code>/<code>override</code>, interfaces</td><td>No data inheritance. <code>dyn Trait</code> <em>trait objects</em> provide runtime dispatch over any type implementing the trait</td></tr>
+    <tr><td><strong>Closed set</strong></td><td>A fixed list of alternatives, handled by matching</td><td>Pattern matching over a hierarchy (open), or C# 15 unions</td><td><code>enum</code> + <code>match</code> (exhaustive)</td></tr>
+  </tbody>
+</table></div>
+<p>The practical question in Rust is usually <strong>static vs dynamic dispatch</strong>. With <dfn data-term="static dispatch" data-def="The compiler knows the concrete type and calls its method directly (and can inline it); Rust generics. One compiled copy per type.">static dispatch</dfn> (generics) the compiler knows the concrete type, calls the method directly, and can inline it. With <dfn data-term="dynamic dispatch" data-def="The method to call is looked up at runtime through a vtable; C# virtual/interface calls, Rust dyn Trait. One compiled copy, works for types chosen at runtime.">dynamic dispatch</dfn> (<code>&amp;dyn Rule</code>, <code>Box&lt;dyn Rule&gt;</code>) the method is looked up at runtime in a <dfn data-term="vtable" data-def="A per-type table of function pointers used for dynamic dispatch. A Rust &amp;dyn Trait is a fat pointer: data pointer + vtable pointer (16 bytes on 64-bit).">vtable</dfn>, a table of function pointers, exactly like a C# <code>virtual</code> or interface call. You need dynamic dispatch whenever the concrete type isn't known until runtime: a <code>Vec</code> holding several different rule types, or plugins loaded from configuration.</p>
+
+<figure class="visual">
+  <span class="visual-tag">Diagram · static vs dynamic dispatch</span>
+  <svg viewBox="0 0 720 300" role="img" aria-label="Static dispatch compiles one copy per type with direct calls; a dyn Rule reference is a fat pointer to the data and to a vtable of function pointers">
+    <defs><marker id="dd-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="svg-arrowhead"/></marker></defs>
+    <text x="170" y="22" class="svg-title" text-anchor="middle">static: check_static&lt;R: Rule&gt;</text>
+    <rect x="20" y="40" width="300" height="40" rx="5" class="svg-teal"/><text x="170" y="65" class="svg-mono" text-anchor="middle">check_static::&lt;MaxAmount&gt;</text>
+    <rect x="20" y="100" width="300" height="40" rx="5" class="svg-teal"/><text x="170" y="125" class="svg-mono" text-anchor="middle">check_static::&lt;EvenOnly&gt;</text>
+    <text x="170" y="166" class="svg-text-sm" text-anchor="middle">one compiled copy per type, direct (inlinable) call</text>
+    <text x="170" y="186" class="svg-text-sm" text-anchor="middle">&amp;MaxAmount = 8 B (a thin pointer)</text>
+
+    <text x="535" y="22" class="svg-title" text-anchor="middle">dynamic: &amp;dyn Rule</text>
+    <text x="460" y="42" class="svg-text-sm" text-anchor="middle">fat pointer: 16 B (measured)</text>
+    <rect x="380" y="50" width="80" height="40" rx="4" class="svg-accent"/><text x="420" y="75" class="svg-mono" text-anchor="middle">data</text>
+    <rect x="460" y="50" width="80" height="40" rx="4" class="svg-amber"/><text x="500" y="75" class="svg-mono" text-anchor="middle">vtable</text>
+    <rect x="380" y="140" width="130" height="40" rx="4" class="svg-box-strong"/><text x="445" y="165" class="svg-mono" text-anchor="middle">MaxAmount(500)</text>
+    <path d="M420 90 L430 136" class="svg-line" marker-end="url(#dd-a)"/>
+    <rect x="560" y="116" width="150" height="132" rx="4" class="svg-box-strong"/>
+    <text x="635" y="138" class="svg-text-sm" text-anchor="middle">vtable for MaxAmount</text>
+    <text x="572" y="162" class="svg-mono">drop</text><text x="572" y="182" class="svg-mono">size, align</text>
+    <text x="572" y="202" class="svg-mono">name()</text><text x="572" y="222" class="svg-mono">evaluate()</text>
+    <path d="M520 90 L600 112" class="svg-line" marker-end="url(#dd-a)"/>
+    <text x="360" y="276" class="svg-text-sm" text-anchor="middle">one compiled copy of check_dynamic; each call loads the function pointer from the vtable (like a C# virtual call)</text>
+  </svg>
+  <figcaption><strong>Figure 3.</strong> A generic function is stamped out once per type, so each call is direct. A <code>&amp;dyn Rule</code> is a <em>fat pointer</em>, 16 bytes on a 64-bit machine (Lab step 5): one pointer to the value, one to a per-type table of function pointers. C# objects carry a method-table pointer inside every object instead; Rust puts it in the reference, so plain structs stay header-free (chapter F1). The vtable's exact layout is a compiler detail.</figcaption>
+</figure>
+<p>Neither is "better". Static dispatch is faster per call and lets the optimiser see through the abstraction. Dynamic dispatch keeps one copy of the code, allows mixed collections, and lets you choose implementations at runtime. Chapter 3.1 builds the full decision guide; your rule engine will use both.</p>
+
+<details class="deep-dive"><summary>Deep dive: the expression problem — enums vs traits as an architecture decision</summary><div class="body">
+  <p>In a 1998 email to the Java-genericity mailing list (whose recipients included Mads Torgersen, later the lead designer of C#), Philip Wadler named the <dfn data-term="expression problem" data-def="The trade-off (named by Wadler, 1998) between adding new cases and adding new operations to a data type: enums make operations easy and cases hard; traits/OO the reverse.">expression problem</dfn>: can you add both new <em>cases</em> and new <em>operations</em> to a data type without changing existing code, while keeping static type safety? The two common designs each make one direction easy and the other hard:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th></th><th>Add a new operation (e.g. <code>explain()</code>)</th><th>Add a new case (e.g. a <code>Between</code> node)</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Enum + match</strong> (closed set)</td><td class="yes">Easy: write one new function with a <code>match</code></td><td class="no">Touches every existing <code>match</code>, but E0004 lists them all for you</td></tr>
+      <tr><td><strong>Trait + impls</strong> (open set, OO style)</td><td class="no">Touches every implementation: add a method to the trait and implement it everywhere</td><td class="yes">Easy: a new type with an <code>impl</code>, even in another crate</td></tr>
+    </tbody>
+  </table></div>
+  <p>This is a real design decision in your rule engine. The <strong>expression AST</strong> (number, variable, add, compare…) is a closed set you own, and you'll keep adding <em>passes</em> over it: evaluate, type-check, explain, optimise. That's the enum's strength (Exercise 3; chapters 9.2–9.3). The <strong>pluggable evaluator</strong> layer (DMN tables, Rete, a scripting engine, a customer's own plugin) is an open set where third parties add <em>cases</em>. That's the trait's strength (chapters 9.5–9.6). Choosing the wrong one for either layer is a cost you'll pay on every future feature.</p>
+</div></details>
+
+<h3 id="expressions">Expressions vs statements</h3>
+<p>An <dfn data-term="expression" data-def="Code that evaluates to a value. In Rust, blocks, if, match and loop are expressions; a block's value is its final expression without a semicolon.">expression</dfn> produces a value; a <dfn data-term="statement" data-def="Code executed for its effect, not its value. In Rust: let bindings, items, and any expression followed by ';' (which discards its value, producing ()).">statement</dfn> does something and produces nothing. In C#, <code>if</code>, <code>switch</code> statements and blocks are statements; to get a value you switch to the expression forms (<code>cond ? a : b</code>, switch <em>expressions</em>, lambdas). Rust is <strong>expression-oriented</strong>: nearly everything produces a value.</p>
+<ul>
+  <li>A <strong>block</strong> <code>{ … }</code> evaluates to its last expression, written <em>without</em> a semicolon.</li>
+  <li><code>if</code>/<code>else</code> and <code>match</code> are expressions: <code>let base = if w &lt;= 2 { 5 } else { 9 };</code> (both branches must have the same type).</li>
+  <li><code>loop</code> can return a value: <code>break value;</code>.</li>
+  <li>A function's body is a block, so its result is usually just its last expression. <code>return</code> is for leaving early.</li>
+  <li>A semicolon turns an expression into a statement and throws its value away. The statement's value is <code>()</code>.</li>
+  <li><code>let</code> is a statement, and assignment <code>x = 5</code> is an expression of type <code>()</code>, so C#'s <code>a = b = 0</code> chaining doesn't work in Rust.</li>
+</ul>
+<p>The rule about semicolons produces the most common beginner error in Rust, and Lab step 2 shows it: a function ending in <code>w * h;</code> returns <code>()</code>, not <code>u32</code>. The compiler's message tells you exactly that, and suggests removing the semicolon. Expression orientation pairs naturally with sum types: <code>let fee = match payment { … };</code> computes a value from every case with no "unassigned variable" path, which is one more class of bug that can't be written.</p>
+
+<span class="layer-label advanced">Applying it</span>
+<h3 id="illegal-states">Making illegal states unrepresentable</h3>
+<p>Yaron Minsky of Jane Street put this design principle in four words: <strong>"<dfn data-term="illegal states unrepresentable" data-def="Design principle (Yaron Minsky): choose types so that invalid combinations of data cannot be constructed at all, e.g. one enum variant per state instead of flags plus nullable fields.">make illegal states unrepresentable</dfn>"</strong>. If a combination of values is invalid in your domain, choose types in which it can't be constructed at all. Then no code path, test gap or future maintainer can produce it. Here's a workflow run modelled the way most C# codebases do it, with flags and nullable fields:</p>
+<pre data-title="WorkflowRun.cs, a typical flag-based model"><code class="language-csharp">class WorkflowRun
+{
+    public bool IsRunning { get; set; }
+    public bool IsCompleted { get; set; }
+    public bool IsFailed { get; set; }
+    public string? Worker { get; set; }   // only meaningful while running
+    public string? Output { get; set; }   // only meaningful when completed
+    public string? Error { get; set; }    // only meaningful when failed
+}</code></pre>
+<p>Six independent fields with two meaningful options each give 2⁶ = 64 representable states. The domain has <strong>four</strong>: pending, running, completed, failed. Try it:</p>
+
+<figure class="visual" id="ise">
+  <span class="visual-tag">Interactive · illegal-state explorer</span>
+  <div class="ise">
+    <div class="ise-panel">
+      <h4>C# flags + nullable fields</h4>
+      <div id="ise-flags"></div>
+      <div class="ise-verdict" id="ise-verdict" aria-live="polite"></div>
+      <div class="ise-grid" id="ise-grid" aria-label="All 64 representable states; green are valid"></div>
+      <div class="ise-count" id="ise-count"></div>
+    </div>
+    <div class="ise-panel">
+      <h4>Rust enum: one variant, its own data</h4>
+<pre><code class="language-rust">enum RunStatus {
+    Pending,
+    Running   { worker: String, started_at: u64 },
+    Completed { output: String, finished_at: u64 },
+    Failed    { error: String, attempts: u32 },
+}</code></pre>
+      <div class="ise-variants" id="ise-variants" role="radiogroup" aria-label="Rust RunStatus variant"></div>
+      <div class="ise-verdict" id="ise-rust" aria-live="polite"></div>
+    </div>
+  </div>
+  <figcaption><strong>Figure 4.</strong> Tick the C# fields in any combination, or click a square in the grid (all 64 states; green = valid). Only 4 of the 64 make sense, about 6%; every other combination needs a defensive check somewhere, and the one you forget becomes an incident. Choosing a Rust variant on the right sets the matching valid C# state. The reverse is the point: most C# states have <em>no</em> Rust spelling at all.</figcaption>
+</figure>
+
+<p>The enum version has exactly four shapes, and each carries only the data valid in that state: a <code>Failed</code> run can't have an <code>output</code>, because the variant has no such field. Code that handles a status uses <code>match</code>, so a new status added later (say, <code>Cancelled</code>) flags every place that must handle it. State <em>transitions</em> become functions that take the old state and return the new one, so "start a run that is already completed" is an <code>Err</code> you must handle, not a silent overwrite (Lab step 6). The same principle has several tools:</p>
+<ul>
+  <li><strong>Sum types instead of flag combinations</strong>, as above. This is the single most effective change in most models.</li>
+  <li><strong>Newtypes with validated constructors.</strong> A <code>Percentage</code> whose field is private and whose only constructor checks 0–100 (Exercise 2). Code that receives a <code>Percentage</code> never needs to re-check it. Alexis King's essay calls this <em>"parse, don't validate"</em>: turn unstructured input into a precise type once, at the boundary, instead of checking it repeatedly deep inside.</li>
+  <li><strong>Units and identifiers as distinct types:</strong> <code>TenantId</code> vs <code>UserId</code>, <code>Meters</code> vs <code>Feet</code>, <code>Cents</code> vs <code>Euros</code>. Swapped arguments become compile errors.</li>
+  <li><strong>Precise standard types:</strong> <code>NonZeroU32</code>, <code>Duration</code> instead of a bare number of "seconds (probably)", and <code>Option</code> only where absence is genuinely possible.</li>
+  <li><strong>Typestate</strong>, a type per stage (<code>Draft</code> → <code>Published</code>) so that calling <code>publish()</code> twice doesn't compile. That's chapter 3.2.</li>
+</ul>
+<p>Know when to stop. If several yes/no options really are independent (every combination is valid), separate <code>bool</code>s or a bit-flag set are the honest model. The goal is to make the type's count match the domain's count, not to turn everything into an enum.</p>
+
+<h2 id="lab">Hands-on lab</h2>
+<p>All programs below were compiled and run with rustc 1.99.0 (edition 2024) and the .NET 10.0.201 SDK on the lab Mac. Outputs are copied verbatim. The Rust files live in one Cargo project: put each in <code>src/bin/</code> and run <code>cargo run --bin &lt;name&gt;</code>.</p>
+
+<h3 id="lab-1">Step 1 — the C# baseline: aliasing, <code>dynamic</code>, and open switches</h3>
+<p>Create it with <code>dotnet new console -n f8cs</code> and replace <code>Program.cs</code>. Nullable reference types are on (the template's default).</p>
+<pre data-title="f8cs/Program.cs (.NET 10)"><code class="language-csharp">// Value vs reference semantics, dynamic typing, and exhaustiveness in C#.
+var p1 = new PointStruct { X = 1 };
+var p2 = p1;            // struct: copies the value
+p2.X = 99;
+Console.WriteLine($"struct: p1.X = {p1.X}, p2.X = {p2.X}");
+
+var c1 = new CustomerClass { CreditLimit = 1000 };
+var c2 = c1;            // class: copies the reference -&gt; two names, one object
+c2.CreditLimit = 5000;
+Console.WriteLine($"class:  c1.CreditLimit = {c1.CreditLimit}, c2.CreditLimit = {c2.CreditLimit}");
+
+var r1 = new MoneyRecord(100, "EUR");
+var r2 = new MoneyRecord(100, "EUR");
+Console.WriteLine($"record: r1 == r2 is {r1 == r2}, ReferenceEquals is {ReferenceEquals(r1, r2)}");
+
+int count = 42;
+long total = count;     // implicit widening is allowed in C#
+Console.WriteLine($"widened: {total}");
+
+dynamic fact = "approved";
+try
+{
+    Console.WriteLine(fact * 2);   // compiles; fails only when it runs
+}
+catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException e)
+{
+    Console.WriteLine($"runtime: {e.Message}");
+}
+
+Console.WriteLine(Describe(new Circle(2)));
+Console.WriteLine(Fee(Payment.Card));
+Console.WriteLine(Fee((Payment)7)); // an enum can hold ANY underlying integer
+
+static int Fee(Payment p) =&gt; p switch
+{
+    Payment.Card =&gt; 30,
+    Payment.Bank =&gt; 10,
+    Payment.Invoice =&gt; 0,
+};
+
+static string Describe(Shape s) =&gt; s switch
+{
+    Circle c =&gt; $"circle r={c.R}",
+    Rect r =&gt; $"rect {r.W}x{r.H}",
+};
+
+struct PointStruct { public int X; }
+class CustomerClass { public int CreditLimit; }
+record MoneyRecord(long Cents, string Currency);
+enum Payment { Card, Bank, Invoice }
+abstract record Shape;
+record Circle(double R) : Shape;
+record Rect(double W, double H) : Shape;</code></pre>
+<p><code>dotnet build</code> succeeds, with two warnings:</p>
+<pre class="output">warning CS8509: The switch expression does not handle all possible values of its input type (it is not exhaustive). For example, the pattern '_' is not covered.
+warning CS8524: The switch expression does not handle some values of its input type (it is not exhaustive) involving an unnamed enum value. For example, the pattern '(Payment)3' is not covered.</pre>
+<p><code>dotnet run</code>:</p>
+<pre class="output error runtime">struct: p1.X = 1, p2.X = 99
+class:  c1.CreditLimit = 5000, c2.CreditLimit = 5000
+record: r1 == r2 is True, ReferenceEquals is False
+widened: 42
+runtime: Operator '*' cannot be applied to operands of type 'string' and 'int'
+circle r=2
+30
+Unhandled exception. System.Runtime.CompilerServices.SwitchExpressionException: Non-exhaustive switch expression failed to match its input.
+Unmatched value was 7.</pre>
+<p>Read it top to bottom. The struct copy is independent, while the class assignment aliased one object. The two records are equal by value but distinct objects. <code>int</code> widened to <code>long</code> silently. The <code>dynamic</code> type error surfaced only at runtime. The compiler <em>warned</em> that both switches were incomplete, but built anyway, and <code>(Payment)7</code>, a value no one declared, crashed the program. Every one of these behaviours is legal, documented C#. The Rust versions follow.</p>
+
+<h3 id="lab-2">Step 2 — what the Rust compiler refuses</h3>
+<p>Each of these is a separate file, compiled with <code>rustc --edition 2024 file.rs</code>. They're <em>meant</em> to fail; read the messages, which are some of the best in any compiler.</p>
+<pre data-title="e1.rs — no silent widening"><code class="language-rust">fn main() {
+    let count: i32 = 42;
+    let total: i64 = count; // C# would widen int -&gt; long implicitly
+    println!("{total}");
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+ --&gt; e1.rs:3:22
+  |
+3 |     let total: i64 = count; // C# would widen int -&gt; long implicitly
+  |                ---   ^^^^^ expected `i64`, found `i32`
+  |                |
+  |                expected due to this
+  |
+help: you can convert an `i32` to an `i64`
+  |
+3 |     let total: i64 = count.into(); // C# would widen int -&gt; long implicitly
+  |                           +++++++</pre>
+<pre data-title="e2.rs — a trailing semicolon turns the result into ()"><code class="language-rust">fn area(w: u32, h: u32) -&gt; u32 {
+    w * h;
+}
+
+fn main() {
+    println!("{}", area(3, 4));
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+ --&gt; e2.rs:1:28
+  |
+1 | fn area(w: u32, h: u32) -&gt; u32 {
+  |    ----                    ^^^ expected `u32`, found `()`
+  |    |
+  |    implicitly returns `()` as its body has no tail or `return` expression
+2 |     w * h;
+  |          - help: remove this semicolon to return this value</pre>
+<pre data-title="e4.rs — newtypes stop unit mix-ups (the Mars Climate Orbiter bug)"><code class="language-rust">struct Meters(f64);
+struct Feet(f64);
+
+fn burn_duration(distance: Meters) -&gt; f64 {
+    distance.0 / 4.2
+}
+
+fn main() {
+    let d = Feet(1_000.0);
+    println!("{}", burn_duration(d));
+}</code></pre>
+<pre class="output error">error[E0308]: mismatched types
+  --&gt; e4.rs:10:34
+   |
+10 |     println!("{}", burn_duration(d));
+   |                    ------------- ^ expected `Meters`, found `Feet`
+   |                    |
+   |                    arguments to this function are incorrect
+   |
+note: function defined here
+  --&gt; e4.rs:4:4
+   |
+ 4 | fn burn_duration(distance: Meters) -&gt; f64 {
+   |    ^^^^^^^^^^^^^ ----------------</pre>
+<p>Note the second message: "implicitly returns <code>()</code> as its body has no tail … expression". That's the expression/statement rule from the Core section, enforced by the type checker. In the third, <code>Meters</code> and <code>Feet</code> are both just an <code>f64</code> in memory, yet they're different types, because Rust is nominal.</p>
+
+<h3 id="lab-3">Step 3 — value semantics, and products vs sums in memory</h3>
+<pre data-playground data-title="src/bin/values.rs"><code class="language-rust">#[derive(Clone, Copy)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone)]
+struct Customer {
+    name: String,
+    credit_limit: u32,
+}
+
+fn main() {
+    // Copy type: assignment copies the bits. Two independent values.
+    let a = Point { x: 1, y: 2 };
+    let mut b = a;
+    b.x = 99;
+    println!("a = ({}, {}), b = ({}, {})", a.x, a.y, b.x, b.y);
+
+    // Non-Copy type: assignment MOVES. To get two values you must ask for a clone.
+    let c1 = Customer { name: "Acme".to_string(), credit_limit: 1_000 };
+    let mut c2 = c1.clone();
+    c2.credit_limit = 5_000;
+    println!("c1: {} limit {}", c1.name, c1.credit_limit);
+    println!("c2: {} limit {}", c2.name, c2.credit_limit);
+
+    // Sharing is explicit: a reference has its own type, &amp;mut Customer.
+    let r: &amp;mut Customer = &amp;mut c2;
+    r.credit_limit = 7_500;
+    println!("c2 after change through r = {}", c2.credit_limit);
+}</code></pre>
+<pre class="output">a = (1, 2), b = (99, 2)
+c1: Acme limit 1000
+c2: Acme limit 5000
+c2 after change through r = 7500</pre>
+<p>Compare with Step 1. <code>Point</code> derives <code>Copy</code>, so assignment copies, like a C# struct. <code>Customer</code> holds a <code>String</code> and isn't <code>Copy</code>; to get two independent customers you write <code>.clone()</code>, and the only way to change <code>c2</code> through another name is a reference whose type, <code>&amp;mut Customer</code>, announces it. Now measure the shapes from Figure 1:</p>
+<pre data-playground data-title="src/bin/sizes.rs"><code class="language-rust">use std::mem::size_of;
+use std::num::NonZeroU32;
+
+#[allow(dead_code)]
+struct Money {
+    cents: i64,      // 8 bytes
+    currency: [u8; 3], // 3 bytes ("EUR")
+}
+
+#[allow(dead_code)]
+enum Shape {
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
+    Point,
+}
+
+#[allow(dead_code)]
+enum Payment {
+    Card { last4: u16 },
+    Bank { iban_id: u64 },
+    Invoice,
+}
+
+fn main() {
+    println!("--- product types: sizes add (plus padding) ---");
+    println!("(u8, u8)            {:&gt;2} bytes", size_of::&lt;(u8, u8)&gt;());
+    println!("(u8, u64)           {:&gt;2} bytes", size_of::&lt;(u8, u64)&gt;());
+    println!("Money               {:&gt;2} bytes", size_of::&lt;Money&gt;());
+    println!("()                  {:&gt;2} bytes", size_of::&lt;()&gt;());
+    println!("--- sum types: tag + largest variant ---");
+    println!("Shape               {:&gt;2} bytes", size_of::&lt;Shape&gt;());
+    println!("Payment             {:&gt;2} bytes", size_of::&lt;Payment&gt;());
+    println!("Option&lt;u64&gt;         {:&gt;2} bytes", size_of::&lt;Option&lt;u64&gt;&gt;());
+    println!("--- niche optimisation: the tag hides in an impossible value ---");
+    println!("&amp;u64                {:&gt;2} bytes", size_of::&lt;&amp;u64&gt;());
+    println!("Option&lt;&amp;u64&gt;        {:&gt;2} bytes", size_of::&lt;Option&lt;&amp;u64&gt;&gt;());
+    println!("Box&lt;u64&gt;            {:&gt;2} bytes", size_of::&lt;Box&lt;u64&gt;&gt;());
+    println!("Option&lt;Box&lt;u64&gt;&gt;    {:&gt;2} bytes", size_of::&lt;Option&lt;Box&lt;u64&gt;&gt;&gt;());
+    println!("NonZeroU32          {:&gt;2} bytes", size_of::&lt;NonZeroU32&gt;());
+    println!("Option&lt;NonZeroU32&gt;  {:&gt;2} bytes", size_of::&lt;Option&lt;NonZeroU32&gt;&gt;());
+    println!("Option&lt;bool&gt;        {:&gt;2} bytes", size_of::&lt;Option&lt;bool&gt;&gt;());
+}</code></pre>
+<pre class="output">--- product types: sizes add (plus padding) ---
+(u8, u8)             2 bytes
+(u8, u64)           16 bytes
+Money               16 bytes
+()                   0 bytes
+--- sum types: tag + largest variant ---
+Shape               24 bytes
+Payment             16 bytes
+Option&lt;u64&gt;         16 bytes
+--- niche optimisation: the tag hides in an impossible value ---
+&amp;u64                 8 bytes
+Option&lt;&amp;u64&gt;         8 bytes
+Box&lt;u64&gt;             8 bytes
+Option&lt;Box&lt;u64&gt;&gt;     8 bytes
+NonZeroU32           4 bytes
+Option&lt;NonZeroU32&gt;   4 bytes
+Option&lt;bool&gt;         1 bytes</pre>
+<p>Products add with padding: <code>(u8, u64)</code> is 16 bytes, not 9, because the <code>u64</code> must be 8-aligned (chapter F1). Sums take the largest variant plus a tag: <code>Shape</code>'s largest variant is <code>Rect</code> (two <code>f64</code>s = 16 bytes), plus a tag, rounded to 24. And the niche lines show <code>Option</code> costing nothing over references, boxes and <code>NonZeroU32</code>. <code>()</code> really is zero bytes.</p>
+
+<h3 id="lab-4">Step 4 — exhaustiveness turns a new variant into a to-do list</h3>
+<p>Here <code>Wallet</code> was just added to <code>Payment</code>, but <code>fee_cents</code> wasn't updated. In C# (Step 1) this was a warning followed by a runtime crash. In Rust:</p>
+<pre data-title="e3.rs"><code class="language-rust">enum Payment {
+    Card { last4: u16 },
+    Bank { iban_id: u64 },
+    Invoice,
+    Wallet { provider: String }, // newly added variant
+}
+
+fn fee_cents(p: &amp;Payment) -&gt; u32 {
+    match p {
+        Payment::Card { .. } =&gt; 30,
+        Payment::Bank { .. } =&gt; 10,
+        Payment::Invoice =&gt; 0,
+    }
+}
+
+fn main() {
+    println!("{}", fee_cents(&amp;Payment::Invoice));
+}</code></pre>
+<pre class="output error">error[E0004]: non-exhaustive patterns: `&amp;Payment::Wallet { .. }` not covered
+  --&gt; e3.rs:9:11
+   |
+ 9 |     match p {
+   |           ^ pattern `&amp;Payment::Wallet { .. }` not covered
+   |
+note: `Payment` defined here
+  --&gt; e3.rs:1:6
+   |
+ 1 | enum Payment {
+   |      ^^^^^^^
+...
+ 5 |     Wallet { provider: String }, // newly added variant
+   |     ------ not covered
+   = note: the matched value is of type `&amp;Payment`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+12 ~         Payment::Invoice =&gt; 0,
+13 ~         &amp;Payment::Wallet { .. } =&gt; todo!(),
+   |</pre>
+<p>The error names the missing variant, points to where it was declared, and suggests the arm to add. In a real codebase you get one such error per <code>match</code> that needs a decision. That's the refactoring guarantee that makes adding a workflow status or a rule-node kind safe.</p>
+
+<h3 id="lab-5">Step 5 — generics, trait objects and fat pointers</h3>
+<pre data-playground data-title="src/bin/dispatch.rs"><code class="language-rust">use std::mem::size_of;
+
+trait Rule {
+    fn name(&amp;self) -&gt; String;
+    fn evaluate(&amp;self, amount: u32) -&gt; bool;
+}
+
+struct MaxAmount(u32);
+struct EvenOnly;
+
+impl Rule for MaxAmount {
+    fn name(&amp;self) -&gt; String { format!("amount &lt;= {}", self.0) }
+    fn evaluate(&amp;self, amount: u32) -&gt; bool { amount &lt;= self.0 }
+}
+
+impl Rule for EvenOnly {
+    fn name(&amp;self) -&gt; String { "amount is even".to_string() }
+    fn evaluate(&amp;self, amount: u32) -&gt; bool { amount.is_multiple_of(2) }
+}
+
+/// Parametric polymorphism + static dispatch: the compiler makes one copy per concrete R.
+fn check_static&lt;R: Rule&gt;(rule: &amp;R, amount: u32) -&gt; bool {
+    rule.evaluate(amount)
+}
+
+/// Subtype-style polymorphism + dynamic dispatch: one copy; the call goes through a vtable.
+fn check_dynamic(rule: &amp;dyn Rule, amount: u32) -&gt; bool {
+    rule.evaluate(amount)
+}
+
+/// Generic over any T that can be compared: the bound says what T must support.
+/// Panics if `items` is empty (chapter 2.6 shows how to return an Option instead).
+fn largest&lt;T: PartialOrd + Copy&gt;(items: &amp;[T]) -&gt; T {
+    let mut best = items[0];
+    for &amp;x in items {
+        if x &gt; best {
+            best = x;
+        }
+    }
+    best
+}
+
+fn main() {
+    println!("static : {}", check_static(&amp;MaxAmount(500), 420));
+    println!("static : {}", check_static(&amp;EvenOnly, 421));
+
+    // A heterogeneous list needs dynamic dispatch: the element types differ.
+    let rules: Vec&lt;Box&lt;dyn Rule&gt;&gt; = vec![Box::new(MaxAmount(500)), Box::new(EvenOnly)];
+    for r in &amp;rules {
+        println!("dynamic: {:&lt;16} -&gt; {}", r.name(), check_dynamic(r.as_ref(), 420));
+    }
+
+    println!("largest i32: {}", largest(&amp;[3, 9, 4]));
+    println!("largest f64: {}", largest(&amp;[2.5, 0.1]));
+    println!("largest char: {}", largest(&amp;['q', 'z', 'a']));
+
+    println!("size of &amp;MaxAmount: {} bytes (thin pointer)", size_of::&lt;&amp;MaxAmount&gt;());
+    println!("size of &amp;dyn Rule : {} bytes (data pointer + vtable pointer)", size_of::&lt;&amp;dyn Rule&gt;());
+}</code></pre>
+<pre class="output">static : true
+static : false
+dynamic: amount &lt;= 500    -&gt; true
+dynamic: amount is even   -&gt; true
+largest i32: 9
+largest f64: 2.5
+largest char: z
+size of &amp;MaxAmount: 8 bytes (thin pointer)
+size of &amp;dyn Rule : 16 bytes (data pointer + vtable pointer)</pre>
+<p><code>check_static</code> is compiled twice (once for <code>MaxAmount</code>, once for <code>EvenOnly</code>); <code>check_dynamic</code> once. The <code>Vec&lt;Box&lt;dyn Rule&gt;&gt;</code> holds two <em>different</em> types, which is only possible through dynamic dispatch, the shape of a rule set loaded from configuration. <code>largest</code> works for <code>i32</code>, <code>f64</code> and <code>char</code> because each satisfies the bound <code>PartialOrd + Copy</code>. And the last two lines measure Figure 3: a thin pointer is 8 bytes, a <code>&amp;dyn</code> fat pointer 16.</p>
+
+<h3 id="lab-6">Step 6 — expressions, and a state machine with no illegal states</h3>
+<pre data-playground data-title="src/bin/expressions.rs"><code class="language-rust">fn shipping_cost(weight_kg: u32, express: bool) -&gt; u32 {
+    let base = if weight_kg &lt;= 2 { 5 } else { 5 + (weight_kg - 2) * 2 }; // `if` produces a value
+    let surcharge = match (express, weight_kg) {
+        (false, _) =&gt; 0,
+        (true, 0..=2) =&gt; 10,
+        (true, _) =&gt; 25,
+    }; // `match` produces a value
+    base + surcharge // no semicolon: this is the function's result
+}
+
+fn main() {
+    // A block is an expression: its value is its last expression.
+    let discount = {
+        let loyalty_years = 4;
+        let pct = loyalty_years * 2;
+        pct.min(10) // value of the block
+    };
+    println!("discount = {discount}%");
+
+    // `loop` can return a value with `break value`.
+    let mut attempt = 0;
+    let first_success = loop {
+        attempt += 1;
+        if attempt * attempt &gt; 20 {
+            break attempt;
+        }
+    };
+    println!("first attempt with attempt² &gt; 20: {first_success}");
+
+    println!("1 kg standard: {}", shipping_cost(1, false));
+    println!("5 kg express:  {}", shipping_cost(5, true));
+
+}</code></pre>
+<pre class="output">discount = 8%
+first attempt with attempt² &gt; 20: 5
+1 kg standard: 5
+5 kg express:  36</pre>
+<p>No variable is ever declared first and assigned later: every value comes out of an <code>if</code>, a <code>match</code>, a block or a <code>loop</code>. The match on a tuple <code>(express, weight_kg)</code> with ranges (<code>0..=2</code>) is a preview of chapter 2.5. Finally, Figure 4's model as running code:</p>
+<pre data-playground data-title="src/bin/status.rs"><code class="language-rust">/// Each variant carries exactly the data that is valid in that state, and nothing else.
+#[derive(Debug)]
+enum RunStatus {
+    Pending,
+    Running { worker: String, started_at: u64 },
+    Completed { output: String, finished_at: u64 },
+    Failed { error: String, attempts: u32 },
+}
+
+fn describe(s: &amp;RunStatus) -&gt; String {
+    match s {
+        RunStatus::Pending =&gt; "waiting for a worker".to_string(),
+        RunStatus::Running { worker, started_at } =&gt; format!("running on {worker} since t={started_at}"),
+        RunStatus::Completed { output, finished_at } =&gt; format!("done at t={finished_at}: {output}"),
+        RunStatus::Failed { error, attempts } =&gt; format!("failed after {attempts} attempt(s): {error}"),
+    }
+}
+
+/// A transition consumes the old state and returns the new one.
+fn start(s: RunStatus, worker: &amp;str, now: u64) -&gt; Result&lt;RunStatus, String&gt; {
+    match s {
+        RunStatus::Pending =&gt; Ok(RunStatus::Running { worker: worker.to_string(), started_at: now }),
+        other =&gt; Err(format!("cannot start a run that is {other:?}")),
+    }
+}
+
+fn main() {
+    let runs = [
+        RunStatus::Pending,
+        RunStatus::Running { worker: "w-7".into(), started_at: 100 },
+        RunStatus::Completed { output: "approved".into(), finished_at: 160 },
+        RunStatus::Failed { error: "timeout".into(), attempts: 3 },
+    ];
+    for r in &amp;runs {
+        println!("{}", describe(r));
+    }
+    let next = start(RunStatus::Pending, "w-2", 200).unwrap();
+    println!("{}", describe(&amp;next));
+    println!("{}", start(next, "w-3", 210).unwrap_err());
+}</code></pre>
+<pre class="output">waiting for a worker
+running on w-7 since t=100
+done at t=160: approved
+failed after 3 attempt(s): timeout
+running on w-2 since t=200
+cannot start a run that is Running { worker: "w-2", started_at: 200 }</pre>
+<p><code>start</code> <em>consumes</em> the old status and returns a new one, so a run can't be "running and pending" at the same time. Starting a run that's already running is an <code>Err</code> value the caller must deal with. <code>Result</code> is itself a sum type, the subject of chapter 2.6.</p>
+
+<h2 id="exercises">Exercises</h2>
+<p class="small muted">All three solutions were run as programs and as unit tests (3 passed), and are Clippy-clean.</p>
+<div class="exercise">
+  <div class="exercise-title">Exercise 1 — replace the flags <span class="difficulty">★★☆ product skill</span></div>
+  <p>A multi-tenant SaaS models accounts in C# as <code>bool IsTrial, IsActive, IsSuspended, IsClosed</code> plus nullable <code>TrialEndsAt</code>, <code>Plan</code>, <code>SuspendReason</code> and <code>ClosedAt</code>. (a) How many states can that represent, counting each nullable as set/unset? (b) Model it as a Rust <code>enum Account</code> where each state carries only its valid data (a suspended account keeps its plan). (c) Write <code>can_log_in(&amp;Account, now) -&gt; bool</code> and <code>suspend(Account, reason) -&gt; Result&lt;Account, String&gt;</code>, where only an active account can be suspended.</p>
+  <details class="solution"><summary>Show solution</summary>
+  <p>(a) 4 booleans and 4 set/unset fields: 2⁸ = <strong>256</strong> representable states, for a domain of 4. (b) and (c):</p>
+<pre data-playground><code class="language-rust">/// The lifecycle of a tenant account. Every variant holds only what is valid in that state.
+#[derive(Debug, PartialEq)]
+enum Account {
+    Trial { ends_at: u64 },
+    Active { plan: String },
+    Suspended { plan: String, reason: String },
+    Closed { closed_at: u64 },
+}
+
+fn can_log_in(a: &amp;Account, now: u64) -&gt; bool {
+    match a {
+        Account::Trial { ends_at } =&gt; now &lt; *ends_at,
+        Account::Active { .. } =&gt; true,
+        Account::Suspended { .. } | Account::Closed { .. } =&gt; false,
+    }
+}
+
+/// Only an Active account can be suspended; the plan carries over into the new state.
+fn suspend(a: Account, reason: &amp;str) -&gt; Result&lt;Account, String&gt; {
+    match a {
+        Account::Active { plan } =&gt; Ok(Account::Suspended { plan, reason: reason.to_string() }),
+        other =&gt; Err(format!("only active accounts can be suspended, got {other:?}")),
+    }
+}
+
+fn main() {
+    let a = Account::Active { plan: "pro".to_string() };
+    let s = suspend(a, "unpaid invoice").unwrap();
+    println!("{s:?}, can log in: {}", can_log_in(&amp;s, 0));
+    println!("{}", suspend(Account::Closed { closed_at: 9 }, "x").unwrap_err());
+    println!("trial at t=50: {}", can_log_in(&amp;Account::Trial { ends_at: 100 }, 50));
+}</code></pre>
+<pre class="output">Suspended { plan: "pro", reason: "unpaid invoice" }, can log in: false
+only active accounts can be suspended, got Closed { closed_at: 9 }
+trial at t=50: true</pre>
+  <p><code>suspend</code> takes the account <em>by value</em> and moves the plan into the new state, so there's no moment where the account is both active and suspended. The <code>|</code> in <code>can_log_in</code> matches either of two variants in one arm. There's no <code>_</code> arm, on purpose: add a <code>PastDue</code> state later and the compiler makes you decide whether it can log in.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 2 — parse, don't validate <span class="difficulty">★★☆</span></div>
+  <p>Create a <code>Percentage</code> type that can only hold 0–100, with a constructor returning <code>Result</code>, and a function <code>apply_discount(price_cents, Percentage)</code> that needs no range check of its own. Make it impossible for code outside the module to build an unchecked <code>Percentage</code>.</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">mod pricing {
+    /// A percentage that is always 0..=100. The field is private to this module,
+    /// so the only way to get a Percentage is through `new`, which checks once.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Percentage(u8);
+
+    impl Percentage {
+        pub fn new(value: u8) -&gt; Result&lt;Percentage, String&gt; {
+            if value &lt;= 100 {
+                Ok(Percentage(value))
+            } else {
+                Err(format!("{value} is not a percentage (0-100)"))
+            }
+        }
+        pub fn value(self) -&gt; u8 {
+            self.0
+        }
+    }
+
+    /// No range check here: the type already guarantees it.
+    pub fn apply_discount(price_cents: u64, discount: Percentage) -&gt; u64 {
+        price_cents * (100 - discount.value() as u64) / 100
+    }
+}
+
+use pricing::{apply_discount, Percentage};
+
+fn main() {
+    let d = Percentage::new(15).unwrap();
+    println!("{}", apply_discount(10_000, d)); // 8500
+    println!("{:?}", Percentage::new(150));   // Err(...)
+    // let bad = Percentage(150);              // error[E0423]: cannot initialize a tuple struct which contains private fields
+}</code></pre>
+<pre class="output">8500
+Err("150 is not a percentage (0-100)")</pre>
+  <p>The field of <code>Percentage(u8)</code> isn't <code>pub</code>, so outside <code>mod pricing</code> the only way to get one is <code>Percentage::new</code>. Uncommenting the last line gives the error shown in its comment (checked). It's the same idea as a C# class with a private constructor and a static <code>TryCreate</code>, but with zero runtime cost: in memory, a <code>Percentage</code> is just a <code>u8</code>. Visibility and modules are chapter 2.7.</p>
+  </details>
+</div>
+
+<div class="exercise">
+  <div class="exercise-title">Exercise 3 — a rule-expression AST <span class="difficulty">★★★ lead-in to Module 9</span></div>
+  <p>Define <code>enum Expr { Num(f64), Var(String), Add(…), Mul(…) }</code> for expressions like <code>amount * 0.02 + 5</code>. Write <code>eval(&amp;Expr, &amp;HashMap&lt;String, f64&gt;) -&gt; Result&lt;f64, String&gt;</code> (an unknown fact is an error) and <code>show(&amp;Expr) -&gt; String</code>. Then answer: what changes if you add a <code>Neg</code> node? What changes if you add a third operation, <code>count_vars</code>?</p>
+  <details class="solution"><summary>Show solution</summary>
+<pre data-playground><code class="language-rust">use std::collections::HashMap;
+
+/// A tiny rule-expression language. `Box` gives the recursive variants a known size.
+enum Expr {
+    Num(f64),
+    Var(String),
+    Add(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+    Mul(Box&lt;Expr&gt;, Box&lt;Expr&gt;),
+}
+
+fn eval(e: &amp;Expr, facts: &amp;HashMap&lt;String, f64&gt;) -&gt; Result&lt;f64, String&gt; {
+    Ok(match e {
+        Expr::Num(n) =&gt; *n,
+        Expr::Var(name) =&gt; *facts.get(name).ok_or(format!("unknown fact `{name}`"))?,
+        Expr::Add(a, b) =&gt; eval(a, facts)? + eval(b, facts)?,
+        Expr::Mul(a, b) =&gt; eval(a, facts)? * eval(b, facts)?,
+    })
+}
+
+fn show(e: &amp;Expr) -&gt; String {
+    match e {
+        Expr::Num(n) =&gt; n.to_string(),
+        Expr::Var(name) =&gt; name.clone(),
+        Expr::Add(a, b) =&gt; format!("({} + {})", show(a), show(b)),
+        Expr::Mul(a, b) =&gt; format!("({} * {})", show(a), show(b)),
+    }
+}
+
+fn main() {
+    // fee = amount * 0.02 + 5
+    let fee = Expr::Add(
+        Box::new(Expr::Mul(Box::new(Expr::Var("amount".into())), Box::new(Expr::Num(0.02)))),
+        Box::new(Expr::Num(5.0)),
+    );
+    let facts = HashMap::from([("amount".to_string(), 1_000.0)]);
+    println!("{} = {:?}", show(&amp;fee), eval(&amp;fee, &amp;facts));
+    println!("{:?}", eval(&amp;fee, &amp;HashMap::new()));
+}</code></pre>
+<pre class="output">((amount * 0.02) + 5) = Ok(25.0)
+Err("unknown fact `amount`")</pre>
+  <p>Why <code>Box&lt;Expr&gt;</code>? An <code>Expr</code> that directly contained two <code>Expr</code>s would need infinite size; a <code>Box</code> is a fixed 8-byte pointer to a heap value (chapter F1), so the size is known. The <code>?</code> after each recursive call returns early on the first error (chapter 2.6). <strong>Adding <code>Neg</code></strong> breaks both <code>eval</code> and <code>show</code> with E0004 until you handle it. <strong>Adding <code>count_vars</code></strong> is one new function and touches nothing else. That's the expression problem from the deep dive, and the reason chapter 9.2 uses an enum for the AST.</p>
+  </details>
+</div>
+
+<h2 id="decision">Which modelling tool?</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Situation</th><th>Rust tool</th><th>C# today</th></tr></thead>
+  <tbody>
+    <tr><td>A fixed set of alternatives you own, each with its own data</td><td><code>enum</code> with data + <code>match</code></td><td>Class hierarchy + switch; C# 15 <code>union</code> (preview)</td></tr>
+    <tr><td>A value that may be absent</td><td><code>Option&lt;T&gt;</code></td><td>Nullable reference/value types</td></tr>
+    <tr><td>An operation that can fail in expected ways</td><td><code>Result&lt;T, E&gt;</code></td><td>Exceptions, <code>TryXxx(out …)</code>, result libraries</td></tr>
+    <tr><td>A primitive with rules or units (IDs, money, percentages)</td><td>Newtype with a private field and a checking constructor</td><td>Wrapper struct/record with a factory</td></tr>
+    <tr><td>Same algorithm over many types, known at compile time</td><td>Generics + trait bounds (static dispatch)</td><td>Generics + constraints</td></tr>
+    <tr><td>An open set of implementations chosen at runtime (plugins, mixed collections)</td><td>Trait objects: <code>Box&lt;dyn Trait&gt;</code></td><td>Interfaces / virtual methods</td></tr>
+    <tr><td>Data whose shape is only known at runtime (user-defined facts, JSON)</td><td>A dynamic <code>Value</code> enum (e.g. <code>serde_json::Value</code>)</td><td><code>JsonNode</code>, <code>Dictionary&lt;string, object&gt;</code>, <code>dynamic</code></td></tr>
+    <tr><td>Several truly independent yes/no options</td><td><code>bool</code> fields or a bit-flag set</td><td><code>bool</code>s or <code>[Flags] enum</code></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="compare">C# vs Rust: type-system features at a glance</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Feature</th><th>C# (C# 14 / .NET 10)</th><th>Rust (1.99, edition 2024)</th></tr></thead>
+  <tbody>
+    <tr><td>Typing discipline</td><td>Static, with a <code>dynamic</code> escape hatch</td><td>Static; runtime typing only through explicit types (<code>dyn Any</code>, value enums)</td></tr>
+    <tr><td>Implicit numeric conversions</td><td>Widening allowed (<code>int</code> → <code>long</code>)</td><td>None; <code>.into()</code>, <code>try_into()</code>, <code>as</code></td></tr>
+    <tr><td>Type inference</td><td><code>var</code> from the initialiser; lambdas from the target type</td><td>Whole function body, including later uses; signatures always explicit</td></tr>
+    <tr><td>Value vs reference</td><td>Chosen per type: <code>struct</code> vs <code>class</code></td><td>Every type is a value; indirection is explicit (<code>&amp;</code>, <code>&amp;mut</code>, <code>Box</code>, <code>Rc</code>, <code>Arc</code>)</td></tr>
+    <tr><td>Null</td><td>Allowed for reference types; nullable annotations give warnings</td><td>No null references; <code>Option&lt;T&gt;</code> (zero-cost for pointers)</td></tr>
+    <tr><td>Product types</td><td><code>class</code>, <code>struct</code>, <code>record</code>, tuples</td><td><code>struct</code>, tuple structs, tuples</td></tr>
+    <tr><td>Sum types</td><td><code>enum</code> (named integers, no data); hierarchies; C# 15 <code>union</code> in preview</td><td><code>enum</code> with per-variant data</td></tr>
+    <tr><td>Incomplete switch / match</td><td>Warnings CS8509 / CS8524, then <code>SwitchExpressionException</code> at runtime</td><td>Error E0004; doesn't build</td></tr>
+    <tr><td>Generics implementation</td><td>Reified; runtime specialises per value type, shares across reference types</td><td>Monomorphised at compile time, one copy per type</td></tr>
+    <tr><td>Interfaces</td><td><code>interface</code> (implemented in the type's own declaration)</td><td><code>trait</code>, implementable for types you didn't write (<code>impl MyTrait for i32</code>), within coherence rules (chapter 3.1)</td></tr>
+    <tr><td>Inheritance</td><td>Single class inheritance + interfaces</td><td>No data inheritance; composition, traits, supertraits</td></tr>
+    <tr><td>Overloading</td><td>Methods and operators</td><td>No function overloading; operators via traits (<code>Add</code>, <code>Index</code>)</td></tr>
+    <tr><td>Default equality</td><td>Reference for classes, value for structs and records</td><td>None until derived; <code>==</code> always means value equality</td></tr>
+    <tr><td>Runtime reflection</td><td>Full (<code>typeof</code>, <code>GetType()</code>, attributes)</td><td>Minimal (<code>type_name</code>, <code>TypeId</code>); code generation by macros instead (chapter 5.4)</td></tr>
+    <tr><td>Expressions</td><td>Statement-based, plus expression forms (ternary, switch expressions)</td><td>Expression-oriented: blocks, <code>if</code>, <code>match</code>, <code>loop</code> all produce values</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="pitfalls">Common misconceptions and pitfalls</h2>
+<div class="callout pitfall"><div class="callout-title">⚠️ "Strongly typed" means "statically typed"</div>
+  <p>Two different axes. Python is dynamic and fairly strict; C is static and converts liberally. Ask which conversions happen silently, and when errors are reported.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ "A Rust struct is like a C# struct, so keep it small"</div>
+  <p>The C# advice ("structs should be small and immutable") exists because C# structs are copied on every assignment and boxed when cast to an interface. A Rust struct of any size is <em>moved</em>, not deep-copied, unless it's <code>Copy</code>, and there's no boxing. Model with structs freely; reach for <code>Box</code> for a reason (recursion, trait objects, very large values), not by default.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Boolean blindness and stringly typed data</div>
+  <p><code>process(order, true, false)</code> and <code>status: String</code> hide meaning and admit nonsense ("Compelted"). Use an enum, even a two-variant one: <code>process(order, Mode::DryRun, Notify::No)</code>.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ The catch-all arm as a habit</div>
+  <p><code>_ =&gt; …</code> silences E0004 forever, including for variants added next year. Prefer listing the variants; keep <code>_</code> for genuinely open sets (numbers, strings), or for enums from other crates marked <code>#[non_exhaustive]</code>, where the compiler requires it.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Reaching for <code>dyn</code> because "that's what interfaces are"</div>
+  <p>C# habit says "program to an interface", meaning dynamic dispatch. In Rust, start with generics when the type is known at compile time, and use <code>dyn</code> when you need mixed collections or runtime choice. Both are traits; the dispatch is a separate decision.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ Trusting nullable annotations as guarantees</div>
+  <p>C# nullable reference types are warnings over annotations. Deserialised JSON, reflection, <code>default</code> and older libraries can still hand you null in a non-nullable <code>string</code>. Validate at boundaries in .NET. At a .NET ↔ Rust boundary, the Rust side's <code>Option</code> is the real contract.</p></div>
+<div class="callout pitfall"><div class="callout-title">⚠️ The trailing semicolon</div>
+  <p><code>fn f() -&gt; u32 { x * 2; }</code> returns <code>()</code>. Read error E0308's "found <code>()</code>" as "you probably have a semicolon too many".</p></div>
+
+<h2 id="real-world">Real-world view: types in your two products</h2>
+<div class="callout architecture"><div class="callout-title">🏗 Architecture view</div>
+  <ul>
+    <li><strong>Rule engine, fact model.</strong> Customers define facts at runtime, so the engine is a statically typed program carrying dynamically typed values. The standard Rust answer is a sum type: <code>enum Value { Null, Bool(bool), Int(i64), Decimal(…), Text(String), List(Vec&lt;Value&gt;), Map(…) }</code>. <code>serde_json::Value</code> is exactly this shape for JSON. Type-checking a rule against a declared fact schema at authoring time moves errors from production to the editor; chapter 9.5 designs this "typed vs dynamic" trade-off.</li>
+    <li><strong>Rule engine, AST and plugins.</strong> An enum for the expression AST (closed, many passes) and a trait for pluggable evaluators (open, chosen at runtime): the two halves of the expression problem, each with the right tool.</li>
+    <li><strong>Workflow engine, run and step states.</strong> <code>RunStatus</code>-style enums make "completed without output" unrepresentable. Transitions as functions returning <code>Result</code> give you a checked state machine. Events in the history log (chapter 10.4) are an enum too, and adding an event kind forces every replay handler to decide what to do with it.</li>
+    <li><strong>Identifiers and money.</strong> Newtypes for <code>TenantId</code>, <code>WorkflowId</code>, <code>RuleSetVersion</code>, and integer <code>Cents</code> (never floats) prevent the swapped-argument and unit bugs that slip through code review, at zero runtime cost.</li>
+    <li><strong>API boundaries.</strong> At the JSON edge, an enum becomes a tagged object (<code>{"status":"failed","error":"…"}</code>), which serde produces from one attribute (chapter 7.1). .NET clients can read it with <code>System.Text.Json</code> polymorphism (<code>[JsonPolymorphic]</code>/<code>[JsonDerivedType]</code>) into a record hierarchy, or, once it ships, a C# union.</li>
+    <li><strong>Consultant's review checklist:</strong> clusters of <code>bool</code>s plus nullables (count the states); strings used as enums; <code>_ =&gt;</code> arms on domain enums; raw <code>u64</code>/<code>f64</code> for IDs, money and durations; <code>Box&lt;dyn Trait&gt;</code> where a generic would do, and the reverse.</li>
+  </ul>
+</div>
+
+<h2 id="check">Check your understanding</h2>
+<div class="quiz" data-quiz="F8">
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Python raises <code>TypeError</code> for <code>"1" + 1</code>, but only when that line runs. How is Python best described?</div>
+    <ol class="options">
+      <li data-key="a">Static and strong</li>
+      <li data-key="b">Dynamic, with few silent conversions (often called "strong")</li>
+      <li data-key="c">Dynamic and weak, like JavaScript</li>
+      <li data-key="d">Static, because it reports the error</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Static would mean the error stops the program before it runs.</p>
+      <p data-for="b">Correct. "When are types checked?" (run time) and "what's converted silently?" (little) are separate questions.</p>
+      <p data-for="c">JavaScript converts and gives <code>"11"</code>; Python refuses.</p>
+      <p data-for="d">Reporting at run time is what makes it dynamic.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">C#: <code>var c2 = c1; c2.CreditLimit = 5000;</code> and afterwards <code>c1.CreditLimit</code> is 5000. Which statement is true?</div>
+    <ol class="options">
+      <li data-key="a">This always happens in C#, whatever the type</li>
+      <li data-key="b">The same two lines in Rust would also change <code>c1</code></li>
+      <li data-key="c"><code>Customer</code> must be a struct</li>
+      <li data-key="d"><code>Customer</code> is a class (reference semantics), and nothing in those two lines says so. In Rust you'd write <code>.clone()</code> for a copy, or an explicit <code>&amp;mut</code> to share</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">With a struct, <code>c1</code> would be unaffected (Lab step 1).</p>
+      <p data-for="b">In Rust, <code>let c2 = c1;</code> moves the value; <code>c1</code> can't be used afterwards, so there's no hidden alias.</p>
+      <p data-for="c">A struct would have been copied.</p>
+      <p data-for="d">Correct. Rust makes the sharing decision visible in the code.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How many possible values does <code>(bool, Option&lt;bool&gt;)</code> have?</div>
+    <ol class="options">
+      <li data-key="a">4</li>
+      <li data-key="b">5</li>
+      <li data-key="c">6: a product of 2 and (1 + 2)</li>
+      <li data-key="d">8</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's <code>(bool, bool)</code>.</p>
+      <p data-for="b">Products multiply; they don't add.</p>
+      <p data-for="c">Correct. <code>Option&lt;bool&gt;</code> has 3 values (None, Some(false), Some(true)), and the tuple multiplies by 2.</p>
+      <p data-for="d">That would be three bools.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your team adds a <code>Wallet</code> payment method. In C# the <code>Payment</code> enum is switched on in 14 places; in the Rust port, matched in 14 places without <code>_</code> arms. What happens on the next build?</div>
+    <ol class="options">
+      <li data-key="a">Rust: 14 E0004 errors listing each match to update. C#: builds with CS8509/CS8524-style warnings at best, and unhandled wallets throw <code>SwitchExpressionException</code> (or fall through silently in <code>switch</code> statements) at runtime</li>
+      <li data-key="b">Both languages refuse to build</li>
+      <li data-key="c">Both build; the error appears in tests</li>
+      <li data-key="d">Rust inserts a default arm automatically</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. Lab steps 1 and 4 show both behaviours.</p>
+      <p data-for="b">C# only warns (unless warnings are treated as errors, and even then a C# enum can hold undeclared values).</p>
+      <p data-for="c">Rust doesn't build.</p>
+      <p data-for="d">It never does; that would defeat the check.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">Why is <code>Option&lt;&amp;u64&gt;</code> 8 bytes, while <code>Option&lt;u64&gt;</code> is 16?</div>
+    <ol class="options">
+      <li data-key="a">References are compressed</li>
+      <li data-key="b">A reference can never be null, so address 0 is free to mean <code>None</code> (the niche optimisation); every <code>u64</code> bit pattern is a valid number, so a separate tag is needed</li>
+      <li data-key="c"><code>Option&lt;u64&gt;</code> is stored on the heap</li>
+      <li data-key="d">It's a measurement error</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">No compression is involved.</p>
+      <p data-for="b">Correct. The tag hides in an impossible value.</p>
+      <p data-for="c">Both are plain values.</p>
+      <p data-for="d">Lab step 3 measured both, and the reference case is guaranteed by the docs.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text">How do Rust generics differ from .NET generics in compiled code?</div>
+    <ol class="options">
+      <li data-key="a">Rust erases type arguments like Java</li>
+      <li data-key="b">They're identical</li>
+      <li data-key="c">Rust monomorphises at compile time, one copy per concrete type. .NET specialises at run time per value type and shares one copy across all reference types</li>
+      <li data-key="d">Rust generics always use dynamic dispatch</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's Java's approach, not Rust's.</p>
+      <p data-for="b">The compilation strategies differ, with different costs.</p>
+      <p data-for="c">Correct. Rust trades binary size and compile time for per-type optimisation.</p>
+      <p data-for="d">Generics are static dispatch; <code>dyn</code> is the dynamic form.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="d">
+    <div class="q-type">Multiple choice</div>
+    <div class="q-text"><code>fn area(w: u32, h: u32) -&gt; u32 { w * h; }</code> fails with "expected <code>u32</code>, found <code>()</code>". Why?</div>
+    <ol class="options">
+      <li data-key="a"><code>u32</code> multiplication can overflow</li>
+      <li data-key="b">Functions need an explicit <code>return</code></li>
+      <li data-key="c"><code>w * h</code> is a statement</li>
+      <li data-key="d">The semicolon turns the expression into a statement, so the body has no tail expression and evaluates to <code>()</code></li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Overflow is a separate topic (chapter 2.1); this is a type error.</p>
+      <p data-for="b">The final expression is the return value; <code>return</code> is for leaving early.</p>
+      <p data-for="c"><code>w * h</code> is an expression; the <code>;</code> makes it a statement.</p>
+      <p data-for="d">Correct. Remove the semicolon, as the compiler suggests.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="a">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">The rule engine loads a list of rules of different types (threshold, regex, DMN table) from configuration and evaluates them in order. Which representation fits?</div>
+    <ol class="options">
+      <li data-key="a"><code>Vec&lt;Box&lt;dyn Rule&gt;&gt;</code>: the concrete types are only known at runtime and differ per element, so dynamic dispatch is required</li>
+      <li data-key="b"><code>Vec&lt;T&gt;</code> where <code>T: Rule</code></li>
+      <li data-key="c">A <code>Vec&lt;String&gt;</code> of rule names</li>
+      <li data-key="d">One generic function per rule type</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">Correct. That's Lab step 5's <code>rules</code> vector. (If the set of rule kinds is closed and yours, an enum is the other good option.)</p>
+      <p data-for="b">A <code>Vec&lt;T&gt;</code> holds one single type T.</p>
+      <p data-for="c">Stringly typed: every use would re-parse and could fail.</p>
+      <p data-for="d">That works only if the types are known at compile time.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="b">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">A design has <code>is_running</code>, <code>is_completed</code>, <code>is_failed</code> flags and nullable <code>worker</code>, <code>output</code>, <code>error</code>. What's the strongest improvement?</div>
+    <ol class="options">
+      <li data-key="a">Add validation methods that check the combinations</li>
+      <li data-key="b">One enum whose variants carry their own data (<code>Running { worker }</code>, <code>Completed { output }</code>, <code>Failed { error }</code>, <code>Pending</code>): 4 representable states for 4 real ones</li>
+      <li data-key="c">Replace the bools with a status string</li>
+      <li data-key="d">Make all fields non-nullable with empty-string defaults</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">This helps only where someone remembers to call them; the 60 illegal states still exist.</p>
+      <p data-for="b">Correct. Figure 4 and Lab step 6.</p>
+      <p data-for="c">Strings admit typos and still don't link data to state.</p>
+      <p data-for="d">Empty strings are just null by another name.</p>
+    </div>
+  </div>
+  <div class="q" data-answer="c">
+    <div class="q-type">Scenario</div>
+    <div class="q-text">Your rule AST is an enum, and you plan to add many new <em>operations</em> over it (evaluate, explain, optimise, type-check). What does the expression problem predict?</div>
+    <ol class="options">
+      <li data-key="a">Each new operation requires changing every node type</li>
+      <li data-key="b">You should switch to traits immediately</li>
+      <li data-key="c">New operations are cheap (one new function with a <code>match</code>); it's new <em>node kinds</em> that touch every existing match, and E0004 lists those places for you</li>
+      <li data-key="d">Enums can't support more than one operation</li>
+    </ol>
+    <div class="explain">
+      <p data-for="a">That's the cost profile of the trait-per-node (OO) design.</p>
+      <p data-for="b">Traits make new operations the hard direction.</p>
+      <p data-for="c">Correct. That's why ASTs are usually enums (Exercise 3).</p>
+      <p data-for="d">Any number of functions can match on an enum.</p>
+    </div>
+  </div>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul class="summary-list">
+  <li>Static vs dynamic is about <em>when</em> types are checked; "strong vs weak" is an informal word for silent conversions. Rust is static with almost no implicit conversions, infers types inside functions, and is nominal, so newtypes like <code>Meters</code> catch unit bugs for free.</li>
+  <li>C# decides value vs reference semantics per type declaration, invisibly at each use. In Rust every type is a value; copies (<code>.clone()</code>) and sharing (<code>&amp;</code>, <code>&amp;mut</code>, <code>Box</code>, <code>Rc</code>) are explicit in the code.</li>
+  <li>Products (structs) are AND and multiply their values; sums (enums) are OR and add them. <code>Option</code> replaces null and <code>Result</code> replaces exceptions for expected failures. Niche optimisation makes <code>Option&lt;&amp;T&gt;</code> free, and exhaustive <code>match</code> (E0004) turns new variants into a compiler-generated to-do list, where C# only warns.</li>
+  <li>Generics are parametric polymorphism, monomorphised in Rust (one copy per type) and shared across reference types in .NET. Traits give ad-hoc polymorphism, and <code>dyn Trait</code> gives runtime dispatch through a 16-byte fat pointer. Enums vs traits is the expression problem, a real architecture choice.</li>
+  <li>Rust is expression-oriented (blocks, <code>if</code>, <code>match</code>, <code>loop</code> all produce values; a trailing <code>;</code> yields <code>()</code>). Use sum types, newtypes and validated constructors to make illegal states unrepresentable: the flag model admitted 64 states for a 4-state domain.</li>
+</ul>
+<h4>Key terms added to the glossary</h4>
+<ul class="key-terms">
+  <li class="chip">static typing</li><li class="chip">dynamic typing</li><li class="chip">type inference</li><li class="chip">nominal typing</li><li class="chip">newtype</li>
+  <li class="chip">value semantics</li><li class="chip">reference semantics</li><li class="chip">aliasing</li><li class="chip">product type</li><li class="chip">unit type</li>
+  <li class="chip">sum type</li><li class="chip">algebraic data type</li><li class="chip">exhaustiveness checking</li><li class="chip">niche optimisation</li><li class="chip">generics</li>
+  <li class="chip">trait</li><li class="chip">monomorphisation</li><li class="chip">polymorphism</li><li class="chip">static dispatch</li><li class="chip">dynamic dispatch</li>
+  <li class="chip">vtable</li><li class="chip">expression</li><li class="chip">statement</li><li class="chip">expression problem</li><li class="chip">illegal states unrepresentable</li>
+</ul>
+
+<h2 id="go-further">Go further</h2>
+<p class="small muted">Supplementary only: everything you need is above. All links were checked on 2026-10-31.</p>
+<ul class="refs">
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/book/ch06-00-enums.html">The Rust Programming Language — “Enums and Pattern Matching”</a> and <a href="https://doc.rust-lang.org/book/ch18-00-oop.html">“Object-Oriented Programming Features”</a><span class="why">The official book's treatment of sum types and of trait objects vs inheritance.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://doc.rust-lang.org/reference/types.html">The Rust Reference — Types</a><span class="why">The precise list of Rust's type forms, for when you need the exact rules.</span></li>
+  <li><span class="ref-type doc">Doc</span>Microsoft Learn: <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/value-types">Value types</a>, <a href="https://learn.microsoft.com/dotnet/csharp/nullable-references">Nullable reference types</a>, <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/generics/generics-in-the-run-time">Generics in the runtime</a>, <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union">Union types (C# 15 preview)</a><span class="why">The .NET side of every comparison in this chapter, including the generics quote.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1023/A:1010000313106">C. Strachey — “Fundamental Concepts in Programming Languages”</a>, 1967 lecture notes, published in <em>Higher-Order and Symbolic Computation</em> 13(1–2), 2000<span class="why">Where "parametric" vs "ad hoc" polymorphism comes from.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://doi.org/10.1145/6041.6042">L. Cardelli, P. Wegner — “On Understanding Types, Data Abstraction, and Polymorphism”</a>, <em>ACM Computing Surveys</em> 17(4), 1985<span class="why">The classic survey that organised polymorphism into the categories still used today.</span></li>
+  <li><span class="ref-type paper">Paper</span><a href="https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt">P. Wadler — “The Expression Problem”</a>, email to the java-genericity list, 12 November 1998<span class="why">The short original statement of the enums-vs-traits trade-off.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://blog.janestreet.com/effective-ml-revisited/">Y. Minsky — “Effective ML Revisited”</a>, Jane Street blog, 2011<span class="why">Source of "make illegal states unrepresentable", with worked examples.</span></li>
+  <li><span class="ref-type doc">Doc</span><a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">A. King — “Parse, don’t validate”</a>, 2019<span class="why">The essay behind Exercise 2: validate once, at the boundary, into a precise type.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/">“Null References: The Billion Dollar Mistake” — Tony Hoare</a>, QCon 2009 (InfoQ)<span class="why">The inventor of the null reference on why he regrets it; context for <code>Option</code>.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=IcgmSRJHu_8">“Making Impossible States Impossible” by Richard Feldman</a> — elm-conf<span class="why">The illegal-states idea applied to data modelling, one refactoring at a time. Elm syntax, but the moves carry straight over to Rust enums.</span></li>
+  <li><span class="ref-type video">Video</span><a href="https://www.youtube.com/watch?v=2JB1_e5wZmU">“Domain Modeling Made Functional” — Scott Wlaschin</a>, KanDDDinsky 2019<span class="why">Domain-driven design with sum and product types, from a long-time .NET (F#) practitioner. Watch for his "AND types" and "OR types", his names for product and sum types.</span></li>
+</ul>
+</article>
+
+<script>
+Course.ready(function () {
+  // ---------- illegal-state explorer ----------
+  // bit 0..2 = status flags, bit 3..5 = "field has a value"
+  var FIELDS = [
+    { name: "IsRunning", kind: "flag" }, { name: "IsCompleted", kind: "flag" }, { name: "IsFailed", kind: "flag" },
+    { name: "Worker", kind: "field", sample: "\"w-7\"" }, { name: "Output", kind: "field", sample: "\"approved\"" }, { name: "Error", kind: "field", sample: "\"timeout\"" }
+  ];
+  var VARIANTS = [
+    { name: "Pending", fields: "", bits: 0 },
+    { name: "Running", fields: "{ worker, started_at }", bits: 1 | 8 },
+    { name: "Completed", fields: "{ output, finished_at }", bits: 2 | 16 },
+    { name: "Failed", fields: "{ error, attempts }", bits: 4 | 32 }
+  ];
+  function classify(s) {
+    var run = s & 1, done = s & 2, fail = s & 4, w = s & 8, o = s & 16, e = s & 32;
+    var flags = (run ? 1 : 0) + (done ? 1 : 0) + (fail ? 1 : 0);
+    if (flags > 1) return { ok: false, msg: "Two status flags are true at once. Is this run completed or failed? Every reader has to guess." };
+    if (flags === 0) return (w || o || e) ? { ok: false, msg: "No status flag is set (pending), yet " + [w && "Worker", o && "Output", e && "Error"].filter(Boolean).join(" and ") + " has a value. Where did it come from?" } : { ok: true, variant: 0, msg: "Valid: a pending run." };
+    if (run) { if (!w) return { ok: false, msg: "IsRunning, but Worker is null. Which worker is it running on?" }; if (o || e) return { ok: false, msg: "Running, but " + (o ? "Output" : "Error") + " is already set: a leftover from a previous attempt?" }; return { ok: true, variant: 1, msg: "Valid: running on a worker." }; }
+    if (done) { if (!o) return { ok: false, msg: "IsCompleted, but Output is null. What did it produce? (the classic incident)" }; if (w || e) return { ok: false, msg: "Completed, but " + (w ? "Worker" : "Error") + " is still set. Which field should a reader trust?" }; return { ok: true, variant: 2, msg: "Valid: completed with output." }; }
+    if (!e) return { ok: false, msg: "IsFailed, but Error is null. Why did it fail?" };
+    if (w || o) return { ok: false, msg: "Failed, but " + (w ? "Worker" : "Output") + " is set: half-cleaned-up state." };
+    return { ok: true, variant: 3, msg: "Valid: failed with an error." };
+  }
+  var state = 0;
+  var flagsBox = document.getElementById("ise-flags"), inputs = [];
+  FIELDS.forEach(function (f, i) {
+    var row = document.createElement("label"); row.className = "ise-row";
+    var cb = document.createElement("input"); cb.type = "checkbox";
+    cb.onchange = function () { state ^= (1 << i); render(); };
+    var txt = document.createElement("span");
+    txt.textContent = f.kind === "flag" ? f.name + " = " : f.name + " = ";
+    var val = document.createElement("span"); val.className = "val";
+    row.appendChild(cb); row.appendChild(txt); row.appendChild(val);
+    flagsBox.appendChild(row); inputs.push({ cb: cb, val: val, f: f });
+  });
+  var grid = document.getElementById("ise-grid"), cells = [], validCount = 0;
+  for (var s = 0; s < 64; s++) {
+    var c = document.createElement("span"), k = classify(s);
+    if (k.ok) { c.className = "valid"; validCount++; }
+    c.title = k.msg;
+    (function (s) { c.onclick = function () { state = s; render(); }; })(s);
+    grid.appendChild(c); cells.push(c);
+  }
+  var vbox = document.getElementById("ise-variants"), radios = [];
+  VARIANTS.forEach(function (v, i) {
+    var l = document.createElement("label");
+    var r = document.createElement("input"); r.type = "radio"; r.name = "ise-v";
+    r.onchange = function () { state = v.bits; render(); };
+    var t = document.createElement("span"); t.innerHTML = "RunStatus::" + v.name + (v.fields ? " <span class='fields'>" + v.fields + "</span>" : "");
+    l.appendChild(r); l.appendChild(t); vbox.appendChild(l); radios.push(r);
+  });
+  function render() {
+    inputs.forEach(function (x, i) {
+      var on = !!(state & (1 << i));
+      x.cb.checked = on;
+      x.val.textContent = x.f.kind === "flag" ? (on ? "true" : "false") : (on ? x.f.sample : "null");
+    });
+    var k = classify(state);
+    var v = document.getElementById("ise-verdict");
+    v.className = "ise-verdict " + (k.ok ? "ok" : "bad");
+    v.textContent = (k.ok ? "✓ " : "✗ Illegal state. ") + k.msg;
+    cells.forEach(function (c, i) { c.classList.toggle("cur", i === state); });
+    document.getElementById("ise-count").textContent = validCount + " of 64 representable states are valid (" + Math.round(validCount / 64 * 100) + "%)";
+    var rv = document.getElementById("ise-rust");
+    radios.forEach(function (r, i) { r.checked = k.ok && k.variant === i; });
+    if (k.ok) { rv.className = "ise-verdict ok"; rv.textContent = "✓ RunStatus::" + VARIANTS[k.variant].name + ". 4 of 4 representable states are valid."; }
+    else { rv.className = "ise-verdict bad"; rv.textContent = "There is no way to write this state in Rust: no variant has that combination of data."; }
+  }
+  render();
+  window.__ise = { classify: classify };
+});
+</script>
+</body>
+</html>
